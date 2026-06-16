@@ -1,0 +1,36 @@
+# Local runtime and secrets
+.env
+.env.*
+!.env.example
+*.secret
+*.key
+*.pem
+cookies.txt
+secrets/
+
+# Agent runtime state may contain credentials in some tools.
+.agents/
+
+# Runtime data, logs, and generated artifacts
+data/
+logs/
+reports/
+artifacts/
+backups/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# Python / Node / editor noise
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+node_modules/
+.DS_Store
+.idea/
+.vscode/
+
