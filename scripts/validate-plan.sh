@@ -24,6 +24,43 @@ if grep -RInEi '["'\'']?(token|cookie|password|passwd|api[_-]?key|secret|pickcod
   exit 1
 fi
 
+python3 - <<'PY'
+import ast
+import re
+from pathlib import Path
+
+root = Path.cwd()
+secret_value = re.compile(
+    r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|"
+    r"Bearer\s+[A-Za-z0-9._=-]{20,}|"
+    r"(token|cookie|password|passwd|api[_-]?key|secret|pickcode|authorization)\s*[:=]\s*['\"]?(?!replace-with|local-|example|placeholder)[^'\"\s]{8,})"
+)
+private_ip = re.compile(r"\b(?:10|192\.168|172\.(?:1[6-9]|2[0-9]|3[01]))\.\d{1,3}\.\d{1,3}\b")
+real_path = re.compile(r"(/volume\d+/|/Users/[A-Za-z0-9._-]+|/mnt/[A-Za-z0-9._-]+|/downloads/[A-Za-z0-9._-]+)")
+
+allowed_files = {
+    ".env.example",
+    "docs/security.md",
+    "docs/ten-pass-review.md",
+    "scripts/validate-plan.sh",
+}
+
+findings = []
+for path in list(root.glob("src/**/*.py")) + list(root.glob("tests/**/*.py")):
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            value = node.value
+            if secret_value.search(value) or private_ip.search(value) or real_path.search(value):
+                rel = path.relative_to(root)
+                if str(rel) not in allowed_files:
+                    findings.append(f"{rel}:{getattr(node, 'lineno', '?')}: suspicious literal")
+
+if findings:
+    print("\n".join(findings))
+    raise SystemExit("Suspicious source literal found.")
+PY
+
 if grep -RInE '/volume[0-9]+/|/Users/[A-Za-z0-9._-]+|/mnt/[A-Za-z0-9._-]+|/downloads/[A-Za-z0-9._-]+' . \
   --exclude-dir=.git \
   --exclude-dir=.agents; then
