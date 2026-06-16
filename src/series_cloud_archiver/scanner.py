@@ -144,9 +144,9 @@ def scan(config: ScanConfig) -> ScanReport:
         for series in series_items
     ]
     candidates.sort(key=lambda item: (item.status != "candidate_for_cloud_check", -item.score, -item.size_bytes, item.title))
+    counts = Counter(candidate.status for candidate in candidates)
     if config.top > 0:
         candidates = candidates[: config.top]
-    counts = Counter(candidate.status for candidate in candidates)
     return ScanReport(
         mode=config.mode,
         media_roots=config.media_roots,
@@ -156,4 +156,3 @@ def scan(config: ScanConfig) -> ScanReport:
         candidates=candidates,
         warnings=warnings,
     )
-

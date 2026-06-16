@@ -36,7 +36,8 @@ def render_markdown(report: ScanReport) -> str:
         f"- Media roots: `{', '.join(report.media_roots)}`",
         f"- Minimum seed days: `{report.min_seed_days}`",
         f"- Total series folders scanned: `{report.total_series}`",
-        f"- Status counts: `{report.status_counts}`",
+        f"- Status counts before row limit: `{report.status_counts}`",
+        "- Safety: readonly scan only; no transfer, STRM generation, or deletion is performed.",
         "",
     ]
     if report.warnings:
@@ -70,7 +71,7 @@ def render_markdown(report: ScanReport) -> str:
         )
     lines.append("")
     lines.append(
-        "Readonly MVP note: `candidate_for_cloud_check` only means the item is worth checking in MV3/cloud. It does not authorize cleanup."
+        "Readonly MVP note: `candidate_for_cloud_check` only means the item is worth checking in MV3/cloud. It is not a cleanup candidate until qB seed age, Emby STRM coverage, playback probes, and dry-run approval all pass."
     )
     return "\n".join(lines)
 
@@ -79,4 +80,3 @@ def render_report(report: ScanReport, output_format: str) -> str:
     if output_format == "json":
         return render_json(report)
     return render_markdown(report)
-

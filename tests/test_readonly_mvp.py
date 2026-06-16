@@ -68,6 +68,28 @@ class ReadonlyScanTest(unittest.TestCase):
             self.assertEqual(report.candidates[0].status, "needs_metadata_review")
             self.assertIn("needs_completion_evidence", report.candidates[0].blockers)
 
+    def test_status_counts_are_before_top_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "TV"
+            for name in ["A.Show.S01.Complete", "B.Show.S01.Complete"]:
+                show = root / name
+                for index in range(1, 3):
+                    touch(show / f"{name}.S01E{index:02d}.mkv")
+
+            report = scan(
+                ScanConfig(
+                    media_roots=[str(root)],
+                    include_qb=False,
+                    min_seed_days=0,
+                    min_age_days=0,
+                    max_depth=2,
+                    top=1,
+                )
+            )
+
+            self.assertEqual(len(report.candidates), 1)
+            self.assertEqual(report.status_counts["candidate_for_cloud_check"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
