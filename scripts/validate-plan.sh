@@ -13,7 +13,7 @@ if grep -RInE '[0-9]{1,3}(\.[0-9]{1,3}){3}' . \
   exit 1
 fi
 
-if grep -RInEi '(token|cookie|password|passwd|api[_-]?key|secret)\s*[:=]' . \
+if grep -RInEi '["'\'']?(token|cookie|password|passwd|api[_-]?key|secret|pickcode|authorization)["'\'']?\s*[:=]' . \
   --exclude-dir=.git \
   --exclude-dir=.agents \
   --exclude=.env.example \
