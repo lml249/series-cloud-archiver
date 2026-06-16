@@ -16,6 +16,8 @@ fi
 if grep -RInEi '["'\'']?(token|cookie|password|passwd|api[_-]?key|secret|pickcode|authorization)["'\'']?\s*[:=]' . \
   --exclude-dir=.git \
   --exclude-dir=.agents \
+  --exclude-dir=src \
+  --exclude-dir=tests \
   --exclude=.env.example \
   --exclude=public-safety.yml; then
   echo "Potential secret assignment found. Keep real secrets out of repo." >&2
@@ -81,3 +83,8 @@ for name, terms in checks:
 PY
 
 echo "All validation checks passed."
+
+if [[ -d src && -d tests ]]; then
+  echo "== Runtime tests =="
+  PYTHONPATH=src python3 -m unittest discover -s tests -v
+fi

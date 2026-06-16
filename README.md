@@ -82,3 +82,19 @@ bash scripts/validate-plan.sh
 - qBittorrent 与 hlink 清理范围
 - 可观测性和审计
 - 可测试性
+
+## 只读扫描 MVP
+
+当前仓库已经开始加入只读扫描器。它只做候选识别，不转存、不生成 STRM、不删除。
+
+本地试跑：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver scan \
+  --media-root /media/local-series \
+  --no-qb \
+  --min-age-days 0 \
+  --format markdown
+```
+
+DSM 上可以用本地 `.env` 提供真实路径和服务地址，但 `.env` 不要提交。

@@ -60,3 +60,15 @@ The orchestrator is conservative by default:
 - Manual approval is required before destructive actions until the project has
   proven safety in real deployments.
 
+## Readonly scan MVP
+
+The repository now includes the first readonly scanner. It identifies candidates
+only; it does not transfer, generate STRM files, or delete anything.
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver scan \
+  --media-root /media/local-series \
+  --no-qb \
+  --min-age-days 0 \
+  --format markdown
+```
