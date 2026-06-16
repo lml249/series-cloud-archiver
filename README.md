@@ -98,3 +98,24 @@ PYTHONPATH=src python3 -m series_cloud_archiver scan \
 ```
 
 DSM 上可以用本地 `.env` 提供真实路径和服务地址，但 `.env` 不要提交。
+
+## 编排器第一版
+
+第一版编排器提供 SQLite 状态库和审计记录，但仍然不会执行删除。
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver evaluate \
+  --media-root /media/local-series \
+  --no-qb \
+  --min-age-days 0 \
+  --db data/series-cloud-archiver.sqlite3
+
+PYTHONPATH=src python3 -m series_cloud_archiver status \
+  --db data/series-cloud-archiver.sqlite3 \
+  --limit 20
+
+PYTHONPATH=src python3 -m series_cloud_archiver plan-cleanup "Some Series" \
+  --db data/series-cloud-archiver.sqlite3
+```
+
+`plan-cleanup` 当前只会生成 blocked dry-run 计划。缺少 MV3 STRM 证据、Emby STRM 验证、播放探测、qB 做种时长和人工批准时，删除目标必须为空。

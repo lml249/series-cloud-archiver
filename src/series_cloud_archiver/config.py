@@ -85,3 +85,7 @@ def config_from_env(env_file: Optional[str], media_roots: Iterable[str]) -> Scan
         include_emby=_get(values, "ARCHIVER_INCLUDE_EMBY", "false").lower() == "true",
     )
 
+
+def db_path_from_env(env_file: Optional[str]) -> str:
+    values = load_env_file(env_file)
+    return _get(values, "ARCHIVER_DB_PATH", "data/series-cloud-archiver.sqlite3")

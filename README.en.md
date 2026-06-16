@@ -72,3 +72,27 @@ PYTHONPATH=src python3 -m series_cloud_archiver scan \
   --min-age-days 0 \
   --format markdown
 ```
+
+## Orchestrator v1
+
+The first orchestrator version adds SQLite state and audit records, but still
+does not execute deletion.
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver evaluate \
+  --media-root /media/local-series \
+  --no-qb \
+  --min-age-days 0 \
+  --db data/series-cloud-archiver.sqlite3
+
+PYTHONPATH=src python3 -m series_cloud_archiver status \
+  --db data/series-cloud-archiver.sqlite3 \
+  --limit 20
+
+PYTHONPATH=src python3 -m series_cloud_archiver plan-cleanup "Some Series" \
+  --db data/series-cloud-archiver.sqlite3
+```
+
+`plan-cleanup` currently creates a blocked dry-run plan only. Deletion targets
+must remain empty while MV3 STRM evidence, Emby STRM verification, playback
+probes, qB seed age, or manual approval are missing.
