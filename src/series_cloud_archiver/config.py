@@ -48,6 +48,7 @@ class ScanConfig:
     mp_base_url: str = ""
     mp_token: str = ""
     manual_completion_file: str = ""
+    identity_file: str = ""
     strm_roots: List[str] = field(default_factory=list)
     emby_base_url: str = ""
     emby_key: str = ""
@@ -87,6 +88,7 @@ def config_from_env(env_file: Optional[str], media_roots: Iterable[str]) -> Scan
         mp_base_url=_get(values, "MP_BASE_URL"),
         mp_token=_get(values, "MP_API_TOKEN"),
         manual_completion_file=_get(values, "ARCHIVER_MANUAL_COMPLETION_FILE"),
+        identity_file=_get(values, "ARCHIVER_IDENTITY_FILE"),
         strm_roots=_split_csv(_get(values, "ARCHIVER_STRM_ROOTS")),
         emby_base_url=_get(values, "EMBY_BASE_URL"),
         emby_key=_get(values, "EMBY_API_KEY"),

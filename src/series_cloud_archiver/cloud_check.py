@@ -7,6 +7,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+from .identity import identity_for_candidate, load_identity_overrides
 from .models import CloudCheckItem, CloudCheckReport
 
 
@@ -65,11 +66,18 @@ def cloud_check_from_scan_report(
     scan_report: Dict[str, object],
     strm_roots: Iterable[str],
     top: int = 0,
+    identity_file: str = "",
 ) -> CloudCheckReport:
     roots = [root for root in strm_roots if root]
     warnings: List[str] = []
     index = _build_strm_index(roots, warnings)
-    groups = _candidate_groups(scan_report)
+    identity_overrides = {}
+    if identity_file:
+        try:
+            identity_overrides = load_identity_overrides(identity_file)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"identity_file_unavailable: {exc}")
+    groups = _candidate_groups(scan_report, identity_overrides)
     items = [_check_group(group, index) for group in groups.values()]
     items.sort(key=lambda item: (item.status != "cloud_strm_complete", -item.size_bytes, item.title))
     counts = Counter(item.status for item in items)
@@ -126,14 +134,18 @@ def _build_strm_index(
     return index
 
 
-def _candidate_groups(scan_report: Dict[str, object]) -> Dict[Tuple[object, ...], Dict[str, object]]:
+def _candidate_groups(
+    scan_report: Dict[str, object],
+    identity_overrides: Dict[Tuple[str, str], Dict[str, object]],
+) -> Dict[Tuple[object, ...], Dict[str, object]]:
     groups: Dict[Tuple[object, ...], Dict[str, object]] = {}
     for candidate in scan_report.get("candidates", []):
         if not isinstance(candidate, dict):
             continue
         if candidate.get("status") != "candidate_for_cloud_check":
             continue
-        tmdbid, season = _identity_from_candidate(candidate)
+        identity = identity_for_candidate(candidate, identity_overrides) if identity_overrides else None
+        tmdbid, season = _identity_from_candidate(candidate, identity)
         key: Tuple[object, ...]
         if tmdbid and season:
             key = ("tmdb", tmdbid, season)
@@ -142,7 +154,7 @@ def _candidate_groups(scan_report: Dict[str, object]) -> Dict[Tuple[object, ...]
         group = groups.setdefault(
             key,
             {
-                "title": _display_title(candidate),
+                "title": _display_title(candidate, identity),
                 "tmdbid": tmdbid,
                 "season": season,
                 "size_bytes": 0,
@@ -159,9 +171,9 @@ def _candidate_groups(scan_report: Dict[str, object]) -> Dict[Tuple[object, ...]
             group["tmdbid"] = tmdbid
         if season and not group["season"]:
             group["season"] = season
-        for episode in _episode_numbers(candidate):
+        for episode in _episode_numbers(candidate, identity):
             group["expected_episodes"].add(episode)
-        total_episode = _total_episode(candidate)
+        total_episode = _total_episode(candidate, identity)
         if total_episode:
             group["expected_count"] = max(int(group["expected_count"]), total_episode)
         group["expected_count"] = max(int(group["expected_count"]), int(candidate.get("video_count") or 0))
@@ -237,11 +249,12 @@ def _check_group(
     )
 
 
-def _identity_from_candidate(candidate: Dict[str, object]) -> Tuple[int, int]:
+def _identity_from_candidate(candidate: Dict[str, object], identity: Optional[Dict[str, object]] = None) -> Tuple[int, int]:
     manual = candidate.get("manual_completion") if isinstance(candidate.get("manual_completion"), dict) else {}
     mp = candidate.get("mp") if isinstance(candidate.get("mp"), dict) else {}
-    tmdbid = int((manual or {}).get("tmdbid") or (mp or {}).get("tmdbid") or _tmdbid_from_text(str(candidate.get("title") or "")) or 0)
-    season = int((manual or {}).get("season") or (mp or {}).get("season") or _season_from_text(str(candidate.get("title") or "")) or 0)
+    identity = identity or {}
+    tmdbid = int((manual or {}).get("tmdbid") or (mp or {}).get("tmdbid") or identity.get("tmdbid") or _tmdbid_from_text(str(candidate.get("title") or "")) or 0)
+    season = int((manual or {}).get("season") or (mp or {}).get("season") or identity.get("season") or _season_from_text(str(candidate.get("title") or "")) or 0)
     seasons = candidate.get("seasons")
     if not season and isinstance(seasons, list) and len(seasons) == 1:
         season = int(seasons[0])
@@ -289,22 +302,27 @@ def _find_cloud_entry(
     return None, ""
 
 
-def _episode_numbers(candidate: Dict[str, object]) -> Set[int]:
-    values = candidate.get("episode_numbers") or candidate.get("episode_sample") or []
-    if not isinstance(values, list):
-        return set()
-    return {int(value) for value in values if isinstance(value, int) or str(value).isdigit()}
+def _episode_numbers(candidate: Dict[str, object], identity: Optional[Dict[str, object]] = None) -> Set[int]:
+    identity = identity or {}
+    values: Set[int] = set()
+    for source in (identity.get("expected_episodes"), candidate.get("episode_numbers")):
+        if isinstance(source, list):
+            values.update(int(value) for value in source if isinstance(value, int) or str(value).isdigit())
+    return values
 
 
-def _total_episode(candidate: Dict[str, object]) -> int:
+def _total_episode(candidate: Dict[str, object], identity: Optional[Dict[str, object]] = None) -> int:
     mp = candidate.get("mp") if isinstance(candidate.get("mp"), dict) else {}
-    return int((mp or {}).get("total_episode") or 0)
+    identity = identity or {}
+    expected = identity.get("expected_episodes") if isinstance(identity.get("expected_episodes"), list) else []
+    return int((mp or {}).get("total_episode") or len(expected) or 0)
 
 
-def _display_title(candidate: Dict[str, object]) -> str:
+def _display_title(candidate: Dict[str, object], identity: Optional[Dict[str, object]] = None) -> str:
     manual = candidate.get("manual_completion") if isinstance(candidate.get("manual_completion"), dict) else {}
     mp = candidate.get("mp") if isinstance(candidate.get("mp"), dict) else {}
-    return str((manual or {}).get("title") or (mp or {}).get("name") or candidate.get("title") or "")
+    identity = identity or {}
+    return str((manual or {}).get("title") or (mp or {}).get("name") or identity.get("title") or candidate.get("title") or "")
 
 
 def _title_tokens(text: str) -> Set[str]:

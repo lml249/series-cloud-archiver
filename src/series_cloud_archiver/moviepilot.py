@@ -61,6 +61,9 @@ class MoviePilotClient:
             page += 1
         return records
 
+    def recognize_file(self, path: str) -> object:
+        return self._get("/api/v1/media/recognize_file2", {"path": path})
+
 
 def fetch_mp_subscription_evidence(base_url: str, token: str) -> List[MPSubscriptionEvidence]:
     client = MoviePilotClient(base_url, token)
