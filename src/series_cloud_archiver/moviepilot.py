@@ -24,6 +24,27 @@ class MPSubscriptionRecord:
     date: str = ""
 
 
+@dataclass
+class MPTransferHistoryRecord:
+    id: int
+    title: str = ""
+    year: str = ""
+    media_type: str = ""
+    category: str = ""
+    seasons: str = ""
+    episodes: str = ""
+    src: str = ""
+    dest: str = ""
+    mode: str = ""
+    status: bool = False
+    date: str = ""
+    downloader: str = ""
+    download_hash: str = ""
+    tmdbid: int = 0
+    imdbid: str = ""
+    doubanid: str = ""
+
+
 class MoviePilotClient:
     def __init__(self, base_url: str, token: str, timeout: int = 20) -> None:
         self.base_url = base_url.rstrip("/")
@@ -63,6 +84,206 @@ class MoviePilotClient:
 
     def recognize_file(self, path: str) -> object:
         return self._get("/api/v1/media/recognize_file2", {"path": path})
+
+    def transfer_history(
+        self,
+        title: str,
+        page_size: int = 100,
+        success_only: bool = True,
+    ) -> List[MPTransferHistoryRecord]:
+        records: List[MPTransferHistoryRecord] = []
+        page = 1
+        query: Dict[str, object] = {"title": title, "count": page_size}
+        if success_only:
+            query["status"] = "true"
+        while True:
+            payload = self._get("/api/v1/history/transfer", {**query, "page": page})
+            page_records = [_transfer_record_from_payload(item) for item in _transfer_history_items(payload)]
+            records.extend(page_records)
+            if len(page_records) < page_size:
+                break
+            page += 1
+        return records
+
+
+def mp_cleanup_preview_from_transfer_history(
+    base_url: str,
+    token: str,
+    title: str,
+    expected_title: str = "",
+    expected_tmdbid: int = 0,
+    expected_hash_prefix: str = "",
+    include_deletedest: bool = True,
+    include_deletesrc: bool = True,
+    timeout: int = 20,
+) -> Dict[str, object]:
+    client = MoviePilotClient(base_url, token, timeout=timeout)
+    records = client.transfer_history(title)
+    return build_mp_cleanup_preview(
+        title=title,
+        records=records,
+        expected_title=expected_title,
+        expected_tmdbid=expected_tmdbid,
+        expected_hash_prefix=expected_hash_prefix,
+        include_deletedest=include_deletedest,
+        include_deletesrc=include_deletesrc,
+    )
+
+
+def build_mp_cleanup_preview(
+    title: str,
+    records: List[MPTransferHistoryRecord],
+    expected_title: str = "",
+    expected_tmdbid: int = 0,
+    expected_hash_prefix: str = "",
+    include_deletedest: bool = True,
+    include_deletesrc: bool = True,
+) -> Dict[str, object]:
+    warnings: List[str] = []
+    blockers: List[str] = []
+    filtered = _filter_transfer_records(
+        records,
+        expected_title=expected_title,
+        expected_tmdbid=expected_tmdbid,
+        expected_hash_prefix=expected_hash_prefix,
+    )
+    if not filtered:
+        blockers.append("no_matching_mp_transfer_history")
+    if records and not filtered:
+        warnings.append("mp_transfer_history_found_but_filtered_out")
+    if any(not record.status for record in filtered):
+        blockers.append("mp_transfer_history_contains_failed_records")
+    if any(record.mode and record.mode != "link" for record in filtered):
+        warnings.append("mp_transfer_mode_not_all_link")
+
+    hashes = sorted({record.download_hash for record in filtered if record.download_hash})
+    downloaders = sorted({record.downloader for record in filtered if record.downloader})
+    source_roots = sorted({_parent_dir(record.src) for record in filtered if record.src})
+    destination_roots = sorted({_series_root_from_dest(record.dest) for record in filtered if record.dest})
+    episodes = sorted({_episode_number(record.episodes) for record in filtered if _episode_number(record.episodes)})
+    duplicate_episodes = _duplicate_episode_numbers(filtered)
+    if duplicate_episodes:
+        warnings.append("duplicate_episode_records")
+    if episodes and _missing_episode_numbers(episodes):
+        warnings.append("episode_gap_detected")
+    if len(hashes) > 1:
+        warnings.append("multiple_download_hashes")
+    if len(downloaders) > 1:
+        warnings.append("multiple_downloaders")
+    if len(source_roots) > 1:
+        warnings.append("multiple_source_roots")
+    if len(destination_roots) > 1:
+        warnings.append("multiple_destination_roots")
+    if expected_hash_prefix and not any(item.startswith(expected_hash_prefix.lower()) for item in hashes):
+        blockers.append("expected_qb_hash_not_found")
+    if expected_tmdbid and any(record.tmdbid and record.tmdbid != expected_tmdbid for record in filtered):
+        blockers.append("unexpected_tmdbid_in_mp_history")
+    if not include_deletesrc and not include_deletedest:
+        blockers.append("no_mp_delete_scope_selected")
+
+    rows = [_cleanup_transfer_row(record) for record in sorted(filtered, key=lambda record: (_episode_number(record.episodes) or 0, record.id))]
+    report = {
+        "mode": "readonly-mp-cleanup-preview",
+        "title": title,
+        "expected_title": expected_title,
+        "expected_tmdbid": expected_tmdbid,
+        "expected_hash_prefix": expected_hash_prefix,
+        "ok": bool(filtered) and not blockers,
+        "ready_for_manual_cleanup_approval": bool(filtered) and not blockers,
+        "summary": {
+            "records_found": len(records),
+            "records_matched": len(filtered),
+            "episode_count": len(episodes),
+            "episode_min": min(episodes) if episodes else None,
+            "episode_max": max(episodes) if episodes else None,
+            "missing_in_range": _missing_episode_numbers(episodes),
+            "download_hash_count": len(hashes),
+            "downloader_count": len(downloaders),
+            "source_root_count": len(source_roots),
+            "destination_root_count": len(destination_roots),
+        },
+        "mp_delete_plan": {
+            "endpoint": {"method": "DELETE", "path": "/api/v1/history/transfer"},
+            "query": {"deletesrc": include_deletesrc, "deletedest": include_deletedest},
+            "record_ids": [record.id for record in filtered],
+            "per_record_body": "TransferHistory JSON from MP transfer history",
+            "effect": "MP deletes destination media file when deletedest=true, deletes source media file when deletesrc=true, then emits DownloadFileDeleted with the download hash; MP download chain removes the qBittorrent task without files after the source file deletion event.",
+        },
+        "qb_targets": [
+            {
+                "hash_prefix": item[:12],
+                "downloader": _downloader_for_hash(filtered, item),
+                "mp_download_delete_fallback": {
+                    "endpoint": {"method": "DELETE", "path": f"/api/v1/download/{item}"},
+                    "note": "Fallback only if transfer-history deletion does not remove the downloader task; do not call both paths blindly.",
+                },
+            }
+            for item in hashes
+        ],
+        "source_roots": source_roots,
+        "destination_roots": destination_roots,
+        "records": rows,
+        "warnings": warnings,
+        "blockers": blockers,
+        "safety": "readonly preview only; no MoviePilot DELETE request, qBittorrent action, hlink deletion, source deletion, or filesystem deletion is performed",
+    }
+    return report
+
+
+def render_mp_cleanup_preview(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    plan = report.get("mp_delete_plan") if isinstance(report.get("mp_delete_plan"), dict) else {}
+    query = plan.get("query") if isinstance(plan.get("query"), dict) else {}
+    lines = [
+        "# MoviePilot Cleanup Preview",
+        "",
+        f"- Title: `{report.get('title', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Ready for manual cleanup approval: `{bool(report.get('ready_for_manual_cleanup_approval'))}`",
+        f"- Records matched: `{summary.get('records_matched', 0)}` of `{summary.get('records_found', 0)}`",
+        f"- Episode count: `{summary.get('episode_count', 0)}`",
+        f"- Episode range: `{summary.get('episode_min', '')}-{summary.get('episode_max', '')}`",
+        f"- Missing in range: `{summary.get('missing_in_range', [])}`",
+        f"- qB hash count: `{summary.get('download_hash_count', 0)}`",
+        f"- Source roots: `{report.get('source_roots', [])}`",
+        f"- Destination roots: `{report.get('destination_roots', [])}`",
+        f"- Planned MP endpoint: `DELETE /api/v1/history/transfer?deletesrc={str(query.get('deletesrc')).lower()}&deletedest={str(query.get('deletedest')).lower()}`",
+        "- Safety: readonly preview only; no delete request was sent.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    qb_targets = report.get("qb_targets")
+    if isinstance(qb_targets, list) and qb_targets:
+        lines.extend(["", "## qB Targets", ""])
+        lines.extend(
+            f"- `{item.get('hash_prefix', '')}` downloader `{item.get('downloader', '')}`"
+            for item in qb_targets
+            if isinstance(item, dict)
+        )
+    lines.extend(["", "| # | MP ID | Episode | Mode | Hash | Source | Destination |", "| ---: | ---: | --- | --- | --- | --- | --- |"])
+    for index, item in enumerate(report.get("records", []), start=1):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {index} | {id} | {episode} | {mode} | {hash_prefix} | {src} | {dest} |".format(
+                index=index,
+                id=item.get("id") or "",
+                episode=_escape(str(item.get("episodes") or "")),
+                mode=_escape(str(item.get("mode") or "")),
+                hash_prefix=_escape(str(item.get("hash_prefix") or "")),
+                src=_escape(str(item.get("src") or "")),
+                dest=_escape(str(item.get("dest") or "")),
+            )
+        )
+    return "\n".join(lines)
 
 
 def fetch_mp_subscription_evidence(base_url: str, token: str) -> List[MPSubscriptionEvidence]:
@@ -110,6 +331,125 @@ def build_mp_subscription_evidence(
             )
         )
     return evidence
+
+
+def _transfer_record_from_payload(item: object) -> MPTransferHistoryRecord:
+    data = item if isinstance(item, dict) else {}
+    return MPTransferHistoryRecord(
+        id=int(data.get("id") or 0),
+        title=str(data.get("title") or ""),
+        year=str(data.get("year") or ""),
+        media_type=str(data.get("type") or ""),
+        category=str(data.get("category") or ""),
+        seasons=str(data.get("seasons") or ""),
+        episodes=str(data.get("episodes") or ""),
+        src=str(data.get("src") or ""),
+        dest=str(data.get("dest") or ""),
+        mode=str(data.get("mode") or ""),
+        status=bool(data.get("status")),
+        date=str(data.get("date") or ""),
+        downloader=str(data.get("downloader") or ""),
+        download_hash=str(data.get("download_hash") or ""),
+        tmdbid=int(data.get("tmdbid") or 0),
+        imdbid=str(data.get("imdbid") or ""),
+        doubanid=str(data.get("doubanid") or ""),
+    )
+
+
+def _transfer_history_items(payload: object) -> List[object]:
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, dict) and isinstance(data.get("list"), list):
+            return list(data["list"])
+    return _as_list(payload)
+
+
+def _filter_transfer_records(
+    records: List[MPTransferHistoryRecord],
+    expected_title: str = "",
+    expected_tmdbid: int = 0,
+    expected_hash_prefix: str = "",
+) -> List[MPTransferHistoryRecord]:
+    expected_hash_prefix = expected_hash_prefix.lower()
+    filtered: List[MPTransferHistoryRecord] = []
+    for record in records:
+        if expected_title and record.title != expected_title:
+            continue
+        if expected_tmdbid and record.tmdbid and record.tmdbid != expected_tmdbid:
+            continue
+        if expected_hash_prefix and not record.download_hash.lower().startswith(expected_hash_prefix):
+            continue
+        filtered.append(record)
+    return filtered
+
+
+def _cleanup_transfer_row(record: MPTransferHistoryRecord) -> Dict[str, object]:
+    return {
+        "id": record.id,
+        "title": record.title,
+        "year": record.year,
+        "tmdbid": record.tmdbid,
+        "seasons": record.seasons,
+        "episodes": record.episodes,
+        "episode_number": _episode_number(record.episodes),
+        "mode": record.mode,
+        "status": record.status,
+        "downloader": record.downloader,
+        "hash_prefix": record.download_hash[:12],
+        "src": record.src,
+        "dest": record.dest,
+        "date": record.date,
+    }
+
+
+def _episode_number(value: str) -> int:
+    match = re.search(r"(?i)E\s*(\d{1,4})", value or "")
+    return int(match.group(1)) if match else 0
+
+
+def _missing_episode_numbers(episodes: List[int]) -> List[int]:
+    unique = sorted(set(item for item in episodes if item > 0))
+    if not unique:
+        return []
+    return [item for item in range(unique[0], unique[-1] + 1) if item not in unique]
+
+
+def _duplicate_episode_numbers(records: List[MPTransferHistoryRecord]) -> List[int]:
+    seen: Set[int] = set()
+    duplicates: Set[int] = set()
+    for record in records:
+        episode = _episode_number(record.episodes)
+        if not episode:
+            continue
+        if episode in seen:
+            duplicates.add(episode)
+        seen.add(episode)
+    return sorted(duplicates)
+
+
+def _parent_dir(path: str) -> str:
+    path = path.rstrip("/")
+    if "/" not in path:
+        return path
+    return path.rsplit("/", 1)[0]
+
+
+def _series_root_from_dest(path: str) -> str:
+    marker = "/Season "
+    if marker in path:
+        return path.split(marker, 1)[0]
+    return _parent_dir(path)
+
+
+def _downloader_for_hash(records: List[MPTransferHistoryRecord], download_hash: str) -> str:
+    for record in records:
+        if record.download_hash == download_hash:
+            return record.downloader
+    return ""
+
+
+def _escape(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ")
 
 
 def match_mp_subscription(

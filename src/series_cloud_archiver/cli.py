@@ -7,6 +7,7 @@ from typing import List, Optional
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
 from .config import config_from_env, db_path_from_env
 from .identity import render_identity_overrides, resolve_identity_overrides_from_scan_report
+from .moviepilot import mp_cleanup_preview_from_transfer_history, render_mp_cleanup_preview
 from .mv3 import (
     add_mv3_offline_task,
     browse_mv3_cloud_folder,
@@ -83,6 +84,18 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup_parser.add_argument("--env-file", default=None)
     cleanup_parser.add_argument("--db", default=None)
     cleanup_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+
+    mp_cleanup_parser = subcommands.add_parser("mp-cleanup-preview", help="Readonly MoviePilot cleanup preview from transfer history")
+    mp_cleanup_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    mp_cleanup_parser.add_argument("--title", required=True, help="MoviePilot transfer history title to query")
+    mp_cleanup_parser.add_argument("--expected-title", default="", help="Safety filter: exact MP title expected")
+    mp_cleanup_parser.add_argument("--expected-tmdbid", type=int, default=0, help="Safety filter: expected TMDB ID when present in MP")
+    mp_cleanup_parser.add_argument("--expected-hash-prefix", default="", help="Safety filter: expected qB hash prefix")
+    mp_cleanup_parser.add_argument("--keep-source", action="store_true", help="Preview without deletesrc=true")
+    mp_cleanup_parser.add_argument("--keep-dest", action="store_true", help="Preview without deletedest=true")
+    mp_cleanup_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    mp_cleanup_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    mp_cleanup_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     cloud_parser = subcommands.add_parser("cloud-check", help="Readonly STRM coverage check for cloud candidates")
     cloud_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -361,6 +374,28 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"- Blockers: `{plan['blockers']}`")
                 print("")
                 print("No deletion was performed.")
+        return 0
+
+    if args.command == "mp-cleanup-preview":
+        config = config_from_env(args.env_file, [])
+        if not config.mp_base_url or not config.mp_token:
+            parser.error("mp-cleanup-preview requires MP_BASE_URL and MP_API_TOKEN")
+        report = mp_cleanup_preview_from_transfer_history(
+            config.mp_base_url,
+            config.mp_token,
+            title=args.title,
+            expected_title=args.expected_title,
+            expected_tmdbid=args.expected_tmdbid,
+            expected_hash_prefix=args.expected_hash_prefix,
+            include_deletesrc=not args.keep_source,
+            include_deletedest=not args.keep_dest,
+            timeout=args.timeout,
+        )
+        rendered = render_mp_cleanup_preview(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
         return 0
 
     if args.command == "cloud-check":

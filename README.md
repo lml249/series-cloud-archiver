@@ -255,6 +255,32 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-offline-status-one \
 
 只有当报告里的 `Ready for STRM` 为 `true` 时，才进入单条 STRM 生成。否则继续等待，不要生成空 STRM。
 
+## MoviePilot 内部清理预览
+
+当某部剧已经确认云端 STRM、Emby、本地源文件、hlink 和 qB 做种门禁都通过后，可以先用 MoviePilot 的整理历史生成只读清理预览：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mp-cleanup-preview \
+  --env-file .env \
+  --title 楚汉传奇 \
+  --expected-title 楚汉传奇 \
+  --expected-tmdbid 41146 \
+  --expected-hash-prefix cb0e53779a3a \
+  --format markdown \
+  --output reports/mp-cleanup-preview-chuhan.md
+```
+
+`mp-cleanup-preview` 只调用 MoviePilot 的 `GET /api/v1/history/transfer`，不会发送删除请求。报告会列出：
+
+- 命中的 MP 整理历史 ID
+- 覆盖的集数范围和缺失集
+- 对应的 qB hash 前缀和下载器
+- 源文件根目录
+- hlink 目标根目录
+- 如果人工批准，后续会调用的 MP 删除入口：`DELETE /api/v1/history/transfer?deletesrc=true&deletedest=true`
+
+这条 MP 删除入口在 MoviePilot 内部会删除目标媒体文件、删除源文件，并在源文件删除后发出下载文件删除事件；MoviePilot 的下载链会据此从 qBittorrent 移除对应任务。当前命令只做预览，不会删除 qB 任务、种子文件、本地源文件或 hlink。
+
 ## MV3 原生资源搜索
 
 MV3 的原生链路不是 qB magnet 离线，而是先搜索网盘资源，再解析分享、转存到 `/未整理`，之后由整理/STRM 流程接手。第一步只做搜索：

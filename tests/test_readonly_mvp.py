@@ -6,7 +6,14 @@ from unittest.mock import patch
 from series_cloud_archiver.config import ScanConfig
 from series_cloud_archiver.episode import episode_signal
 from series_cloud_archiver.models import FileSystemSeries, EpisodeSignal, QBTorrentEvidence
-from series_cloud_archiver.moviepilot import MPSubscriptionRecord, build_mp_subscription_evidence, match_mp_subscription
+from series_cloud_archiver.moviepilot import (
+    MPSubscriptionRecord,
+    MPTransferHistoryRecord,
+    build_mp_cleanup_preview,
+    build_mp_subscription_evidence,
+    match_mp_subscription,
+    render_mp_cleanup_preview,
+)
 from series_cloud_archiver.qbittorrent import QBClient, match_torrent
 from series_cloud_archiver.scanner import scan
 
@@ -270,6 +277,80 @@ class MoviePilotEvidenceTest(unittest.TestCase):
         evidence = build_mp_subscription_evidence(current=[history], history=[history])
 
         self.assertEqual(evidence, [])
+
+    def test_mp_cleanup_preview_groups_transfer_history_safely(self) -> None:
+        records = [
+            MPTransferHistoryRecord(
+                id=1,
+                title="楚汉传奇",
+                year="2012",
+                media_type="电视剧",
+                seasons="S01",
+                episodes="E01",
+                src="/example/source/King.War/King.War.S01E01.mkv",
+                dest="/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E01.mkv",
+                mode="link",
+                status=True,
+                downloader="20099",
+                download_hash="feedface00001234567890",
+                tmdbid=41146,
+            ),
+            MPTransferHistoryRecord(
+                id=2,
+                title="楚汉传奇",
+                year="2012",
+                media_type="电视剧",
+                seasons="S01",
+                episodes="E02",
+                src="/example/source/King.War/King.War.S01E02.mkv",
+                dest="/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E02.mkv",
+                mode="link",
+                status=True,
+                downloader="20099",
+                download_hash="feedface00001234567890",
+                tmdbid=41146,
+            ),
+        ]
+
+        report = build_mp_cleanup_preview(
+            "楚汉传奇",
+            records,
+            expected_title="楚汉传奇",
+            expected_tmdbid=41146,
+            expected_hash_prefix="feedface0000",
+        )
+        rendered = render_mp_cleanup_preview(report, "markdown")
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["ready_for_manual_cleanup_approval"])
+        self.assertEqual(report["summary"]["records_matched"], 2)
+        self.assertEqual(report["summary"]["episode_count"], 2)
+        self.assertEqual(report["summary"]["missing_in_range"], [])
+        self.assertEqual(report["source_roots"], ["/example/source/King.War"])
+        self.assertEqual(report["destination_roots"], ["/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}"])
+        self.assertEqual(report["qb_targets"][0]["hash_prefix"], "feedface0000")
+        self.assertIn("DELETE /api/v1/history/transfer?deletesrc=true&deletedest=true", rendered)
+
+    def test_mp_cleanup_preview_blocks_when_expected_hash_is_absent(self) -> None:
+        report = build_mp_cleanup_preview(
+            "楚汉传奇",
+            [
+                MPTransferHistoryRecord(
+                    id=1,
+                    title="楚汉传奇",
+                    episodes="E01",
+                    download_hash="feedface1111",
+                    status=True,
+                    tmdbid=41146,
+                )
+            ],
+            expected_title="楚汉传奇",
+            expected_tmdbid=41146,
+            expected_hash_prefix="feedface0000",
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("no_matching_mp_transfer_history", report["blockers"])
 
     def test_history_match_respects_explicit_season(self) -> None:
         evidence = build_mp_subscription_evidence(
