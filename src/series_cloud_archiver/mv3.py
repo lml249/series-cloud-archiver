@@ -23,7 +23,7 @@ DEFAULT_INSTANCE_PATHS = [
 ]
 SENSITIVE_METHOD_HINTS = ("delete", "remove", "transfer", "save", "move", "rename", "strm", "download")
 SENSITIVE_KEY_RE = re.compile(
-    r"(token|cookie|password|passwd|secret|authorization|api[_-]?key|access[_-]?key|refresh|pickcode|sign|credential|user[_-]?id|user[_-]?name|phone|email|vip)",
+    r"(token|cookie|password|passwd|secret|authorization|api[_-]?key|access[_-]?key|refresh|pick[_-]?code|sign|credential|user[_-]?id|user[_-]?name|phone|email|vip)",
     re.IGNORECASE,
 )
 SENSITIVE_URL_KEY_RE = re.compile(r"(direct|download|redirect|play|stream|thumb|cover|url|uri|link)", re.IGNORECASE)
@@ -215,6 +215,78 @@ def ensure_mv3_115_path(
         "steps": steps,
         "safety": "creates missing folders only for the approved target path; no files, torrents, STRM records, or existing folders are deleted or moved",
     }
+
+
+def check_mv3_offline_task(
+    base_url: str,
+    token: str,
+    info_hash: str,
+    target_folder_id: str = "",
+    target_path: str = "",
+    storage: str = "",
+    timeout: int = 30,
+) -> Dict[str, object]:
+    client = MV3Client(base_url, token, timeout=timeout)
+    query = urllib.parse.urlencode({"storage": storage}) if storage else ""
+    tasks_path = "/api/v1/files/115/offline/tasks" + (f"?{query}" if query else "")
+    task_status, task_headers, task_body = client.get(tasks_path)
+    task_payload = _unwrap_api_payload(_parse_json(task_body.decode("utf-8", "replace")))
+    task = _find_offline_task(task_payload, info_hash)
+    folder = _read_115_folder(client, target_folder_id, storage) if target_folder_id else {}
+    path_info = _read_115_info(client, target_path, storage) if target_path else {}
+    folder_count = int(folder.get("count") or 0) if isinstance(folder, dict) else 0
+    task_done = bool(task) and int(task.get("percentDone") or 0) >= 100 and str(task.get("status_text") or "") == "下载成功"
+    if bool(task) and int(task.get("status") or 0) == 2:
+        task_done = True
+    ready_for_strm = task_done and folder_count > 0
+    return {
+        "mode": "readonly-mv3-offline-status-one",
+        "ok": 200 <= task_status < 300 and bool(task),
+        "ready_for_strm": ready_for_strm,
+        "info_hash": info_hash,
+        "target_folder_id": target_folder_id,
+        "target_path": target_path,
+        "storage": storage,
+        "task_found": bool(task),
+        "task": _offline_task_summary(task) if task else {},
+        "target_folder": {
+            "found": bool(folder),
+            "file_count": folder_count,
+            "sample_names": _folder_sample_names(folder),
+        },
+        "target_path_info": {
+            "found": bool(path_info),
+            "file_id": str(path_info.get("file_id") or "") if isinstance(path_info, dict) else "",
+            "file_name": str(path_info.get("file_name") or "") if isinstance(path_info, dict) else "",
+        },
+        "http": {
+            "tasks_status": task_status,
+            "tasks_content_type": _header(task_headers, "content-type"),
+        },
+        "safety": "readonly status check only; no offline task, STRM generation, file operation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
+    }
+
+
+def render_mv3_offline_status_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    task = report.get("task") if isinstance(report.get("task"), dict) else {}
+    folder = report.get("target_folder") if isinstance(report.get("target_folder"), dict) else {}
+    lines = [
+        "# MV3 Offline Status",
+        "",
+        f"- Ready for STRM: `{bool(report.get('ready_for_strm'))}`",
+        f"- Task found: `{bool(report.get('task_found'))}`",
+        f"- Name: `{task.get('name', '')}`",
+        f"- Status: `{task.get('status_text', '')}`",
+        f"- Percent: `{task.get('percent_done', '')}`",
+        f"- Target path: `{report.get('target_path', '')}`",
+        f"- Target folder ID: `{report.get('target_folder_id', '')}`",
+        f"- Target file count: `{folder.get('file_count', 0)}`",
+        "",
+        "No write operation was performed.",
+    ]
+    return "\n".join(lines)
 
 
 def render_mv3_ensure_path_report(report: Dict[str, object], output_format: str) -> str:
@@ -645,6 +717,63 @@ def _extract_folder_id(value: object) -> str:
     if isinstance(value, list) and value:
         return _extract_folder_id(value[0])
     return ""
+
+
+def _read_115_folder(client: MV3Client, folder_id: str, storage: str) -> Dict[str, object]:
+    query = urllib.parse.urlencode({"cid": folder_id, "limit": 20, "storage": storage})
+    status, _headers, body = client.get(f"/api/v1/files/115/list?{query}")
+    if not (200 <= status < 300):
+        return {}
+    payload = _unwrap_api_payload(_parse_json(body.decode("utf-8", "replace")))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _read_115_info(client: MV3Client, path: str, storage: str) -> Dict[str, object]:
+    query = urllib.parse.urlencode({"path": path, "storage": storage})
+    status, _headers, body = client.get(f"/api/v1/files/115/info?{query}")
+    if not (200 <= status < 300):
+        return {}
+    payload = _unwrap_api_payload(_parse_json(body.decode("utf-8", "replace")))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _find_offline_task(payload: object, info_hash: str) -> Dict[str, object]:
+    rows = []
+    if isinstance(payload, dict) and isinstance(payload.get("tasks"), list):
+        rows = payload["tasks"]
+    elif isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        rows = payload["data"]
+    elif isinstance(payload, list):
+        rows = payload
+    wanted = info_hash.lower()
+    for row in rows:
+        if isinstance(row, dict) and str(row.get("info_hash") or "").lower() == wanted:
+            return row
+    return {}
+
+
+def _offline_task_summary(task: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "info_hash": str(task.get("info_hash") or ""),
+        "name": str(task.get("name") or ""),
+        "percent_done": int(task.get("percentDone") or 0),
+        "status": int(task.get("status") or 0),
+        "status_text": str(task.get("status_text") or ""),
+        "waiting_text": str(task.get("waiting_text") or ""),
+        "size_bytes": int(task.get("size") or 0),
+        "file_id": str(task.get("file_id") or ""),
+        "target_folder_id": str(task.get("wp_path_id") or ""),
+        "retry_count": int(task.get("retry_count") or 0),
+    }
+
+
+def _folder_sample_names(folder: Dict[str, object]) -> List[str]:
+    rows = folder.get("data") if isinstance(folder.get("data"), list) else []
+    names = []
+    for row in rows[:10]:
+        if isinstance(row, dict):
+            names.append(str(row.get("n") or row.get("name") or ""))
+    return names
 
 
 def _is_sensitive_key(key: str) -> bool:

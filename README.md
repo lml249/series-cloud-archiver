@@ -240,6 +240,21 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-ensure-115-path \
 
 `mv3-ensure-115-path` 会逐层读取 115 目录；已有目录复用，缺失目录才调用 `/api/v1/files/115/folder` 创建。它不会删除、移动或重命名任何云盘文件。
 
+提交离线任务后，用只读状态命令等待云端完成：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-offline-status-one \
+  --env-file .env \
+  --info-hash cb0e53779a3abdefac80fb5d9737427ca64dfee6 \
+  --target-folder-id 3453239095134780666 \
+  --target-path "/series/楚汉传奇 {tmdbid=41146}/Season 01" \
+  --storage 115-default \
+  --format markdown \
+  --output reports/mv3-offline-status-chuhan.md
+```
+
+只有当报告里的 `Ready for STRM` 为 `true` 时，才进入单条 STRM 生成。否则继续等待，不要生成空 STRM。
+
 ## MV3 只读探针
 
 正式接入 MV3 转存前，先确认 MV3 的地址、鉴权方式和可用接口：

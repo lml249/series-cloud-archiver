@@ -8,6 +8,7 @@ from series_cloud_archiver.cli import main
 from series_cloud_archiver.mv3 import (
     MV3Client,
     add_mv3_offline_task,
+    check_mv3_offline_task,
     ensure_mv3_115_path,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
@@ -16,6 +17,7 @@ from series_cloud_archiver.mv3 import (
     render_mv3_ensure_path_report,
     render_mv3_instances_report,
     render_mv3_offline_add_report,
+    render_mv3_offline_status_report,
     render_mv3_probe_report,
 )
 
@@ -183,6 +185,91 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual([step["action"] for step in report["steps"]], ["reused", "created", "created"])
         self.assertEqual(sum(1 for method, _url, _body in calls if method == "POST"), 2)
         self.assertNotIn("token", rendered)
+
+    def test_offline_status_reports_not_ready_until_task_done_and_folder_has_files(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            if "offline/tasks" in request.full_url:
+                return FakeResponse({"tasks": [{"info_hash": "abc", "name": "Demo", "percentDone": 0, "status": 1, "status_text": "等待中"}]})
+            if "/info?" in request.full_url:
+                return FakeResponse({"file_id": "300", "file_name": "Season 01"})
+            return FakeResponse({"count": 0, "data": []})
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = check_mv3_offline_task(
+                "http://mv3.example",
+                "token",
+                "abc",
+                target_folder_id="300",
+                target_path="/series/Demo/Season 01",
+                storage="115-default",
+            )
+
+        rendered = render_mv3_offline_status_report(report, "json")
+        self.assertTrue(report["task_found"])
+        self.assertFalse(report["ready_for_strm"])
+        self.assertEqual(report["task"]["status_text"], "等待中")
+        self.assertNotIn("token", rendered)
+
+    def test_offline_status_reports_ready_when_done_and_folder_has_files(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            if "offline/tasks" in request.full_url:
+                return FakeResponse({"tasks": [{"info_hash": "abc", "name": "Demo", "percentDone": 100, "status": 2, "status_text": "下载成功"}]})
+            if "/info?" in request.full_url:
+                return FakeResponse({"file_id": "300", "file_name": "Season 01"})
+            return FakeResponse({"count": 1, "data": [{"n": "Demo.E01.mkv"}]})
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = check_mv3_offline_task(
+                "http://mv3.example",
+                "token",
+                "abc",
+                target_folder_id="300",
+                target_path="/series/Demo/Season 01",
+                storage="115-default",
+            )
+
+        markdown = render_mv3_offline_status_report(report, "markdown")
+        self.assertTrue(report["ready_for_strm"])
+        self.assertEqual(report["target_folder"]["file_count"], 1)
+        self.assertIn("Ready for STRM", markdown)
 
     def test_reports_missing_configuration_without_network(self) -> None:
         report = probe_mv3("", "")
@@ -517,6 +604,62 @@ class MV3ProbeTest(unittest.TestCase):
                         "/series/Demo",
                     ]
                 )
+
+    def test_cli_writes_offline_status_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "status.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            class FakeResponse:
+                status = 200
+
+                def __init__(self, payload):
+                    self.payload = payload
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return json.dumps(self.payload).encode("utf-8")
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            def fake_urlopen(request, timeout):
+                if "offline/tasks" in request.full_url:
+                    return FakeResponse({"tasks": [{"info_hash": "abc", "name": "Demo", "percentDone": 0, "status_text": "等待中"}]})
+                if "/info?" in request.full_url:
+                    return FakeResponse({"file_id": "300", "file_name": "Season 01"})
+                return FakeResponse({"count": 0, "data": []})
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                code = main(
+                    [
+                        "mv3-offline-status-one",
+                        "--env-file",
+                        str(env_file),
+                        "--info-hash",
+                        "abc",
+                        "--target-folder-id",
+                        "300",
+                        "--target-path",
+                        "/series/Demo/Season 01",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertFalse(payload["ready_for_strm"])
 
     def test_cli_executes_one_offline_add_from_manifest_without_leaking_magnet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

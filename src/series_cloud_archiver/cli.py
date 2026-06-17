@@ -10,6 +10,7 @@ from .identity import render_identity_overrides, resolve_identity_overrides_from
 from .mv3 import (
     add_mv3_offline_task,
     ensure_mv3_115_path,
+    check_mv3_offline_task,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
     probe_mv3,
@@ -17,6 +18,7 @@ from .mv3 import (
     render_mv3_ensure_path_report,
     render_mv3_instances_report,
     render_mv3_offline_add_report,
+    render_mv3_offline_status_report,
     render_mv3_probe_report,
 )
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
@@ -134,6 +136,16 @@ def build_parser() -> argparse.ArgumentParser:
     ensure_path_parser.add_argument("--approve-create-path", action="store_true", help="Required: actually create missing 115 folders")
     ensure_path_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ensure_path_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    offline_status_parser = subcommands.add_parser("mv3-offline-status-one", help="Readonly status check for one MV3 115 offline task")
+    offline_status_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    offline_status_parser.add_argument("--info-hash", required=True, help="qB/MV3 offline task info_hash")
+    offline_status_parser.add_argument("--target-folder-id", default="", help="Optional 115 target folder id")
+    offline_status_parser.add_argument("--target-path", default="", help="Optional 115 target path")
+    offline_status_parser.add_argument("--storage", default="", help="Override MV3 cloud drive slug; defaults to 115-default when omitted")
+    offline_status_parser.add_argument("--timeout", type=int, default=30, help="Per-request timeout in seconds")
+    offline_status_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    offline_status_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mv3_parser = subcommands.add_parser("mv3-check", help="Readonly MV3 connectivity and capability probe")
     mv3_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -416,6 +428,27 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_ensure_path_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mv3-offline-status-one":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-offline-status-one requires MV3_BASE_URL and MV3_API_TOKEN")
+        storage = args.storage or "115-default"
+        report = check_mv3_offline_task(
+            config.mv3_base_url,
+            config.mv3_token,
+            args.info_hash,
+            target_folder_id=args.target_folder_id,
+            target_path=args.target_path,
+            storage=storage,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_offline_status_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:
