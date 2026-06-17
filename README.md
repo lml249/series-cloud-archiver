@@ -269,6 +269,20 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-resource-search \
 
 `mv3-resource-search` 只调用 `/api/v1/resource-search/search`，不会解析分享、转存资源、创建离线任务、生成 STRM 或操作 qB。
 
+第二步可以只读预览某个搜索结果里的分享内容：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-share-preview \
+  --env-file .env \
+  --keyword 楚汉传奇 \
+  --selection-index 2 \
+  --expected-title-contains 楚汉传奇 \
+  --format markdown \
+  --output reports/mv3-share-preview-chuhan.md
+```
+
+`mv3-share-preview` 会重新搜索、选择第 N 个结果，然后调用 `/api/v1/share-transfer/parse` 和 `/api/v1/share-transfer/browse` 看分享里有哪些文件。它不会调用 `/api/v1/share-transfer/receive`，因此不会把资源转存到 115，也不会整理、生成 STRM 或操作 qB。
+
 ## MV3 只读探针
 
 正式接入 MV3 转存前，先确认 MV3 的地址、鉴权方式和可用接口：

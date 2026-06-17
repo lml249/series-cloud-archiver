@@ -21,7 +21,9 @@ from .mv3 import (
     render_mv3_offline_status_report,
     render_mv3_probe_report,
     render_mv3_resource_search_report,
+    render_mv3_share_preview_report,
     search_mv3_resources,
+    preview_mv3_share,
 )
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
 from .qbittorrent import fetch_qb_torrents
@@ -156,6 +158,16 @@ def build_parser() -> argparse.ArgumentParser:
     resource_search_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     resource_search_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     resource_search_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    share_preview_parser = subcommands.add_parser("mv3-share-preview", help="Preview one MV3 resource share without receiving it")
+    share_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    share_preview_parser.add_argument("--keyword", required=True, help="Search keyword")
+    share_preview_parser.add_argument("--selection-index", type=int, default=1, help="1-based search result to parse/browse")
+    share_preview_parser.add_argument("--expected-title-contains", default="", help="Safety check: selected title must contain this text")
+    share_preview_parser.add_argument("--channel", action="append", default=[], help="Optional channel filter; can be repeated")
+    share_preview_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    share_preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    share_preview_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mv3_parser = subcommands.add_parser("mv3-check", help="Readonly MV3 connectivity and capability probe")
     mv3_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -477,6 +489,26 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_resource_search_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mv3-share-preview":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-share-preview requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = preview_mv3_share(
+            config.mv3_base_url,
+            config.mv3_token,
+            args.keyword,
+            selection_index=args.selection_index,
+            channels=args.channel,
+            expected_title_contains=args.expected_title_contains,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_share_preview_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

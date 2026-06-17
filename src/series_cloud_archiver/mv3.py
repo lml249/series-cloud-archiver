@@ -305,6 +305,144 @@ def search_mv3_resources(
     }
 
 
+def preview_mv3_share(
+    base_url: str,
+    token: str,
+    keyword: str,
+    selection_index: int = 1,
+    channels: Optional[List[str]] = None,
+    expected_title_contains: str = "",
+    timeout: int = 60,
+) -> Dict[str, object]:
+    search_body: Dict[str, object] = {"keyword": keyword}
+    if channels:
+        search_body["channels"] = channels
+    client = MV3Client(base_url, token, timeout=timeout)
+    search_status, search_headers, search_response_body = client.post_json("/api/v1/resource-search/search", search_body)
+    search_text = search_response_body.decode("utf-8", "replace")
+    search_parsed = _parse_json(search_text)
+    search_payload = _unwrap_api_payload(search_parsed)
+    search_api_success = _api_success(search_parsed)
+    items = _resource_search_items(search_payload)
+    warnings: List[str] = []
+    selected = items[selection_index - 1] if 0 < selection_index <= len(items) else {}
+    if not selected:
+        warnings.append("selection_index_not_found")
+
+    selected_summary = _resource_search_summary(selected, selection_index) if selected else {}
+    selected_title = str(selected_summary.get("title") or "")
+    if expected_title_contains and expected_title_contains not in selected_title:
+        warnings.append("expected_title_contains_mismatch")
+        selected = {}
+
+    parse_report: Dict[str, object] = {"skipped": True}
+    browse_report: Dict[str, object] = {"skipped": True}
+    if selected:
+        share_url = _first_raw_present(selected, ["share_url", "share_link", "url", "link"])
+        share_code = _first_raw_present(selected, ["share_code", "shareId", "share_id"])
+        receive_code = _first_raw_present(selected, ["receive_code", "receiveCode", "password", "pwd"])
+        if not share_url:
+            warnings.append("selected_resource_has_no_share_url")
+        else:
+            parse_body: Dict[str, object] = {"share_url": share_url}
+            if receive_code:
+                parse_body["receive_code"] = receive_code
+            parse_status, parse_headers, parse_response_body = client.post_json("/api/v1/share-transfer/parse", parse_body)
+            parse_parsed = _parse_json(parse_response_body.decode("utf-8", "replace"))
+            parse_payload = _unwrap_api_payload(parse_parsed)
+            parse_api_success = _api_success(parse_parsed)
+            parse_report = _mv3_api_call_summary(
+                "POST",
+                "/api/v1/share-transfer/parse",
+                parse_status,
+                parse_headers,
+                parse_body,
+                parse_payload,
+                parse_api_success,
+                parse_response_body,
+            )
+            share_code = _find_first_raw_key(parse_payload, ["share_code", "shareCode", "shareId", "share_id"]) or share_code
+            receive_code = _find_first_raw_key(parse_payload, ["receive_code", "receiveCode", "password", "pwd"]) or receive_code
+
+        if not share_code:
+            warnings.append("share_code_not_available_for_browse")
+        else:
+            browse_body: Dict[str, object] = {"share_code": share_code}
+            if receive_code:
+                browse_body["receive_code"] = receive_code
+            browse_status, browse_headers, browse_response_body = client.post_json("/api/v1/share-transfer/browse", browse_body)
+            browse_parsed = _parse_json(browse_response_body.decode("utf-8", "replace"))
+            browse_payload = _unwrap_api_payload(browse_parsed)
+            browse_api_success = _api_success(browse_parsed)
+            browse_report = _mv3_share_browse_summary(
+                browse_status,
+                browse_headers,
+                browse_body,
+                browse_payload,
+                browse_api_success,
+                browse_response_body,
+            )
+
+    parse_ok = bool(parse_report.get("ok")) if not parse_report.get("skipped") else False
+    browse_ok = bool(browse_report.get("ok")) if not browse_report.get("skipped") else False
+    return {
+        "mode": "readonly-mv3-share-preview",
+        "ok": 200 <= search_status < 300 and search_api_success and bool(selected_summary) and (parse_ok or browse_ok),
+        "keyword": keyword,
+        "channels": channels or [],
+        "selection_index": selection_index,
+        "selected": selected_summary,
+        "search": {
+            "endpoint": {"method": "POST", "path": "/api/v1/resource-search/search"},
+            "ok": 200 <= search_status < 300 and search_api_success,
+            "http_ok": 200 <= search_status < 300,
+            "api_success": search_api_success,
+            "status": search_status,
+            "response_content_type": _header(search_headers, "content-type"),
+            "result_count": len(items),
+        },
+        "parse": parse_report,
+        "browse": browse_report,
+        "warnings": warnings,
+        "safety": "search + share parse/browse preview only; no share receive/transfer, offline task, STRM generation, file operation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
+    }
+
+
+def render_mv3_share_preview_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    selected = report.get("selected") if isinstance(report.get("selected"), dict) else {}
+    search = report.get("search") if isinstance(report.get("search"), dict) else {}
+    parse = report.get("parse") if isinstance(report.get("parse"), dict) else {}
+    browse = report.get("browse") if isinstance(report.get("browse"), dict) else {}
+    lines = [
+        "# MV3 Share Preview",
+        "",
+        f"- Keyword: `{report.get('keyword', '')}`",
+        f"- Selected: `{selected.get('title', '')}`",
+        f"- Search results: `{search.get('result_count', 0)}`",
+        f"- Parse OK: `{bool(parse.get('ok'))}`",
+        f"- Browse OK: `{bool(browse.get('ok'))}`",
+        f"- Browse items: `{browse.get('item_count', 0)}`",
+        "- Safety: preview only; no receive/transfer or STRM generation was performed.",
+        "",
+        "| # | Name | Kind | Size |",
+        "| ---: | --- | --- | ---: |",
+    ]
+    for item in browse.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {index} | {name} | {kind} | {size} |".format(
+                index=item.get("index") or "",
+                name=_escape(str(item.get("name") or "")),
+                kind=_escape(str(item.get("kind") or "")),
+                size=_escape(str(item.get("size") or "")),
+            )
+        )
+    return "\n".join(lines)
+
+
 def render_mv3_resource_search_report(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -874,11 +1012,142 @@ def _resource_search_summary(item: Dict[str, object], index: int) -> Dict[str, o
     }
 
 
+def _mv3_api_call_summary(
+    method: str,
+    path: str,
+    status: int,
+    headers: Dict[str, str],
+    request_body: Dict[str, object],
+    payload: object,
+    api_success: bool,
+    response_body: bytes,
+) -> Dict[str, object]:
+    return {
+        "endpoint": {"method": method, "path": path},
+        "ok": 200 <= status < 300 and api_success,
+        "http_ok": 200 <= status < 300,
+        "api_success": api_success,
+        "status": status,
+        "response_content_type": _header(headers, "content-type"),
+        "response_body_bytes": len(response_body),
+        "request": _sanitize_json(request_body),
+        "response_shape": _json_shape(payload),
+        "response_count": _json_count(payload),
+        "sample": _sanitize_json(_sample_json(payload, max_items=10, max_keys=30)) if isinstance(payload, (dict, list)) else _sanitize_json(payload),
+    }
+
+
+def _mv3_share_browse_summary(
+    status: int,
+    headers: Dict[str, str],
+    request_body: Dict[str, object],
+    payload: object,
+    api_success: bool,
+    response_body: bytes,
+) -> Dict[str, object]:
+    report = _mv3_api_call_summary(
+        "POST",
+        "/api/v1/share-transfer/browse",
+        status,
+        headers,
+        request_body,
+        payload,
+        api_success,
+        response_body,
+    )
+    items = _share_browse_items(payload)
+    report["item_count"] = len(items)
+    report["folder_count"] = sum(1 for item in items if _share_item_kind(item) == "folder")
+    report["file_count"] = sum(1 for item in items if _share_item_kind(item) == "file")
+    report["items"] = [_share_browse_item_summary(item, index) for index, item in enumerate(items[:50], start=1)]
+    return report
+
+
+def _share_browse_items(payload: object) -> List[Dict[str, object]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("items", "files", "list", "data", "children"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    for key in ("data", "result", "payload"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            nested = _share_browse_items(value)
+            if nested:
+                return nested
+    for value in payload.values():
+        if isinstance(value, list):
+            rows = [item for item in value if isinstance(item, dict)]
+            if rows:
+                return rows
+    return []
+
+
+def _share_browse_item_summary(item: Dict[str, object], index: int) -> Dict[str, object]:
+    return {
+        "index": index,
+        "name": _first_present(item, ["name", "file_name", "filename", "n", "title"]),
+        "kind": _share_item_kind(item),
+        "size": _first_present(item, ["size", "size_text", "file_size", "file_size_text", "s"]),
+        "raw": _sanitize_json(_sample_json(item, max_keys=30)),
+    }
+
+
+def _share_item_kind(item: Dict[str, object]) -> str:
+    raw_type = str(_first_present(item, ["type", "file_type", "kind", "category"])).lower()
+    if raw_type in ("folder", "dir", "directory"):
+        return "folder"
+    if raw_type in ("file", "video", "subtitle"):
+        return "file"
+    for key in ("is_dir", "is_folder", "folder", "isdir"):
+        value = item.get(key)
+        if isinstance(value, bool):
+            return "folder" if value else "file"
+        if str(value).lower() in ("1", "true", "yes"):
+            return "folder"
+    if str(item.get("fid") or item.get("file_id") or ""):
+        return "file"
+    if str(item.get("cid") or item.get("folder_id") or ""):
+        return "folder"
+    return raw_type or "unknown"
+
+
 def _first_present(item: Dict[str, object], keys: List[str]) -> str:
     for key in keys:
         value = item.get(key)
         if value not in (None, ""):
             return str(_sanitize_json(value, key))
+    return ""
+
+
+def _first_raw_present(item: Dict[str, object], keys: List[str]) -> str:
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _find_first_raw_key(value: object, keys: List[str], depth: int = 0) -> str:
+    if depth > 5:
+        return ""
+    if isinstance(value, dict):
+        for key in keys:
+            item = value.get(key)
+            if item not in (None, ""):
+                return str(item)
+        for item in value.values():
+            found = _find_first_raw_key(item, keys, depth + 1)
+            if found:
+                return found
+    if isinstance(value, list):
+        for item in value[:20]:
+            found = _find_first_raw_key(item, keys, depth + 1)
+            if found:
+                return found
     return ""
 
 
