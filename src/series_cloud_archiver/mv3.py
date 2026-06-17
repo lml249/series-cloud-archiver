@@ -23,7 +23,7 @@ DEFAULT_INSTANCE_PATHS = [
 ]
 SENSITIVE_METHOD_HINTS = ("delete", "remove", "transfer", "save", "move", "rename", "strm", "download")
 SENSITIVE_KEY_RE = re.compile(
-    r"(token|cookie|password|passwd|secret|authorization|api[_-]?key|access[_-]?key|refresh|pick[_-]?code|sign|credential|user[_-]?id|user[_-]?name|phone|email|vip)",
+    r"(token|cookie|password|passwd|secret|authorization|api[_-]?key|access[_-]?key|refresh|pick[_-]?code|receive[_-]?code|share[_-]?code|sign|credential|user[_-]?id|user[_-]?name|phone|email|vip)",
     re.IGNORECASE,
 )
 SENSITIVE_URL_KEY_RE = re.compile(r"(direct|download|redirect|play|stream|thumb|cover|url|uri|link)", re.IGNORECASE)
@@ -265,6 +265,71 @@ def check_mv3_offline_task(
         },
         "safety": "readonly status check only; no offline task, STRM generation, file operation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
     }
+
+
+def search_mv3_resources(
+    base_url: str,
+    token: str,
+    keyword: str,
+    channels: Optional[List[str]] = None,
+    timeout: int = 60,
+) -> Dict[str, object]:
+    body: Dict[str, object] = {"keyword": keyword}
+    if channels:
+        body["channels"] = channels
+    client = MV3Client(base_url, token, timeout=timeout)
+    status, headers, response_body = client.post_json("/api/v1/resource-search/search", body)
+    text = response_body.decode("utf-8", "replace")
+    parsed = _parse_json(text)
+    payload = _unwrap_api_payload(parsed)
+    api_success = _api_success(parsed)
+    items = _resource_search_items(payload)
+    return {
+        "mode": "readonly-mv3-resource-search",
+        "endpoint": {"method": "POST", "path": "/api/v1/resource-search/search"},
+        "ok": 200 <= status < 300 and api_success,
+        "http_ok": 200 <= status < 300,
+        "api_success": api_success,
+        "status": status,
+        "response_content_type": _header(headers, "content-type"),
+        "keyword": keyword,
+        "channels": channels or [],
+        "result_count": len(items),
+        "items": [_resource_search_summary(item, index) for index, item in enumerate(items, start=1)],
+        "response_shape": _json_shape(payload),
+        "warnings": [] if items else ["no_resource_search_items_found"],
+        "safety": "resource search only; no share parsing, receive/transfer, offline task, STRM generation, file operation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
+    }
+
+
+def render_mv3_resource_search_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# MV3 Resource Search",
+        "",
+        f"- Keyword: `{report.get('keyword', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Result count: `{report.get('result_count', 0)}`",
+        "- Safety: search only; no transfer or STRM generation was performed.",
+        "",
+        "| # | Title | Channel | Size | Type | Share code |",
+        "| ---: | --- | --- | ---: | --- | --- |",
+    ]
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {index} | {title} | {channel} | {size} | {media_type} | {share_code} |".format(
+                index=item.get("index") or "",
+                title=_escape(str(item.get("title") or "")),
+                channel=_escape(str(item.get("channel") or "")),
+                size=_escape(str(item.get("size") or "")),
+                media_type=_escape(str(item.get("media_type") or "")),
+                share_code=_escape(str(item.get("share_code") or "")),
+            )
+        )
+    return "\n".join(lines)
 
 
 def render_mv3_offline_status_report(report: Dict[str, object], output_format: str) -> str:
@@ -774,6 +839,44 @@ def _folder_sample_names(folder: Dict[str, object]) -> List[str]:
         if isinstance(row, dict):
             names.append(str(row.get("n") or row.get("name") or ""))
     return names
+
+
+def _resource_search_items(payload: object) -> List[Dict[str, object]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("items", "results", "list", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    for value in payload.values():
+        if isinstance(value, list):
+            rows = [item for item in value if isinstance(item, dict)]
+            if rows:
+                return rows
+    return []
+
+
+def _resource_search_summary(item: Dict[str, object], index: int) -> Dict[str, object]:
+    return {
+        "index": index,
+        "title": _first_present(item, ["title", "name", "filename", "file_name", "resource_name"]),
+        "channel": _first_present(item, ["channel", "source", "site", "provider", "platform"]),
+        "media_type": _first_present(item, ["media_type", "type", "category"]),
+        "size": _first_present(item, ["size", "size_text", "file_size", "file_size_text"]),
+        "share_code": _first_present(item, ["share_code", "shareId", "share_id"]),
+        "receive_code_available": bool(_first_present(item, ["receive_code", "receiveCode", "password", "pwd"])),
+        "raw": _sanitize_json(_sample_json(item, max_keys=30)),
+    }
+
+
+def _first_present(item: Dict[str, object], keys: List[str]) -> str:
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ""):
+            return str(_sanitize_json(value, key))
+    return ""
 
 
 def _is_sensitive_key(key: str) -> bool:

@@ -19,6 +19,8 @@ from series_cloud_archiver.mv3 import (
     render_mv3_offline_add_report,
     render_mv3_offline_status_report,
     render_mv3_probe_report,
+    render_mv3_resource_search_report,
+    search_mv3_resources,
 )
 
 
@@ -270,6 +272,58 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertTrue(report["ready_for_strm"])
         self.assertEqual(report["target_folder"]["file_count"], 1)
         self.assertIn("Ready for STRM", markdown)
+
+    def test_resource_search_posts_keyword_and_redacts_sensitive_fields(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {
+                                    "title": "楚汉传奇 全集",
+                                    "channel": "pansou",
+                                    "share_url": "https://example.test/s/private",
+                                    "receive_code": "abcd",
+                                    "share_code": "safe-code",
+                                    "size": "150GB",
+                                }
+                            ]
+                        },
+                    }
+                ).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = search_mv3_resources("http://mv3.example", "token", "楚汉传奇", channels=["pansou"])
+
+        rendered = render_mv3_resource_search_report(report, "json")
+        self.assertEqual(seen["url"], "http://mv3.example/api/v1/resource-search/search")
+        self.assertEqual(seen["body"]["keyword"], "楚汉传奇")
+        self.assertEqual(seen["body"]["channels"], ["pansou"])
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["result_count"], 1)
+        self.assertNotIn("https://example.test", rendered)
+        self.assertNotIn("abcd", rendered)
 
     def test_reports_missing_configuration_without_network(self) -> None:
         report = probe_mv3("", "")
@@ -660,6 +714,48 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertEqual(code, 0)
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertFalse(payload["ready_for_strm"])
+
+    def test_cli_writes_resource_search_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "search.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return b'{"success":true,"data":{"items":[{"title":"Demo"}]}}'
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                code = main(
+                    [
+                        "mv3-resource-search",
+                        "--env-file",
+                        str(env_file),
+                        "--keyword",
+                        "Demo",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["result_count"], 1)
 
     def test_cli_executes_one_offline_add_from_manifest_without_leaking_magnet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

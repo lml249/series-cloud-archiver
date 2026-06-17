@@ -20,6 +20,8 @@ from .mv3 import (
     render_mv3_offline_add_report,
     render_mv3_offline_status_report,
     render_mv3_probe_report,
+    render_mv3_resource_search_report,
+    search_mv3_resources,
 )
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
 from .qbittorrent import fetch_qb_torrents
@@ -146,6 +148,14 @@ def build_parser() -> argparse.ArgumentParser:
     offline_status_parser.add_argument("--timeout", type=int, default=30, help="Per-request timeout in seconds")
     offline_status_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     offline_status_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    resource_search_parser = subcommands.add_parser("mv3-resource-search", help="Search MV3 resource sources without transferring")
+    resource_search_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    resource_search_parser.add_argument("--keyword", required=True, help="Search keyword")
+    resource_search_parser.add_argument("--channel", action="append", default=[], help="Optional channel filter; can be repeated")
+    resource_search_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    resource_search_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    resource_search_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mv3_parser = subcommands.add_parser("mv3-check", help="Readonly MV3 connectivity and capability probe")
     mv3_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -449,6 +459,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_offline_status_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mv3-resource-search":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-resource-search requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = search_mv3_resources(
+            config.mv3_base_url,
+            config.mv3_token,
+            args.keyword,
+            channels=args.channel,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_resource_search_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

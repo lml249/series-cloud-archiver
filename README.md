@@ -255,6 +255,20 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-offline-status-one \
 
 只有当报告里的 `Ready for STRM` 为 `true` 时，才进入单条 STRM 生成。否则继续等待，不要生成空 STRM。
 
+## MV3 原生资源搜索
+
+MV3 的原生链路不是 qB magnet 离线，而是先搜索网盘资源，再解析分享、转存到 `/未整理`，之后由整理/STRM 流程接手。第一步只做搜索：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-resource-search \
+  --env-file .env \
+  --keyword 楚汉传奇 \
+  --format markdown \
+  --output reports/mv3-resource-search-chuhan.md
+```
+
+`mv3-resource-search` 只调用 `/api/v1/resource-search/search`，不会解析分享、转存资源、创建离线任务、生成 STRM 或操作 qB。
+
 ## MV3 只读探针
 
 正式接入 MV3 转存前，先确认 MV3 的地址、鉴权方式和可用接口：
