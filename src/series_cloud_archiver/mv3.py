@@ -88,9 +88,89 @@ class MV3Client:
         except urllib.error.HTTPError as exc:
             return exc.code, dict(exc.headers.items()), exc.read(64 * 1024)
 
+    def post_json(self, path: str, payload: Dict[str, object]) -> Tuple[int, Dict[str, str], bytes]:
+        url = self._url(path)
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if self.token:
+            headers["X-API-Key"] = self.token
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return response.status, dict(response.headers.items()), response.read(1024 * 1024)
+        except urllib.error.HTTPError as exc:
+            return exc.code, dict(exc.headers.items()), exc.read(1024 * 1024)
+
     def _url(self, path: str) -> str:
         url = f"{self.base_url}{path if path.startswith('/') else '/' + path}"
         return url
+
+
+def add_mv3_offline_task(
+    base_url: str,
+    token: str,
+    magnet_urls: List[str],
+    storage: str = "",
+    wp_path: str = "",
+    wp_path_id: str = "",
+    timeout: int = 30,
+) -> Dict[str, object]:
+    clean_urls = [url.strip() for url in magnet_urls if url.strip()]
+    body: Dict[str, object] = {"urls": "\n".join(clean_urls)}
+    if storage:
+        body["storage"] = storage
+    if wp_path:
+        body["wp_path"] = wp_path
+    if wp_path_id:
+        body["wp_path_id"] = wp_path_id
+
+    client = MV3Client(base_url, token, timeout=timeout)
+    status, headers, response_body = client.post_json("/api/v1/files/115/offline/add", body)
+    text = response_body.decode("utf-8", "replace")
+    parsed = _parse_json(text)
+    sanitized_response = _sanitize_json(parsed if isinstance(parsed, (dict, list)) else text)
+    return {
+        "mode": "mv3-offline-add-one-result",
+        "endpoint": {"method": "POST", "path": "/api/v1/files/115/offline/add"},
+        "ok": 200 <= status < 300,
+        "status": status,
+        "response_content_type": _header(headers, "content-type"),
+        "response_body_bytes": len(response_body),
+        "request": _redacted_offline_add_request(body, len(clean_urls)),
+        "response": sanitized_response,
+        "safety": "exactly one MV3 offline-add request was sent; magnet URIs are redacted from this report",
+    }
+
+
+def render_mv3_offline_add_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    selection = report.get("selection") if isinstance(report.get("selection"), dict) else {}
+    request = report.get("request") if isinstance(report.get("request"), dict) else {}
+    lines = [
+        "# MV3 Offline Add Result",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- HTTP status: `{report.get('status', '')}`",
+        f"- Title: `{selection.get('title', '')}`",
+        f"- Priority: `{selection.get('priority', '')}`",
+        f"- TMDB ID: `{selection.get('tmdbid', '')}`",
+        f"- Season: `{selection.get('season', '')}`",
+        f"- Storage: `{request.get('storage', '')}`",
+        f"- Target path: `{request.get('wp_path', '')}`",
+        f"- Magnet count: `{request.get('magnet_count', 0)}`",
+        "- Privacy: magnet URIs are not written to this report.",
+        "",
+        "## Sanitized Response",
+        "",
+        "```json",
+        json.dumps(report.get("response", {}), ensure_ascii=False, indent=2),
+        "```",
+    ]
+    return "\n".join(lines)
 
 
 def probe_mv3(base_url: str, token: str = "", paths: Optional[List[str]] = None) -> Dict[str, object]:
@@ -399,11 +479,24 @@ def _sanitize_string(key: str, value: str) -> str:
     lowered = value.lower()
     if SENSITIVE_URL_KEY_RE.search(key) and (value.startswith("http://") or value.startswith("https://")):
         return "[REDACTED_URL]"
+    if "magnet:?" in lowered:
+        return "[REDACTED]"
     if any(marker in lowered for marker in ("token=", "cookie=", "pickcode=", "apikey=", "api_key=", "authorization=")):
         return "[REDACTED]"
     if len(value) > 300:
         return value[:300] + "...[TRUNCATED]"
     return value
+
+
+def _redacted_offline_add_request(body: Dict[str, object], magnet_count: int) -> Dict[str, object]:
+    redacted: Dict[str, object] = {}
+    for key, value in body.items():
+        if key == "urls":
+            redacted[key] = "[REDACTED_MAGNET_URIS]"
+        else:
+            redacted[key] = _sanitize_json(value, key)
+    redacted["magnet_count"] = magnet_count
+    return redacted
 
 
 def _is_sensitive_key(key: str) -> bool:

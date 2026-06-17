@@ -209,6 +209,23 @@ PYTHONPATH=src python3 -m series_cloud_archiver plan-mv3-offline \
 
 报告不会写出 magnet 原文，也不会调用 `/api/v1/files/115/offline/add`、`/api/v1/files/115/offline/add_bt` 或 `/api/v1/strm/generate`。真正执行前仍然需要单条人工批准。
 
+## MV3 115 单条离线添加
+
+`mv3-offline-add-one` 是第一个会真正创建 115 离线任务的命令。它只允许执行 manifest 里的一个 priority，并且必须同时提供 `--approve-offline-add` 和完全匹配的 `--expected-title`。
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-offline-add-one \
+  --env-file .env \
+  --manifest reports/mv3-offline-manifest-top10.json \
+  --priority 5 \
+  --expected-title 楚汉传奇 \
+  --approve-offline-add \
+  --format markdown \
+  --output reports/mv3-offline-add-priority5.md
+```
+
+第一轮实测故意要求该行只能匹配到 1 个 qB magnet，避免一次把多版本、多分集、多来源批量送进 115。执行结果报告会记录 HTTP 状态、目标云端目录和 MV3 返回内容，但不会写出 magnet 原文。
+
 ## MV3 只读探针
 
 正式接入 MV3 转存前，先确认 MV3 的地址、鉴权方式和可用接口：

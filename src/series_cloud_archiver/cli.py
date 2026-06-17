@@ -8,11 +8,13 @@ from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_
 from .config import config_from_env, db_path_from_env
 from .identity import render_identity_overrides, resolve_identity_overrides_from_scan_report
 from .mv3 import (
+    add_mv3_offline_task,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
     probe_mv3,
     render_mv3_capabilities_report,
     render_mv3_instances_report,
+    render_mv3_offline_add_report,
     render_mv3_probe_report,
 )
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
@@ -110,6 +112,17 @@ def build_parser() -> argparse.ArgumentParser:
     offline_parser.add_argument("--min-seed-days", type=int, default=7, help="Minimum qB seed days to mark seed OK")
     offline_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     offline_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    offline_add_parser = subcommands.add_parser("mv3-offline-add-one", help="Execute exactly one approved MV3 115 offline-add task")
+    offline_add_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    offline_add_parser.add_argument("--manifest", required=True, help="JSON report from plan-mv3-offline")
+    offline_add_parser.add_argument("--priority", type=int, required=True, help="Manifest row priority to execute")
+    offline_add_parser.add_argument("--expected-title", required=True, help="Safety check: title must exactly match manifest row")
+    offline_add_parser.add_argument("--qb-report", default=None, help="Optional cached qB torrents JSON; otherwise qB is queried")
+    offline_add_parser.add_argument("--timeout", type=int, default=30, help="Per-request timeout in seconds")
+    offline_add_parser.add_argument("--approve-offline-add", action="store_true", help="Required: actually create one MV3 offline task")
+    offline_add_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    offline_add_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mv3_parser = subcommands.add_parser("mv3-check", help="Readonly MV3 connectivity and capability probe")
     mv3_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -346,6 +359,37 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(rendered)
         return 0
 
+    if args.command == "mv3-offline-add-one":
+        if not args.approve_offline_add:
+            parser.error("mv3-offline-add-one requires --approve-offline-add")
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-offline-add-one requires MV3_BASE_URL and MV3_API_TOKEN")
+        if args.qb_report:
+            qb_payload = load_optional_json_report(args.qb_report)
+            qb_torrents = qb_payload.get("torrents", qb_payload) if isinstance(qb_payload, dict) else qb_payload
+        else:
+            if not config.qb_base_url:
+                parser.error("mv3-offline-add-one requires QB_BASE_URL or --qb-report")
+            qb_torrents = fetch_qb_torrents(config.qb_base_url, config.qb_user, config.qb_pass)
+        if not isinstance(qb_torrents, list):
+            parser.error("qB torrent source must be a JSON list or {'torrents': [...]}")
+        report = _execute_mv3_offline_add_one(
+            load_optional_json_report(args.manifest),
+            qb_torrents,
+            config.mv3_base_url,
+            config.mv3_token,
+            priority=args.priority,
+            expected_title=args.expected_title,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_offline_add_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
     if args.command == "mv3-check":
         config = config_from_env(args.env_file, [])
         report = probe_mv3(config.mv3_base_url, config.mv3_token, paths=args.path or None)
@@ -384,3 +428,57 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     parser.error("unknown command")
     return 2
+
+
+def _execute_mv3_offline_add_one(
+    manifest,
+    qb_torrents,
+    mv3_base_url: str,
+    mv3_token: str,
+    priority: int,
+    expected_title: str,
+    timeout: int = 30,
+):
+    from .transfer_plan import _match_qb_torrents_for_transfer_item
+
+    if not isinstance(manifest, dict):
+        raise SystemExit("manifest must be a JSON object")
+    items = manifest.get("items")
+    if not isinstance(items, list):
+        raise SystemExit("manifest items must be a list")
+    selected = next((item for item in items if isinstance(item, dict) and int(item.get("priority") or 0) == priority), None)
+    if not selected:
+        raise SystemExit(f"manifest priority not found: {priority}")
+    title = str(selected.get("title") or "")
+    if title != expected_title:
+        raise SystemExit(f"expected title mismatch: manifest has {title!r}")
+    matches = _match_qb_torrents_for_transfer_item(selected, qb_torrents)
+    magnets = [str(item.get("magnet_uri") or "").strip() for item in matches if str(item.get("magnet_uri") or "").strip()]
+    if len(magnets) != 1:
+        raise SystemExit(f"expected exactly one qB magnet for first execution, got {len(magnets)}")
+    context = manifest.get("mv3_context") if isinstance(manifest.get("mv3_context"), dict) else {}
+    storage = str(context.get("cloud_drive_slug") or "")
+    destination = str(selected.get("proposed_cloud_destination") or "")
+    if not storage:
+        raise SystemExit("manifest missing mv3 cloud drive slug")
+    if not destination:
+        raise SystemExit("manifest missing proposed cloud destination")
+    result = add_mv3_offline_task(
+        mv3_base_url,
+        mv3_token,
+        magnets,
+        storage=storage,
+        wp_path=destination,
+        timeout=timeout,
+    )
+    result["selection"] = {
+        "priority": priority,
+        "title": title,
+        "tmdbid": selected.get("tmdbid") or 0,
+        "season": selected.get("season") or 0,
+        "expected_count": selected.get("expected_count") or 0,
+        "qb_match_count": len(matches),
+        "qb_magnet_count": len(magnets),
+        "proposed_cloud_destination": destination,
+    }
+    return result

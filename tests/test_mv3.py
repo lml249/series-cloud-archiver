@@ -7,11 +7,13 @@ from unittest.mock import patch
 from series_cloud_archiver.cli import main
 from series_cloud_archiver.mv3 import (
     MV3Client,
+    add_mv3_offline_task,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
     probe_mv3,
     render_mv3_capabilities_report,
     render_mv3_instances_report,
+    render_mv3_offline_add_report,
     render_mv3_probe_report,
 )
 
@@ -50,6 +52,52 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(seen["api_key"], "secret-token")
         self.assertIsNone(seen["authorization"])
         self.assertEqual(seen["timeout"], 10)
+
+    def test_offline_add_posts_json_and_redacts_magnet(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps({"ok": True, "echo": "magnet:?xt=urn:btih:private"}).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["api_key"] = request.headers.get("X-api-key")
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = add_mv3_offline_task(
+                "http://mv3.example",
+                "secret-token",
+                ["magnet:?xt=urn:btih:private"],
+                storage="115-default",
+                wp_path="/series/Demo",
+                timeout=12,
+            )
+
+        rendered = render_mv3_offline_add_report(report, "json")
+        self.assertEqual(seen["url"], "http://mv3.example/api/v1/files/115/offline/add")
+        self.assertEqual(seen["api_key"], "secret-token")
+        self.assertEqual(seen["body"]["urls"], "magnet:?xt=urn:btih:private")
+        self.assertEqual(seen["body"]["storage"], "115-default")
+        self.assertEqual(seen["timeout"], 12)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["request"]["urls"], "[REDACTED_MAGNET_URIS]")
+        self.assertNotIn("magnet:?", rendered)
 
     def test_reports_missing_configuration_without_network(self) -> None:
         report = probe_mv3("", "")
@@ -344,6 +392,121 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertEqual(code, 0)
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertFalse(payload["configured"])
+
+    def test_cli_refuses_offline_add_without_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            manifest = tmp_path / "manifest.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+            manifest.write_text(json.dumps({"items": []}), encoding="utf-8")
+
+            with self.assertRaises(SystemExit):
+                main(
+                    [
+                        "mv3-offline-add-one",
+                        "--env-file",
+                        str(env_file),
+                        "--manifest",
+                        str(manifest),
+                        "--priority",
+                        "1",
+                        "--expected-title",
+                        "Demo",
+                    ]
+                )
+
+    def test_cli_executes_one_offline_add_from_manifest_without_leaking_magnet(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            manifest = tmp_path / "manifest.json"
+            qb_report = tmp_path / "qb.json"
+            output = tmp_path / "result.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "mv3_context": {"cloud_drive_slug": "115-default"},
+                        "items": [
+                            {
+                                "priority": 5,
+                                "title": "Demo",
+                                "tmdbid": 123,
+                                "season": 1,
+                                "proposed_cloud_destination": "/series/Demo",
+                                "titles": ["Demo.S01"],
+                                "source_paths": ["/media/Demo.S01"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            qb_report.write_text(
+                json.dumps(
+                    {
+                        "torrents": [
+                            {
+                                "name": "Demo.S01",
+                                "content_path": "/media/Demo.S01",
+                                "magnet_uri": "magnet:?xt=urn:btih:private",
+                                "seeding_time": 9 * 86400,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return b'{"success":true}'
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            def fake_urlopen(_request, timeout):
+                return FakeResponse()
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                code = main(
+                    [
+                        "mv3-offline-add-one",
+                        "--env-file",
+                        str(env_file),
+                        "--manifest",
+                        str(manifest),
+                        "--qb-report",
+                        str(qb_report),
+                        "--priority",
+                        "5",
+                        "--expected-title",
+                        "Demo",
+                        "--approve-offline-add",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            text = output.read_text(encoding="utf-8")
+            payload = json.loads(text)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["selection"]["title"], "Demo")
+            self.assertEqual(payload["request"]["magnet_count"], 1)
+            self.assertNotIn("magnet:?", text)
 
 
 if __name__ == "__main__":
