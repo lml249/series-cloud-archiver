@@ -314,98 +314,91 @@ def preview_mv3_share(
     expected_title_contains: str = "",
     timeout: int = 60,
 ) -> Dict[str, object]:
-    search_body: Dict[str, object] = {"keyword": keyword}
-    if channels:
-        search_body["channels"] = channels
     client = MV3Client(base_url, token, timeout=timeout)
-    search_status, search_headers, search_response_body = client.post_json("/api/v1/resource-search/search", search_body)
-    search_text = search_response_body.decode("utf-8", "replace")
-    search_parsed = _parse_json(search_text)
-    search_payload = _unwrap_api_payload(search_parsed)
-    search_api_success = _api_success(search_parsed)
-    items = _resource_search_items(search_payload)
-    warnings: List[str] = []
-    selected = items[selection_index - 1] if 0 < selection_index <= len(items) else {}
-    if not selected:
-        warnings.append("selection_index_not_found")
-
-    selected_summary = _resource_search_summary(selected, selection_index) if selected else {}
-    selected_title = str(selected_summary.get("title") or "")
-    if expected_title_contains and expected_title_contains not in selected_title:
-        warnings.append("expected_title_contains_mismatch")
-        selected = {}
-
-    parse_report: Dict[str, object] = {"skipped": True}
-    browse_report: Dict[str, object] = {"skipped": True}
-    if selected:
-        share_url = _first_raw_present(selected, ["share_url", "share_link", "url", "link"])
-        share_code = _first_raw_present(selected, ["share_code", "shareId", "share_id"])
-        receive_code = _first_raw_present(selected, ["receive_code", "receiveCode", "password", "pwd"])
-        if not share_url:
-            warnings.append("selected_resource_has_no_share_url")
-        else:
-            parse_body: Dict[str, object] = {"share_url": share_url}
-            if receive_code:
-                parse_body["receive_code"] = receive_code
-            parse_status, parse_headers, parse_response_body = client.post_json("/api/v1/share-transfer/parse", parse_body)
-            parse_parsed = _parse_json(parse_response_body.decode("utf-8", "replace"))
-            parse_payload = _unwrap_api_payload(parse_parsed)
-            parse_api_success = _api_success(parse_parsed)
-            parse_report = _mv3_api_call_summary(
-                "POST",
-                "/api/v1/share-transfer/parse",
-                parse_status,
-                parse_headers,
-                parse_body,
-                parse_payload,
-                parse_api_success,
-                parse_response_body,
-            )
-            share_code = _find_first_raw_key(parse_payload, ["share_code", "shareCode", "shareId", "share_id"]) or share_code
-            receive_code = _find_first_raw_key(parse_payload, ["receive_code", "receiveCode", "password", "pwd"]) or receive_code
-
-        if not share_code:
-            warnings.append("share_code_not_available_for_browse")
-        else:
-            browse_body: Dict[str, object] = {"share_code": share_code}
-            if receive_code:
-                browse_body["receive_code"] = receive_code
-            browse_status, browse_headers, browse_response_body = client.post_json("/api/v1/share-transfer/browse", browse_body)
-            browse_parsed = _parse_json(browse_response_body.decode("utf-8", "replace"))
-            browse_payload = _unwrap_api_payload(browse_parsed)
-            browse_api_success = _api_success(browse_parsed)
-            browse_report = _mv3_share_browse_summary(
-                browse_status,
-                browse_headers,
-                browse_body,
-                browse_payload,
-                browse_api_success,
-                browse_response_body,
-            )
-
+    resolution = _resolve_mv3_share(client, keyword, selection_index, channels, expected_title_contains)
+    report = _public_share_resolution(resolution)
+    search = report.get("search") if isinstance(report.get("search"), dict) else {}
+    parse_report = report.get("parse") if isinstance(report.get("parse"), dict) else {}
+    browse_report = report.get("browse") if isinstance(report.get("browse"), dict) else {}
+    selected_summary = report.get("selected") if isinstance(report.get("selected"), dict) else {}
     parse_ok = bool(parse_report.get("ok")) if not parse_report.get("skipped") else False
     browse_ok = bool(browse_report.get("ok")) if not browse_report.get("skipped") else False
-    return {
-        "mode": "readonly-mv3-share-preview",
-        "ok": 200 <= search_status < 300 and search_api_success and bool(selected_summary) and (parse_ok or browse_ok),
-        "keyword": keyword,
-        "channels": channels or [],
-        "selection_index": selection_index,
-        "selected": selected_summary,
-        "search": {
-            "endpoint": {"method": "POST", "path": "/api/v1/resource-search/search"},
-            "ok": 200 <= search_status < 300 and search_api_success,
-            "http_ok": 200 <= search_status < 300,
-            "api_success": search_api_success,
-            "status": search_status,
-            "response_content_type": _header(search_headers, "content-type"),
-            "result_count": len(items),
-        },
-        "parse": parse_report,
-        "browse": browse_report,
-        "warnings": warnings,
-        "safety": "search + share parse/browse preview only; no share receive/transfer, offline task, STRM generation, file operation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
-    }
+    report["mode"] = "readonly-mv3-share-preview"
+    report["ok"] = bool(search.get("ok")) and bool(selected_summary) and (parse_ok or browse_ok)
+    report["safety"] = "search + share parse/browse preview only; no share receive/transfer, offline task, STRM generation, file operation, qBittorrent action, hlink deletion, or filesystem deletion is performed"
+    return report
+
+
+def receive_mv3_share(
+    base_url: str,
+    token: str,
+    keyword: str,
+    selection_index: int = 1,
+    browse_index: int = 1,
+    channels: Optional[List[str]] = None,
+    expected_title_contains: str = "",
+    target_path: str = "/未整理",
+    storage: str = "115-default",
+    timeout: int = 60,
+) -> Dict[str, object]:
+    client = MV3Client(base_url, token, timeout=timeout)
+    resolution = _resolve_mv3_share(client, keyword, selection_index, channels, expected_title_contains)
+    report = _public_share_resolution(resolution)
+    warnings = list(report.get("warnings", [])) if isinstance(report.get("warnings"), list) else []
+    raw = resolution.get("_raw") if isinstance(resolution.get("_raw"), dict) else {}
+    browse_items = raw.get("browse_items") if isinstance(raw.get("browse_items"), list) else []
+    browse_selection = browse_items[browse_index - 1] if 0 < browse_index <= len(browse_items) else {}
+    if not browse_selection:
+        warnings.append("browse_index_not_found")
+
+    normalized_target_path = _normalize_cloud_path(target_path)
+    if not normalized_target_path:
+        warnings.append("target_path_required")
+    file_id = _share_item_file_id(browse_selection) if isinstance(browse_selection, dict) else ""
+    if not file_id:
+        warnings.append("browse_selection_file_id_not_found")
+
+    share_code = str(raw.get("share_code") or "")
+    receive_code = str(raw.get("receive_code") or "")
+    if not share_code:
+        warnings.append("share_code_not_available_for_receive")
+
+    receive_report: Dict[str, object] = {"skipped": True}
+    if browse_selection and normalized_target_path and file_id and share_code:
+        receive_body: Dict[str, object] = {
+            "share_code": share_code,
+            "file_ids": [file_id],
+            "target_path": normalized_target_path,
+        }
+        if receive_code:
+            receive_body["receive_code"] = receive_code
+        if storage:
+            receive_body["storage"] = storage
+        receive_status, receive_headers, receive_response_body = client.post_json("/api/v1/share-transfer/receive", receive_body)
+        receive_parsed = _parse_json(receive_response_body.decode("utf-8", "replace"))
+        receive_payload = _unwrap_api_payload(receive_parsed)
+        receive_api_success = _api_success(receive_parsed)
+        receive_report = _mv3_api_call_summary(
+            "POST",
+            "/api/v1/share-transfer/receive",
+            receive_status,
+            receive_headers,
+            receive_body,
+            receive_payload,
+            receive_api_success,
+            receive_response_body,
+        )
+
+    report["mode"] = "mv3-share-receive-one-result"
+    report["ok"] = bool(receive_report.get("ok"))
+    report["browse_index"] = browse_index
+    report["browse_selection"] = _share_browse_item_summary(browse_selection, browse_index) if isinstance(browse_selection, dict) and browse_selection else {}
+    report["target_path"] = normalized_target_path
+    report["storage"] = storage
+    report["receive"] = receive_report
+    report["warnings"] = warnings
+    report["safety"] = "exactly one approved MV3 share receive request may be sent; no organize/recognize/transfer, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed"
+    return report
 
 
 def render_mv3_share_preview_report(report: Dict[str, object], output_format: str) -> str:
@@ -440,6 +433,33 @@ def render_mv3_share_preview_report(report: Dict[str, object], output_format: st
                 size=_escape(str(item.get("size") or "")),
             )
         )
+    return "\n".join(lines)
+
+
+def render_mv3_share_receive_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    selected = report.get("selected") if isinstance(report.get("selected"), dict) else {}
+    browse_selection = report.get("browse_selection") if isinstance(report.get("browse_selection"), dict) else {}
+    receive = report.get("receive") if isinstance(report.get("receive"), dict) else {}
+    lines = [
+        "# MV3 Share Receive Result",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Selected: `{selected.get('title', '')}`",
+        f"- Browse selection: `{browse_selection.get('name', '')}`",
+        f"- Browse kind: `{browse_selection.get('kind', '')}`",
+        f"- Browse size: `{browse_selection.get('size', '')}`",
+        f"- Target path: `{report.get('target_path', '')}`",
+        f"- Storage: `{report.get('storage', '')}`",
+        f"- Receive OK: `{bool(receive.get('ok'))}`",
+        f"- Receive HTTP status: `{receive.get('status', '')}`",
+        "- Safety: one approved receive request only; no organize, STRM generation, qB action, hlink deletion, or filesystem deletion was performed.",
+    ]
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
     return "\n".join(lines)
 
 
@@ -1063,6 +1083,113 @@ def _mv3_share_browse_summary(
     return report
 
 
+def _resolve_mv3_share(
+    client: MV3Client,
+    keyword: str,
+    selection_index: int,
+    channels: Optional[List[str]],
+    expected_title_contains: str,
+) -> Dict[str, object]:
+    search_body: Dict[str, object] = {"keyword": keyword}
+    if channels:
+        search_body["channels"] = channels
+    search_status, search_headers, search_response_body = client.post_json("/api/v1/resource-search/search", search_body)
+    search_text = search_response_body.decode("utf-8", "replace")
+    search_parsed = _parse_json(search_text)
+    search_payload = _unwrap_api_payload(search_parsed)
+    search_api_success = _api_success(search_parsed)
+    items = _resource_search_items(search_payload)
+    warnings: List[str] = []
+    selected = items[selection_index - 1] if 0 < selection_index <= len(items) else {}
+    if not selected:
+        warnings.append("selection_index_not_found")
+
+    selected_summary = _resource_search_summary(selected, selection_index) if selected else {}
+    selected_title = str(selected_summary.get("title") or "")
+    if expected_title_contains and expected_title_contains not in selected_title:
+        warnings.append("expected_title_contains_mismatch")
+        selected = {}
+
+    share_code = ""
+    receive_code = ""
+    parse_report: Dict[str, object] = {"skipped": True}
+    browse_report: Dict[str, object] = {"skipped": True}
+    browse_payload: object = {}
+    if selected:
+        share_url = _first_raw_present(selected, ["share_url", "share_link", "url", "link"])
+        share_code = _first_raw_present(selected, ["share_code", "shareId", "share_id"])
+        receive_code = _first_raw_present(selected, ["receive_code", "receiveCode", "password", "pwd"])
+        if not share_url:
+            warnings.append("selected_resource_has_no_share_url")
+        else:
+            parse_body: Dict[str, object] = {"share_url": share_url}
+            if receive_code:
+                parse_body["receive_code"] = receive_code
+            parse_status, parse_headers, parse_response_body = client.post_json("/api/v1/share-transfer/parse", parse_body)
+            parse_parsed = _parse_json(parse_response_body.decode("utf-8", "replace"))
+            parse_payload = _unwrap_api_payload(parse_parsed)
+            parse_api_success = _api_success(parse_parsed)
+            parse_report = _mv3_api_call_summary(
+                "POST",
+                "/api/v1/share-transfer/parse",
+                parse_status,
+                parse_headers,
+                parse_body,
+                parse_payload,
+                parse_api_success,
+                parse_response_body,
+            )
+            share_code = _find_first_raw_key(parse_payload, ["share_code", "shareCode", "shareId", "share_id"]) or share_code
+            receive_code = _find_first_raw_key(parse_payload, ["receive_code", "receiveCode", "password", "pwd"]) or receive_code
+
+        if not share_code:
+            warnings.append("share_code_not_available_for_browse")
+        else:
+            browse_body: Dict[str, object] = {"share_code": share_code}
+            if receive_code:
+                browse_body["receive_code"] = receive_code
+            browse_status, browse_headers, browse_response_body = client.post_json("/api/v1/share-transfer/browse", browse_body)
+            browse_parsed = _parse_json(browse_response_body.decode("utf-8", "replace"))
+            browse_payload = _unwrap_api_payload(browse_parsed)
+            browse_api_success = _api_success(browse_parsed)
+            browse_report = _mv3_share_browse_summary(
+                browse_status,
+                browse_headers,
+                browse_body,
+                browse_payload,
+                browse_api_success,
+                browse_response_body,
+            )
+
+    return {
+        "keyword": keyword,
+        "channels": channels or [],
+        "selection_index": selection_index,
+        "selected": selected_summary,
+        "search": {
+            "endpoint": {"method": "POST", "path": "/api/v1/resource-search/search"},
+            "ok": 200 <= search_status < 300 and search_api_success,
+            "http_ok": 200 <= search_status < 300,
+            "api_success": search_api_success,
+            "status": search_status,
+            "response_content_type": _header(search_headers, "content-type"),
+            "result_count": len(items),
+        },
+        "parse": parse_report,
+        "browse": browse_report,
+        "warnings": warnings,
+        "_raw": {
+            "share_code": share_code,
+            "receive_code": receive_code,
+            "browse_items": _share_browse_items(browse_payload),
+        },
+    }
+
+
+def _public_share_resolution(resolution: Dict[str, object]) -> Dict[str, object]:
+    return {key: value for key, value in resolution.items() if key != "_raw"}
+
+
 def _share_browse_items(payload: object) -> List[Dict[str, object]]:
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
@@ -1113,6 +1240,19 @@ def _share_item_kind(item: Dict[str, object]) -> str:
     if str(item.get("cid") or item.get("folder_id") or ""):
         return "folder"
     return raw_type or "unknown"
+
+
+def _share_item_file_id(item: Dict[str, object]) -> str:
+    for key in ("file_id", "fid", "id", "cid", "folder_id"):
+        value = item.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _normalize_cloud_path(path: str) -> str:
+    segments = [segment for segment in str(path or "").strip().strip("/").split("/") if segment]
+    return "/" + "/".join(segments) if segments else ""
 
 
 def _first_present(item: Dict[str, object], keys: List[str]) -> str:

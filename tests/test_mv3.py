@@ -20,9 +20,11 @@ from series_cloud_archiver.mv3 import (
     render_mv3_offline_status_report,
     render_mv3_probe_report,
     render_mv3_resource_search_report,
+    render_mv3_share_receive_report,
     render_mv3_share_preview_report,
     search_mv3_resources,
     preview_mv3_share,
+    receive_mv3_share,
 )
 
 
@@ -401,6 +403,85 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertNotIn("https://example.test", rendered)
         self.assertNotIn("http://avatars.example.test", rendered)
         self.assertNotIn("safe-code", rendered)
+        self.assertNotIn("parsed-code", rendered)
+        self.assertNotIn("abcd", rendered)
+
+    def test_share_receive_requires_selected_browse_item_and_redacts_report(self) -> None:
+        seen = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.replace("http://mv3.example", "")
+            body = json.loads(request.data.decode("utf-8"))
+            seen.append((path, body))
+            if path == "/api/v1/resource-search/search":
+                return FakeResponse({"success": True, "data": {"items": [{"title": "楚汉传奇", "share_link": "https://example.test/s/private"}]}})
+            if path == "/api/v1/share-transfer/parse":
+                return FakeResponse({"success": True, "data": {"share_code": "parsed-code", "receive_code": "abcd"}})
+            if path == "/api/v1/share-transfer/browse":
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {"name": "楚汉传奇 (2012)", "cid": "folder-1", "is_dir": True, "s": 282444838302},
+                                {"name": "Other", "cid": "folder-2", "is_dir": True},
+                            ]
+                        },
+                    }
+                )
+            if path == "/api/v1/share-transfer/receive":
+                return FakeResponse({"success": True, "data": {"record_id": "record-1", "share_code": "parsed-code"}})
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = receive_mv3_share(
+                "http://mv3.example",
+                "token",
+                "楚汉传奇",
+                selection_index=1,
+                browse_index=1,
+                expected_title_contains="楚汉",
+                target_path="/未整理",
+                storage="115-default",
+            )
+
+        rendered = render_mv3_share_receive_report(report, "json")
+        self.assertEqual(
+            [item[0] for item in seen],
+            [
+                "/api/v1/resource-search/search",
+                "/api/v1/share-transfer/parse",
+                "/api/v1/share-transfer/browse",
+                "/api/v1/share-transfer/receive",
+            ],
+        )
+        receive_body = seen[-1][1]
+        self.assertEqual(receive_body["file_ids"], ["folder-1"])
+        self.assertEqual(receive_body["target_path"], "/未整理")
+        self.assertEqual(receive_body["storage"], "115-default")
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["browse_selection"]["name"], "楚汉传奇 (2012)")
+        self.assertEqual(report["browse_selection"]["size"], "263.05 GiB")
+        self.assertNotIn("https://example.test", rendered)
         self.assertNotIn("parsed-code", rendered)
         self.assertNotIn("abcd", rendered)
 
@@ -893,6 +974,90 @@ class MV3ProbeTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["browse"]["item_count"], 1)
             self.assertNotIn("https://example.test", output.read_text(encoding="utf-8"))
+
+    def test_cli_refuses_share_receive_without_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            with self.assertRaises(SystemExit) as caught:
+                main(
+                    [
+                        "mv3-share-receive-one",
+                        "--env-file",
+                        str(env_file),
+                        "--keyword",
+                        "Demo",
+                        "--expected-title-contains",
+                        "Demo",
+                    ]
+                )
+
+            self.assertNotEqual(caught.exception.code, 0)
+
+    def test_cli_writes_share_receive_report_with_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "receive.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            class FakeResponse:
+                status = 200
+
+                def __init__(self, payload):
+                    self.payload = payload
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return json.dumps(self.payload).encode("utf-8")
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            def fake_urlopen(request, timeout):
+                path = request.full_url.replace("http://mv3.example", "")
+                if path == "/api/v1/resource-search/search":
+                    return FakeResponse({"success": True, "data": {"items": [{"title": "Demo", "share_link": "https://example.test/s/private"}]}})
+                if path == "/api/v1/share-transfer/parse":
+                    return FakeResponse({"success": True, "data": {"share_code": "parsed-code"}})
+                if path == "/api/v1/share-transfer/browse":
+                    return FakeResponse({"success": True, "data": {"items": [{"name": "Demo", "cid": "folder-1", "is_dir": True}]}})
+                if path == "/api/v1/share-transfer/receive":
+                    return FakeResponse({"success": True, "data": {"record_id": "record-1"}})
+                raise AssertionError(f"unexpected path: {path}")
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                code = main(
+                    [
+                        "mv3-share-receive-one",
+                        "--env-file",
+                        str(env_file),
+                        "--keyword",
+                        "Demo",
+                        "--expected-title-contains",
+                        "Demo",
+                        "--target-path",
+                        "/未整理",
+                        "--approve-receive",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["target_path"], "/未整理")
 
     def test_cli_executes_one_offline_add_from_manifest_without_leaking_magnet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

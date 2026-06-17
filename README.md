@@ -283,6 +283,24 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-share-preview \
 
 `mv3-share-preview` 会重新搜索、选择第 N 个结果，然后调用 `/api/v1/share-transfer/parse` 和 `/api/v1/share-transfer/browse` 看分享里有哪些文件。它不会调用 `/api/v1/share-transfer/receive`，因此不会把资源转存到 115，也不会整理、生成 STRM 或操作 qB。
 
+确认预览结果后，可以只转存一个浏览条目到 `/未整理`：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-share-receive-one \
+  --env-file .env \
+  --keyword 楚汉传奇 \
+  --selection-index 2 \
+  --browse-index 1 \
+  --expected-title-contains 楚汉传奇 \
+  --target-path /未整理 \
+  --storage 115-default \
+  --approve-receive \
+  --format markdown \
+  --output reports/mv3-share-receive-chuhan.md
+```
+
+`mv3-share-receive-one` 会重新搜索并预览同一个候选，只在通过标题校验和 `--approve-receive` 时调用 `/api/v1/share-transfer/receive`。它只转存选中的一个分享条目，不会整理、识别媒体类型、生成 STRM、操作 qB 或删除本地文件。
+
 ## MV3 只读探针
 
 正式接入 MV3 转存前，先确认 MV3 的地址、鉴权方式和可用接口：

@@ -21,9 +21,11 @@ from .mv3 import (
     render_mv3_offline_status_report,
     render_mv3_probe_report,
     render_mv3_resource_search_report,
+    render_mv3_share_receive_report,
     render_mv3_share_preview_report,
-    search_mv3_resources,
     preview_mv3_share,
+    receive_mv3_share,
+    search_mv3_resources,
 )
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
 from .qbittorrent import fetch_qb_torrents
@@ -168,6 +170,20 @@ def build_parser() -> argparse.ArgumentParser:
     share_preview_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     share_preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     share_preview_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    share_receive_parser = subcommands.add_parser("mv3-share-receive-one", help="Receive exactly one approved MV3 resource share item")
+    share_receive_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    share_receive_parser.add_argument("--keyword", required=True, help="Search keyword")
+    share_receive_parser.add_argument("--selection-index", type=int, default=1, help="1-based search result to parse/browse")
+    share_receive_parser.add_argument("--browse-index", type=int, default=1, help="1-based browsed share item to receive")
+    share_receive_parser.add_argument("--expected-title-contains", required=True, help="Safety check: selected title must contain this text")
+    share_receive_parser.add_argument("--target-path", default="/未整理", help="115 target path; defaults to /未整理")
+    share_receive_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    share_receive_parser.add_argument("--channel", action="append", default=[], help="Optional channel filter; can be repeated")
+    share_receive_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    share_receive_parser.add_argument("--approve-receive", action="store_true", help="Required: actually receive one selected share item")
+    share_receive_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    share_receive_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mv3_parser = subcommands.add_parser("mv3-check", help="Readonly MV3 connectivity and capability probe")
     mv3_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -509,6 +525,31 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_share_preview_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mv3-share-receive-one":
+        if not args.approve_receive:
+            parser.error("mv3-share-receive-one requires --approve-receive")
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-share-receive-one requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = receive_mv3_share(
+            config.mv3_base_url,
+            config.mv3_token,
+            args.keyword,
+            selection_index=args.selection_index,
+            browse_index=args.browse_index,
+            channels=args.channel,
+            expected_title_contains=args.expected_title_contains,
+            target_path=args.target_path,
+            storage=args.storage,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_share_receive_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:
