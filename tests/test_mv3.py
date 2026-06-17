@@ -232,6 +232,8 @@ class MV3ProbeTest(unittest.TestCase):
                             "items": [
                                 {
                                     "name": "Demo.S01E01.mkv",
+                                    "fid": "file-fid-1",
+                                    "cid": "parent-folder-1",
                                     "file_id": "file-1",
                                     "is_dir": False,
                                     "size": 1024,
@@ -258,6 +260,7 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(report["folder_id"], "folder-1")
         self.assertEqual(report["summary"]["file_count"], 2)
+        self.assertEqual(report["items"][0]["file_id"], "file-fid-1")
         self.assertEqual(report["summary"]["missing_in_range"], [2])
         self.assertIn("episode_gap_detected", report["warnings"])
         self.assertTrue(any("/api/v1/files/cloud/info?" in url for url in seen))

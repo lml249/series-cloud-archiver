@@ -1216,7 +1216,7 @@ def _cloud_browse_item_summary(item: Dict[str, object], index: int) -> Dict[str,
         "kind": _cloud_item_kind(item),
         "episode": _episode_number_from_text(name),
         "size": _format_size_value(_first_raw_present(item, ["size", "size_text", "file_size", "file_size_text", "s"])),
-        "file_id": _first_present(item, ["cid", "file_id", "id", "fid", "folder_id"]),
+        "file_id": _first_present(item, ["fid", "file_id", "id", "cid", "folder_id"]),
         "raw": _sanitize_json(_sample_json(item, max_keys=30)),
     }
 
