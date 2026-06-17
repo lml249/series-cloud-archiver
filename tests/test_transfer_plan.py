@@ -5,8 +5,10 @@ from pathlib import Path
 
 from series_cloud_archiver.cli import main
 from series_cloud_archiver.transfer_plan import (
+    plan_mv3_offline_manifest,
     plan_mv3_preview_manifest,
     plan_mv3_transfers_from_cloud_report,
+    render_mv3_offline_manifest,
     render_mv3_preview_manifest,
     render_mv3_transfer_plan,
 )
@@ -241,6 +243,140 @@ class TransferPlanTest(unittest.TestCase):
             self.assertEqual(code, 0)
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["planned_items"], 1)
+
+    def test_builds_offline_manifest_without_leaking_magnets(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "Demo",
+                    "tmdbid": 123,
+                    "season": 1,
+                    "size_bytes": 100,
+                    "expected_count": 2,
+                    "candidate_count": 1,
+                    "titles": ["Demo.S01"],
+                    "source_paths": ["/example/media/Demo.S01"],
+                }
+            ],
+        }
+        qb_torrents = [
+            {
+                "name": "Demo.S01",
+                "hash": "abc",
+                "state": "stalledUP",
+                "content_path": "/example/media/Demo.S01",
+                "size": 100,
+                "progress": 1,
+                "seeding_time": 8 * 86400,
+                "magnet_uri": "magnet:?xt=urn:btih:abc&secret=private",
+            }
+        ]
+        instances = {
+            "probes": [
+                {
+                    "path": "/api/v1/cloud-drive/instances",
+                    "sample": {"instances": [{"slug": "115-default", "name": "115", "mount_path": {"/series": "/series"}}]},
+                }
+            ]
+        }
+
+        manifest = plan_mv3_offline_manifest(transfer_plan, qb_torrents, instances, limit=1)
+        rendered = render_mv3_offline_manifest(manifest, "json")
+
+        self.assertEqual(manifest["planned_items"], 1)
+        self.assertEqual(manifest["items"][0]["qb_match_count"], 1)
+        self.assertEqual(manifest["items"][0]["qb_magnet_available_count"], 1)
+        self.assertEqual(manifest["items"][0]["qb_seed_age_ok_count"], 1)
+        self.assertEqual(manifest["items"][0]["mv3_offline_call"]["body_template"]["urls"], "[REDACTED_MAGNET_URIS_FROM_QB]")
+        self.assertNotIn("magnet:?", rendered)
+        self.assertIn("POST /api/v1/files/115/offline/add", manifest["forbidden_endpoints"])
+
+    def test_renders_offline_manifest_markdown(self) -> None:
+        manifest = {
+            "mode": "readonly-mv3-offline-manifest",
+            "source_mode": "readonly-mv3-transfer-plan",
+            "available_items": 1,
+            "planned_items": 1,
+            "total_size_bytes": 100,
+            "mv3_context": {"cloud_drive_slug": "115-default", "cloud_root": "/series"},
+            "min_seed_days": 7,
+            "forbidden_endpoints": ["POST /api/v1/files/115/offline/add"],
+            "warnings": [],
+            "items": [
+                {
+                    "priority": 1,
+                    "size_bytes": 100,
+                    "title": "Demo",
+                    "tmdbid": 123,
+                    "season": 1,
+                    "expected_count": 2,
+                    "qb_match_count": 1,
+                    "qb_magnet_available_count": 1,
+                    "qb_seed_age_ok_count": 1,
+                    "proposed_cloud_destination": "/series/Demo {tmdbid=123}/Season 01",
+                    "execution_blockers": ["requires_manual_approval_before_offline_add"],
+                }
+            ],
+        }
+
+        markdown = render_mv3_offline_manifest(manifest, "markdown")
+
+        self.assertIn("MV3 Offline Manifest", markdown)
+        self.assertIn("magnet URIs are not written", markdown)
+        self.assertIn("Demo", markdown)
+
+    def test_cli_writes_offline_manifest_from_cached_qb_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            transfer_plan = tmp_path / "transfer.json"
+            qb_report = tmp_path / "qb.json"
+            output = tmp_path / "offline.json"
+            transfer_plan.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-mv3-transfer-plan",
+                        "items": [
+                            {
+                                "title": "Demo",
+                                "tmdbid": 123,
+                                "season": 1,
+                                "size_bytes": 100,
+                                "expected_count": 2,
+                                "candidate_count": 1,
+                                "titles": ["Demo.S01"],
+                                "source_paths": ["/example/media/Demo.S01"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            qb_report.write_text(
+                json.dumps({"torrents": [{"name": "Demo.S01", "content_path": "/example/media/Demo.S01", "magnet_uri": "magnet:?x"}]}),
+                encoding="utf-8",
+            )
+
+            code = main(
+                [
+                    "plan-mv3-offline",
+                    "--transfer-plan",
+                    str(transfer_plan),
+                    "--qb-report",
+                    str(qb_report),
+                    "--limit",
+                    "1",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["planned_items"], 1)
+            self.assertNotIn("magnet:?", output.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

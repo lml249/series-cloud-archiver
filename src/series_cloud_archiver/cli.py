@@ -16,6 +16,7 @@ from .mv3 import (
     render_mv3_probe_report,
 )
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
+from .qbittorrent import fetch_qb_torrents
 from .reporting import render_report
 from .scanner import scan
 from .storage import StoredSeries
@@ -23,8 +24,10 @@ from .transfer_plan import (
     load_cloud_check_report,
     load_mv3_transfer_plan,
     load_optional_json_report,
+    plan_mv3_offline_manifest,
     plan_mv3_preview_manifest,
     plan_mv3_transfers_from_cloud_report,
+    render_mv3_offline_manifest,
     render_mv3_preview_manifest,
     render_mv3_transfer_plan,
 )
@@ -96,6 +99,17 @@ def build_parser() -> argparse.ArgumentParser:
     preview_parser.add_argument("--instance", default="", help="Override MV3 media-transfer instance slug")
     preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     preview_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    offline_parser = subcommands.add_parser("plan-mv3-offline", help="Create a readonly MV3 115-offline manifest from qB metadata")
+    offline_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
+    offline_parser.add_argument("--transfer-plan", required=True, help="JSON report from plan-mv3-transfer")
+    offline_parser.add_argument("--instances-report", default=None, help="Optional JSON report from mv3-instances")
+    offline_parser.add_argument("--qb-report", default=None, help="Optional cached qB torrents JSON; otherwise qB is queried readonly")
+    offline_parser.add_argument("--limit", type=int, default=10, help="Maximum manifest rows")
+    offline_parser.add_argument("--cloud-root", default="/series", help="Cloud root used for proposed destinations")
+    offline_parser.add_argument("--min-seed-days", type=int, default=7, help="Minimum qB seed days to mark seed OK")
+    offline_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    offline_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mv3_parser = subcommands.add_parser("mv3-check", help="Readonly MV3 connectivity and capability probe")
     mv3_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -300,6 +314,32 @@ def main(argv: Optional[List[str]] = None) -> int:
             instance=args.instance,
         )
         rendered = render_mv3_preview_manifest(manifest, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "plan-mv3-offline":
+        config = config_from_env(args.env_file, [])
+        if args.qb_report:
+            qb_payload = load_optional_json_report(args.qb_report)
+            qb_torrents = qb_payload.get("torrents", qb_payload) if isinstance(qb_payload, dict) else qb_payload
+        else:
+            if not config.qb_base_url:
+                parser.error("plan-mv3-offline requires QB_BASE_URL or --qb-report")
+            qb_torrents = fetch_qb_torrents(config.qb_base_url, config.qb_user, config.qb_pass)
+        if not isinstance(qb_torrents, list):
+            parser.error("qB torrent source must be a JSON list or {'torrents': [...]}")
+        manifest = plan_mv3_offline_manifest(
+            load_mv3_transfer_plan(args.transfer_plan),
+            qb_torrents,
+            instances_report=load_optional_json_report(args.instances_report),
+            limit=args.limit,
+            cloud_root=args.cloud_root,
+            min_seed_days=args.min_seed_days,
+        )
+        rendered = render_mv3_offline_manifest(manifest, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

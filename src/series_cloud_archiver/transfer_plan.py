@@ -8,6 +8,8 @@ from typing import Dict, Iterable, List, Optional
 
 DEFAULT_TRANSFER_STATUSES = ["cloud_strm_not_found"]
 MV3_PREVIEW_ENDPOINT = {"method": "POST", "path": "/api/v1/media-transfer/preview"}
+MV3_OFFLINE_ENDPOINT = {"method": "POST", "path": "/api/v1/files/115/offline/add"}
+MV3_STRM_GENERATE_ENDPOINT = {"method": "POST", "path": "/api/v1/strm/generate"}
 FORBIDDEN_EXECUTION_ENDPOINTS = [
     "POST /api/v1/media-transfer/execute",
     "POST /api/v1/strm/generate",
@@ -112,6 +114,54 @@ def render_mv3_preview_manifest(manifest: Dict[str, object], output_format: str)
     if output_format == "json":
         return json.dumps(manifest, ensure_ascii=False, indent=2)
     return _render_preview_manifest_markdown(manifest)
+
+
+def plan_mv3_offline_manifest(
+    transfer_plan: Dict[str, object],
+    qb_torrents: List[Dict[str, object]],
+    instances_report: Optional[Dict[str, object]] = None,
+    limit: int = 10,
+    cloud_root: str = "/series",
+    min_seed_days: int = 7,
+) -> Dict[str, object]:
+    raw_items = [item for item in transfer_plan.get("items", []) if isinstance(item, dict)]
+    selected_items = raw_items[: limit if limit > 0 else len(raw_items)]
+    context = _mv3_offline_context(instances_report, cloud_root)
+    items = [
+        _offline_manifest_item(index, item, qb_torrents, context, min_seed_days)
+        for index, item in enumerate(selected_items, start=1)
+    ]
+    warnings = []
+    if isinstance(transfer_plan.get("warnings"), list):
+        warnings.extend(str(item) for item in transfer_plan["warnings"])
+    warnings.extend(context.get("warnings", []))
+    return {
+        "mode": "readonly-mv3-offline-manifest",
+        "source_mode": transfer_plan.get("mode", ""),
+        "available_items": len(raw_items),
+        "planned_items": len(items),
+        "limit": limit,
+        "total_size_bytes": sum(int(item.get("size_bytes") or 0) for item in items),
+        "mv3_context": context,
+        "min_seed_days": min_seed_days,
+        "items": items,
+        "forbidden_endpoints": [
+            "POST /api/v1/files/115/offline/add",
+            "POST /api/v1/files/115/offline/add_bt",
+            "POST /api/v1/strm/generate",
+            "POST /api/v1/files/115/delete",
+            "POST /api/v1/files/115/move",
+            "DELETE /api/v1/strm/records/{record_id}",
+        ],
+        "warnings": warnings,
+        "safety": "readonly offline manifest only; no MV3 offline task, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed; magnet URIs are not written to reports",
+    }
+
+
+def render_mv3_offline_manifest(manifest: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(manifest, ensure_ascii=False, indent=2)
+    return _render_offline_manifest_markdown(manifest)
 
 
 def _transfer_item(item: Dict[str, object]) -> Dict[str, object]:
@@ -269,6 +319,127 @@ def _safe_cloud_segment(value: str) -> str:
     return " ".join(cleaned.split()) or "unknown"
 
 
+def _mv3_offline_context(instances_report: Optional[Dict[str, object]], cloud_root: str) -> Dict[str, object]:
+    warnings: List[str] = []
+    cloud_drive = _first_cloud_drive(instances_report)
+    mount_paths = {}
+    if isinstance(cloud_drive, dict) and isinstance(cloud_drive.get("mount_path"), dict):
+        mount_paths = {str(key): str(value) for key, value in cloud_drive["mount_path"].items()}
+    normalized_cloud_root = (cloud_root or "/series").rstrip("/") or "/series"
+    if mount_paths and normalized_cloud_root not in mount_paths and normalized_cloud_root not in mount_paths.values():
+        warnings.append(f"cloud_root_not_in_mv3_mount_paths:{normalized_cloud_root}")
+    if not cloud_drive:
+        warnings.append("mv3_cloud_drive_not_found")
+    return {
+        "cloud_root": normalized_cloud_root,
+        "cloud_drive_slug": str(cloud_drive.get("slug") or "") if isinstance(cloud_drive, dict) else "",
+        "cloud_drive_name": str(cloud_drive.get("name") or "") if isinstance(cloud_drive, dict) else "",
+        "cloud_mount_paths": mount_paths,
+        "share_transfer_default_path": str(cloud_drive.get("share_transfer_default_path") or "") if isinstance(cloud_drive, dict) else "",
+        "offline_endpoint": MV3_OFFLINE_ENDPOINT,
+        "strm_generate_endpoint": MV3_STRM_GENERATE_ENDPOINT,
+        "warnings": warnings,
+    }
+
+
+def _offline_manifest_item(
+    index: int,
+    item: Dict[str, object],
+    qb_torrents: List[Dict[str, object]],
+    context: Dict[str, object],
+    min_seed_days: int,
+) -> Dict[str, object]:
+    matches = _match_qb_torrents_for_transfer_item(item, qb_torrents)
+    magnet_count = sum(1 for torrent in matches if str(torrent.get("magnet_uri") or ""))
+    seed_ok_count = sum(1 for torrent in matches if int(torrent.get("seeding_time") or 0) >= min_seed_days * 86400)
+    destination = _proposed_cloud_destination(context.get("cloud_root", "/series"), item)
+    blockers = [
+        "requires_manual_approval_before_offline_add",
+        "requires_mv3_offline_preview_or_single_item_probe",
+        "requires_strm_generation_after_offline_completion",
+        "requires_cloud_strm_rescan_before_cleanup",
+    ]
+    if not matches:
+        blockers.append("missing_qb_torrent_match")
+    if matches and magnet_count == 0:
+        blockers.append("missing_qb_magnet_uri")
+    if matches and seed_ok_count < len(matches):
+        blockers.append("qb_seed_age_short_for_some_torrents")
+    if not context.get("cloud_drive_slug"):
+        blockers.append("missing_mv3_cloud_drive")
+    return {
+        "priority": index,
+        "title": str(item.get("title") or ""),
+        "tmdbid": int(item.get("tmdbid") or 0),
+        "season": int(item.get("season") or 0),
+        "expected_count": int(item.get("expected_count") or 0),
+        "candidate_count": int(item.get("candidate_count") or 0),
+        "size_bytes": int(item.get("size_bytes") or 0),
+        "proposed_cloud_destination": destination,
+        "source_titles": _string_list(item.get("titles")),
+        "source_paths": _string_list(item.get("source_paths")),
+        "qb_match_count": len(matches),
+        "qb_magnet_available_count": magnet_count,
+        "qb_seed_age_ok_count": seed_ok_count,
+        "qb_matches": [_qb_match_summary(torrent) for torrent in matches],
+        "mv3_offline_call": {
+            "method": MV3_OFFLINE_ENDPOINT["method"],
+            "path": MV3_OFFLINE_ENDPOINT["path"],
+            "body_template": {
+                "storage": context.get("cloud_drive_slug") or "[REQUIRES_MV3_CLOUD_DRIVE]",
+                "urls": "[REDACTED_MAGNET_URIS_FROM_QB]",
+                "wp_path": destination,
+                "wp_path_id": "[OPTIONAL_TARGET_FOLDER_ID]",
+            },
+        },
+        "post_offline_strm_generate_call": {
+            "method": MV3_STRM_GENERATE_ENDPOINT["method"],
+            "path": MV3_STRM_GENERATE_ENDPOINT["path"],
+            "body_template": {
+                "storage": context.get("cloud_drive_slug") or "[REQUIRES_MV3_CLOUD_DRIVE]",
+                "source_dir": destination,
+                "target_dir": destination,
+                "cloud": True,
+                "incremental": True,
+                "overwrite": False,
+            },
+        },
+        "execution_blockers": blockers,
+        "source_blockers": _string_list(item.get("blockers")),
+    }
+
+
+def _match_qb_torrents_for_transfer_item(item: Dict[str, object], qb_torrents: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    wanted_titles = [str(item.get("title") or "")]
+    wanted_titles.extend(_string_list(item.get("titles")))
+    wanted_paths = _string_list(item.get("source_paths"))
+    matches = []
+    for torrent in qb_torrents:
+        name = str(torrent.get("name") or "")
+        content_path = str(torrent.get("content_path") or "")
+        save_path = str(torrent.get("save_path") or "")
+        if any(path and (content_path == path or content_path.startswith(path + "/") or path.startswith(content_path + "/")) for path in wanted_paths):
+            matches.append(torrent)
+            continue
+        if any(title and (title in name or name in title) for title in wanted_titles):
+            matches.append(torrent)
+    matches.sort(key=lambda torrent: (-int(torrent.get("size") or torrent.get("total_size") or 0), str(torrent.get("name") or "")))
+    return matches
+
+
+def _qb_match_summary(torrent: Dict[str, object]) -> Dict[str, object]:
+    seeding_time = int(torrent.get("seeding_time") or 0)
+    return {
+        "name": str(torrent.get("name") or ""),
+        "hash": str(torrent.get("hash") or ""),
+        "state": str(torrent.get("state") or ""),
+        "progress": round(float(torrent.get("progress") or 0.0), 4),
+        "seed_days": round(seeding_time / 86400.0, 2),
+        "size_bytes": int(torrent.get("size") or torrent.get("total_size") or 0),
+        "magnet_available": bool(str(torrent.get("magnet_uri") or "")),
+    }
+
+
 def _int_list(value: object) -> List[int]:
     if not isinstance(value, list):
         return []
@@ -388,6 +559,66 @@ def _render_preview_manifest_markdown(manifest: Dict[str, object]) -> str:
     lines.append("")
     lines.append(
         "Next gate: fill MV3 source/target library IDs through a successful readonly library/item lookup, then call the preview endpoint for one approved row before any execute endpoint is allowed."
+    )
+    return "\n".join(lines)
+
+
+def _render_offline_manifest_markdown(manifest: Dict[str, object]) -> str:
+    context = manifest.get("mv3_context") if isinstance(manifest.get("mv3_context"), dict) else {}
+    lines = [
+        "# Series Cloud Archiver MV3 Offline Manifest",
+        "",
+        f"- Mode: `{manifest.get('mode', '')}`",
+        f"- Source mode: `{manifest.get('source_mode', '')}`",
+        f"- Available transfer items: `{manifest.get('available_items', 0)}`",
+        f"- Planned items in this manifest: `{manifest.get('planned_items', 0)}`",
+        f"- Planned size in this manifest: `{_human_size(int(manifest.get('total_size_bytes') or 0))}`",
+        f"- MV3 cloud drive: `{context.get('cloud_drive_slug', '')}`",
+        f"- Proposed cloud root: `{context.get('cloud_root', '')}`",
+        f"- Minimum qB seed days: `{manifest.get('min_seed_days', 0)}`",
+        "- Safety: readonly offline manifest only; no MV3 offline task, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed.",
+        "- Privacy: magnet URIs are not written to this report.",
+        "",
+        "## Forbidden Endpoints",
+        "",
+    ]
+    for endpoint in manifest.get("forbidden_endpoints", []):
+        lines.append(f"- `{endpoint}`")
+    warnings = manifest.get("warnings", [])
+    if warnings:
+        lines.extend(["", "## Warnings", ""])
+        for warning in warnings:
+            lines.append(f"- {warning}")
+    lines.extend(
+        [
+            "",
+            "## Manifest Items",
+            "",
+            "| Priority | Size | TMDB ID | Season | Expected | qB Matches | Magnets | Seed OK | Title | Proposed cloud destination | Blockers |",
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
+        ]
+    )
+    for item in manifest.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {priority} | {size} | {tmdbid} | {season} | {expected} | {matches} | {magnets} | {seed_ok} | {title} | {destination} | {blockers} |".format(
+                priority=item.get("priority") or "",
+                size=_human_size(int(item.get("size_bytes") or 0)),
+                tmdbid=item.get("tmdbid") or "",
+                season=item.get("season") or "",
+                expected=item.get("expected_count") or "",
+                matches=item.get("qb_match_count") or 0,
+                magnets=item.get("qb_magnet_available_count") or 0,
+                seed_ok=item.get("qb_seed_age_ok_count") or 0,
+                title=_escape_cell(str(item.get("title") or "")),
+                destination=_escape_cell(str(item.get("proposed_cloud_destination") or "")),
+                blockers=_escape_cell(", ".join(_string_list(item.get("execution_blockers")))),
+            )
+        )
+    lines.append("")
+    lines.append(
+        "Next gate: choose one approved row with qB magnet coverage, run a single MV3 offline-add probe only after explicit approval, then wait for cloud completion before generating STRM."
     )
     return "\n".join(lines)
 

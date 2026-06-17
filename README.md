@@ -183,6 +183,32 @@ PYTHONPATH=src python3 -m series_cloud_archiver plan-mv3-preview \
 
 只有当 library/item ID 能只读查到、预览接口对单条记录成功、并且人工批准后，才允许进入真正的 `--execute --limit 1` 试运行。
 
+## MV3 115 离线 manifest dry-run
+
+如果 MV3 的 `media-transfer` 取不到 Emby library/item ID，可以改走更贴近 qB 工作流的路线：从 qB 只读读取种子元数据，规划 115 离线任务，再等云端完成后生成 STRM。
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver plan-mv3-offline \
+  --env-file .env \
+  --transfer-plan reports/mv3-transfer-plan.json \
+  --instances-report reports/mv3-instances.json \
+  --limit 10 \
+  --cloud-root /series \
+  --min-seed-days 7 \
+  --format markdown \
+  --output reports/mv3-offline-manifest.md
+```
+
+`plan-mv3-offline` 会只读 qB 的 torrent 列表，匹配待转存剧集，并输出：
+
+- qB 命中多少个种子
+- 有多少个种子带 magnet
+- 有多少个已经满足做种天数
+- 预计的 115 云端目录
+- 后续应调用的 MV3 离线接口和 STRM 生成接口模板
+
+报告不会写出 magnet 原文，也不会调用 `/api/v1/files/115/offline/add`、`/api/v1/files/115/offline/add_bt` 或 `/api/v1/strm/generate`。真正执行前仍然需要单条人工批准。
+
 ## MV3 只读探针
 
 正式接入 MV3 转存前，先确认 MV3 的地址、鉴权方式和可用接口：

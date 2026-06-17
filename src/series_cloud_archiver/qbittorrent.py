@@ -49,10 +49,9 @@ class QBClient:
 
 
 def fetch_qb_evidence(base_url: str, user: str = "", qb_pass: str = "") -> List[QBTorrentEvidence]:
-    client = QBClient(base_url=base_url, user=user, qb_pass=qb_pass)
-    client.login()
+    items = fetch_qb_torrents(base_url, user, qb_pass)
     evidence: List[QBTorrentEvidence] = []
-    for item in client.torrents():
+    for item in items:
         seeding_seconds = int(item.get("seeding_time") or 0)
         evidence.append(
             QBTorrentEvidence(
@@ -68,6 +67,12 @@ def fetch_qb_evidence(base_url: str, user: str = "", qb_pass: str = "") -> List[
             )
         )
     return evidence
+
+
+def fetch_qb_torrents(base_url: str, user: str = "", qb_pass: str = "") -> List[Dict[str, object]]:
+    client = QBClient(base_url=base_url, user=user, qb_pass=qb_pass)
+    client.login()
+    return client.torrents()
 
 
 def _path_variants(path: str, aliases: Dict[str, str]) -> List[str]:
