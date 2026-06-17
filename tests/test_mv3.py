@@ -96,8 +96,41 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(seen["body"]["storage"], "115-default")
         self.assertEqual(seen["timeout"], 12)
         self.assertTrue(report["ok"])
+        self.assertTrue(report["http_ok"])
+        self.assertTrue(report["api_success"])
         self.assertEqual(report["request"]["urls"], "[REDACTED_MAGNET_URIS]")
         self.assertNotIn("magnet:?", rendered)
+
+    def test_offline_add_treats_business_failure_as_not_ok(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps({"success": False, "message": "云盘目录不存在"}).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+            report = add_mv3_offline_task(
+                "http://mv3.example",
+                "secret-token",
+                ["magnet:?xt=urn:btih:private"],
+                storage="115-default",
+                wp_path="/series/Missing",
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["http_ok"])
+        self.assertFalse(report["api_success"])
+        self.assertEqual(report["response"]["message"], "云盘目录不存在")
 
     def test_reports_missing_configuration_without_network(self) -> None:
         report = probe_mv3("", "")

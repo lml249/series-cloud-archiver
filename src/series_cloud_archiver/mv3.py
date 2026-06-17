@@ -132,10 +132,13 @@ def add_mv3_offline_task(
     text = response_body.decode("utf-8", "replace")
     parsed = _parse_json(text)
     sanitized_response = _sanitize_json(parsed if isinstance(parsed, (dict, list)) else text)
+    api_success = _api_success(parsed)
     return {
         "mode": "mv3-offline-add-one-result",
         "endpoint": {"method": "POST", "path": "/api/v1/files/115/offline/add"},
-        "ok": 200 <= status < 300,
+        "ok": 200 <= status < 300 and api_success,
+        "http_ok": 200 <= status < 300,
+        "api_success": api_success,
         "status": status,
         "response_content_type": _header(headers, "content-type"),
         "response_body_bytes": len(response_body),
@@ -497,6 +500,16 @@ def _redacted_offline_add_request(body: Dict[str, object], magnet_count: int) ->
             redacted[key] = _sanitize_json(value, key)
     redacted["magnet_count"] = magnet_count
     return redacted
+
+
+def _api_success(parsed: object) -> bool:
+    if not isinstance(parsed, dict):
+        return True
+    if "success" in parsed:
+        return bool(parsed.get("success"))
+    if "code" in parsed:
+        return parsed.get("code") in (0, "0", "success", "ok")
+    return True
 
 
 def _is_sensitive_key(key: str) -> bool:
