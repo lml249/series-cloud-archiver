@@ -1,6 +1,15 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from series_cloud_archiver.transfer_plan import plan_mv3_transfers_from_cloud_report, render_mv3_transfer_plan
+from series_cloud_archiver.cli import main
+from series_cloud_archiver.transfer_plan import (
+    plan_mv3_preview_manifest,
+    plan_mv3_transfers_from_cloud_report,
+    render_mv3_preview_manifest,
+    render_mv3_transfer_plan,
+)
 
 
 class TransferPlanTest(unittest.TestCase):
@@ -86,6 +95,152 @@ class TransferPlanTest(unittest.TestCase):
         self.assertIn("MV3 Transfer Plan", markdown)
         self.assertIn("no MV3 transfer", markdown)
         self.assertIn("Demo", markdown)
+
+    def test_builds_preview_manifest_with_execution_blockers(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "Demo/Show",
+                    "tmdbid": 123,
+                    "season": 1,
+                    "size_bytes": 100,
+                    "expected_count": 2,
+                    "candidate_count": 1,
+                    "titles": ["Demo.Show.S01"],
+                    "source_paths": ["/example/media/Demo.Show.S01"],
+                    "blockers": ["no_matching_strm_tmdb_season"],
+                },
+                {
+                    "title": "Second",
+                    "tmdbid": 456,
+                    "season": 2,
+                    "size_bytes": 50,
+                    "expected_count": 8,
+                    "candidate_count": 1,
+                    "titles": ["Second.S02"],
+                    "source_paths": ["/example/media/Second.S02"],
+                },
+            ],
+        }
+        instances = {
+            "summary": {"failed_paths": ["/api/v1/media-transfer/libraries?instance=emby-default"]},
+            "probes": [
+                {
+                    "path": "/api/v1/cloud-drive/instances",
+                    "sample": {
+                        "instances": [
+                            {
+                                "slug": "115-default",
+                                "name": "115",
+                                "mount_path": {"/series": "/series"},
+                                "share_transfer_default_path": "/未整理",
+                            }
+                        ]
+                    },
+                },
+                {"path": "/api/v1/media-transfer/instances", "sample": [{"slug": "emby-default", "name": "Emby"}]},
+            ],
+        }
+        capabilities = {
+            "categories": {
+                "preview_or_search_post": [
+                    {
+                        "method": "POST",
+                        "path": "/api/v1/media-transfer/preview",
+                        "request_schema": {"ref": "PreviewRequest", "required": ["source_library_id"]},
+                    }
+                ]
+            }
+        }
+
+        manifest = plan_mv3_preview_manifest(transfer_plan, instances, capabilities, limit=1)
+
+        self.assertEqual(manifest["mode"], "readonly-mv3-preview-manifest")
+        self.assertEqual(manifest["planned_items"], 1)
+        self.assertEqual(manifest["mv3_context"]["media_transfer_instance"], "emby-default")
+        self.assertEqual(manifest["mv3_context"]["cloud_root"], "/series")
+        item = manifest["items"][0]
+        self.assertEqual(item["proposed_cloud_destination"], "/series/Demo Show {tmdbid=123}/Season 01")
+        self.assertEqual(item["mv3_preview_call"]["body_template"]["instance"], "emby-default")
+        self.assertIn("mv3_libraries_probe_unavailable", item["execution_blockers"])
+        self.assertIn("POST /api/v1/media-transfer/execute", manifest["forbidden_endpoints"])
+
+    def test_renders_preview_manifest_markdown(self) -> None:
+        manifest = {
+            "mode": "readonly-mv3-preview-manifest",
+            "source_mode": "readonly-mv3-transfer-plan",
+            "available_items": 1,
+            "planned_items": 1,
+            "total_size_bytes": 100,
+            "mv3_context": {"media_transfer_instance": "emby-default", "cloud_root": "/series"},
+            "forbidden_endpoints": ["POST /api/v1/media-transfer/execute"],
+            "warnings": [],
+            "items": [
+                {
+                    "priority": 1,
+                    "size_bytes": 100,
+                    "title": "Demo",
+                    "tmdbid": 123,
+                    "season": 1,
+                    "expected_count": 2,
+                    "proposed_cloud_destination": "/series/Demo {tmdbid=123}/Season 01",
+                    "mv3_preview_call": {"method": "POST", "path": "/api/v1/media-transfer/preview"},
+                    "execution_blockers": ["requires_manual_approval_before_execute"],
+                    "source_paths": ["/example/media/Demo"],
+                }
+            ],
+        }
+
+        markdown = render_mv3_preview_manifest(manifest, "markdown")
+
+        self.assertIn("MV3 Preview Manifest", markdown)
+        self.assertIn("readonly manifest only", markdown)
+        self.assertIn("/series/Demo", markdown)
+
+    def test_cli_writes_preview_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            transfer_plan = tmp_path / "transfer.json"
+            output = tmp_path / "preview.json"
+            transfer_plan.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-mv3-transfer-plan",
+                        "items": [
+                            {
+                                "title": "Demo",
+                                "tmdbid": 123,
+                                "season": 1,
+                                "size_bytes": 100,
+                                "expected_count": 2,
+                                "candidate_count": 1,
+                                "titles": ["Demo.S01"],
+                                "source_paths": ["/example/media/Demo.S01"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code = main(
+                [
+                    "plan-mv3-preview",
+                    "--transfer-plan",
+                    str(transfer_plan),
+                    "--limit",
+                    "1",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["planned_items"], 1)
 
 
 if __name__ == "__main__":

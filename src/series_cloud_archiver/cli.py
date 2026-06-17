@@ -19,7 +19,15 @@ from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
 from .reporting import render_report
 from .scanner import scan
 from .storage import StoredSeries
-from .transfer_plan import load_cloud_check_report, plan_mv3_transfers_from_cloud_report, render_mv3_transfer_plan
+from .transfer_plan import (
+    load_cloud_check_report,
+    load_mv3_transfer_plan,
+    load_optional_json_report,
+    plan_mv3_preview_manifest,
+    plan_mv3_transfers_from_cloud_report,
+    render_mv3_preview_manifest,
+    render_mv3_transfer_plan,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -78,6 +86,16 @@ def build_parser() -> argparse.ArgumentParser:
     transfer_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     transfer_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
     transfer_parser.add_argument("--top", type=int, default=0, help="Maximum transfer rows in report")
+
+    preview_parser = subcommands.add_parser("plan-mv3-preview", help="Create a readonly MV3 preview manifest from a transfer plan")
+    preview_parser.add_argument("--transfer-plan", required=True, help="JSON report from plan-mv3-transfer")
+    preview_parser.add_argument("--instances-report", default=None, help="Optional JSON report from mv3-instances")
+    preview_parser.add_argument("--capabilities-report", default=None, help="Optional JSON report from mv3-capabilities")
+    preview_parser.add_argument("--limit", type=int, default=10, help="Maximum manifest rows")
+    preview_parser.add_argument("--cloud-root", default="/series", help="Cloud root used for proposed destinations")
+    preview_parser.add_argument("--instance", default="", help="Override MV3 media-transfer instance slug")
+    preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    preview_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mv3_parser = subcommands.add_parser("mv3-check", help="Readonly MV3 connectivity and capability probe")
     mv3_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -264,6 +282,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         statuses = args.status or ["cloud_strm_not_found"]
         plan = plan_mv3_transfers_from_cloud_report(load_cloud_check_report(args.cloud_report), statuses=statuses, top=args.top)
         rendered = render_mv3_transfer_plan(plan, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "plan-mv3-preview":
+        manifest = plan_mv3_preview_manifest(
+            load_mv3_transfer_plan(args.transfer_plan),
+            instances_report=load_optional_json_report(args.instances_report),
+            capabilities_report=load_optional_json_report(args.capabilities_report),
+            limit=args.limit,
+            cloud_root=args.cloud_root,
+            instance=args.instance,
+        )
+        rendered = render_mv3_preview_manifest(manifest, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

@@ -3,13 +3,34 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 
 DEFAULT_TRANSFER_STATUSES = ["cloud_strm_not_found"]
+MV3_PREVIEW_ENDPOINT = {"method": "POST", "path": "/api/v1/media-transfer/preview"}
+FORBIDDEN_EXECUTION_ENDPOINTS = [
+    "POST /api/v1/media-transfer/execute",
+    "POST /api/v1/strm/generate",
+    "POST /api/v1/files/115/offline/add",
+    "POST /api/v1/files/115/offline/add_bt",
+    "POST /api/v1/files/115/copy",
+    "POST /api/v1/files/115/delete",
+    "POST /api/v1/files/115/move",
+    "DELETE /api/v1/strm/records/{record_id}",
+]
 
 
 def load_cloud_check_report(path: str) -> Dict[str, object]:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def load_mv3_transfer_plan(path: str) -> Dict[str, object]:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def load_optional_json_report(path: Optional[str]) -> Optional[Dict[str, object]]:
+    if not path:
+        return None
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
@@ -53,6 +74,46 @@ def render_mv3_transfer_plan(plan: Dict[str, object], output_format: str) -> str
     return _render_markdown(plan)
 
 
+def plan_mv3_preview_manifest(
+    transfer_plan: Dict[str, object],
+    instances_report: Optional[Dict[str, object]] = None,
+    capabilities_report: Optional[Dict[str, object]] = None,
+    limit: int = 10,
+    cloud_root: str = "/series",
+    instance: str = "",
+) -> Dict[str, object]:
+    raw_items = [item for item in transfer_plan.get("items", []) if isinstance(item, dict)]
+    selected_items = raw_items[: limit if limit > 0 else len(raw_items)]
+    context = _mv3_manifest_context(instances_report, capabilities_report, cloud_root, instance)
+    items = [
+        _preview_manifest_item(index, item, context)
+        for index, item in enumerate(selected_items, start=1)
+    ]
+    warnings = []
+    if isinstance(transfer_plan.get("warnings"), list):
+        warnings.extend(str(item) for item in transfer_plan["warnings"])
+    warnings.extend(context.get("warnings", []))
+    return {
+        "mode": "readonly-mv3-preview-manifest",
+        "source_mode": transfer_plan.get("mode", ""),
+        "available_items": len(raw_items),
+        "planned_items": len(items),
+        "limit": limit,
+        "total_size_bytes": sum(int(item.get("size_bytes") or 0) for item in items),
+        "mv3_context": context,
+        "items": items,
+        "forbidden_endpoints": FORBIDDEN_EXECUTION_ENDPOINTS,
+        "warnings": warnings,
+        "safety": "readonly manifest only; no MV3 preview, transfer execute, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
+    }
+
+
+def render_mv3_preview_manifest(manifest: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(manifest, ensure_ascii=False, indent=2)
+    return _render_preview_manifest_markdown(manifest)
+
+
 def _transfer_item(item: Dict[str, object]) -> Dict[str, object]:
     return {
         "source_status": str(item.get("status") or ""),
@@ -67,6 +128,145 @@ def _transfer_item(item: Dict[str, object]) -> Dict[str, object]:
         "source_paths": _string_list(item.get("source_paths")),
         "blockers": _string_list(item.get("blockers")),
     }
+
+
+def _mv3_manifest_context(
+    instances_report: Optional[Dict[str, object]],
+    capabilities_report: Optional[Dict[str, object]],
+    cloud_root: str,
+    instance: str,
+) -> Dict[str, object]:
+    warnings: List[str] = []
+    cloud_drive = _first_cloud_drive(instances_report)
+    media_instance = instance or _first_media_transfer_instance(instances_report)
+    preview_schema = _preview_schema(capabilities_report)
+    failed_paths = []
+    if isinstance(instances_report, dict):
+        summary = instances_report.get("summary")
+        if isinstance(summary, dict) and isinstance(summary.get("failed_paths"), list):
+            failed_paths = [str(path) for path in summary["failed_paths"]]
+            if failed_paths:
+                warnings.append("mv3_instance_probe_has_failed_paths")
+    mount_paths = {}
+    if isinstance(cloud_drive, dict) and isinstance(cloud_drive.get("mount_path"), dict):
+        mount_paths = {str(key): str(value) for key, value in cloud_drive["mount_path"].items()}
+    normalized_cloud_root = (cloud_root or "/series").rstrip("/") or "/series"
+    if mount_paths and normalized_cloud_root not in mount_paths and normalized_cloud_root not in mount_paths.values():
+        warnings.append(f"cloud_root_not_in_mv3_mount_paths:{normalized_cloud_root}")
+    if not media_instance:
+        warnings.append("mv3_media_transfer_instance_not_found")
+    if not preview_schema:
+        warnings.append("mv3_preview_schema_not_found")
+    return {
+        "cloud_root": normalized_cloud_root,
+        "cloud_drive_slug": str(cloud_drive.get("slug") or "") if isinstance(cloud_drive, dict) else "",
+        "cloud_drive_name": str(cloud_drive.get("name") or "") if isinstance(cloud_drive, dict) else "",
+        "cloud_mount_paths": mount_paths,
+        "share_transfer_default_path": str(cloud_drive.get("share_transfer_default_path") or "") if isinstance(cloud_drive, dict) else "",
+        "media_transfer_instance": media_instance,
+        "preview_endpoint": MV3_PREVIEW_ENDPOINT,
+        "preview_request_schema": preview_schema,
+        "failed_instance_paths": failed_paths,
+        "warnings": warnings,
+    }
+
+
+def _first_cloud_drive(instances_report: Optional[Dict[str, object]]) -> Dict[str, object]:
+    sample = _probe_sample(instances_report, "/api/v1/cloud-drive/instances")
+    if isinstance(sample, dict) and isinstance(sample.get("instances"), list) and sample["instances"]:
+        first = sample["instances"][0]
+        return first if isinstance(first, dict) else {}
+    if isinstance(sample, list) and sample and isinstance(sample[0], dict):
+        return sample[0]
+    return {}
+
+
+def _first_media_transfer_instance(instances_report: Optional[Dict[str, object]]) -> str:
+    sample = _probe_sample(instances_report, "/api/v1/media-transfer/instances")
+    if isinstance(sample, list) and sample:
+        first = sample[0]
+        if isinstance(first, dict):
+            return str(first.get("slug") or "")
+    return ""
+
+
+def _probe_sample(report: Optional[Dict[str, object]], path: str) -> object:
+    if not isinstance(report, dict):
+        return None
+    probes = report.get("probes")
+    if not isinstance(probes, list):
+        return None
+    for probe in probes:
+        if isinstance(probe, dict) and probe.get("path") == path:
+            return probe.get("sample")
+    return None
+
+
+def _preview_schema(capabilities_report: Optional[Dict[str, object]]) -> Dict[str, object]:
+    if not isinstance(capabilities_report, dict):
+        return {}
+    categories = capabilities_report.get("categories")
+    if not isinstance(categories, dict):
+        return {}
+    for row in categories.get("preview_or_search_post", []):
+        if isinstance(row, dict) and row.get("path") == MV3_PREVIEW_ENDPOINT["path"]:
+            schema = row.get("request_schema")
+            return schema if isinstance(schema, dict) else {}
+    return {}
+
+
+def _preview_manifest_item(index: int, item: Dict[str, object], context: Dict[str, object]) -> Dict[str, object]:
+    destination = _proposed_cloud_destination(context.get("cloud_root", "/series"), item)
+    blockers = [
+        "missing_mv3_source_library_id",
+        "missing_mv3_source_item_id",
+        "missing_mv3_target_library_id",
+        "requires_mv3_preview_before_execute",
+        "requires_manual_approval_before_execute",
+    ]
+    failed_paths = context.get("failed_instance_paths")
+    if isinstance(failed_paths, list) and any("media-transfer/libraries" in str(path) for path in failed_paths):
+        blockers.append("mv3_libraries_probe_unavailable")
+    if not context.get("media_transfer_instance"):
+        blockers.append("missing_mv3_media_transfer_instance")
+    return {
+        "priority": index,
+        "title": str(item.get("title") or ""),
+        "tmdbid": int(item.get("tmdbid") or 0),
+        "season": int(item.get("season") or 0),
+        "expected_count": int(item.get("expected_count") or 0),
+        "candidate_count": int(item.get("candidate_count") or 0),
+        "size_bytes": int(item.get("size_bytes") or 0),
+        "proposed_cloud_destination": destination,
+        "source_titles": _string_list(item.get("titles")),
+        "source_paths": _string_list(item.get("source_paths")),
+        "mv3_preview_call": {
+            "method": MV3_PREVIEW_ENDPOINT["method"],
+            "path": MV3_PREVIEW_ENDPOINT["path"],
+            "body_template": {
+                "instance": context.get("media_transfer_instance") or "[REQUIRES_MV3_INSTANCE]",
+                "source_library_id": "[REQUIRES_MV3_SOURCE_LIBRARY_ID]",
+                "source_item_id": "[REQUIRES_MV3_SOURCE_ITEM_ID]",
+                "target_library_id": "[REQUIRES_MV3_TARGET_LIBRARY_ID]",
+            },
+        },
+        "execution_blockers": blockers,
+        "source_blockers": _string_list(item.get("blockers")),
+    }
+
+
+def _proposed_cloud_destination(cloud_root: object, item: Dict[str, object]) -> str:
+    root = str(cloud_root or "/series").rstrip("/") or "/series"
+    title = _safe_cloud_segment(str(item.get("title") or "unknown"))
+    tmdbid = int(item.get("tmdbid") or 0)
+    season = int(item.get("season") or 0)
+    season_segment = f"Season {season:02d}" if season > 0 else "Season XX"
+    return f"{root}/{title} {{tmdbid={tmdbid}}}/{season_segment}"
+
+
+def _safe_cloud_segment(value: str) -> str:
+    cleaned = value.replace("/", " ").replace("\\", " ").strip()
+    return " ".join(cleaned.split()) or "unknown"
 
 
 def _int_list(value: object) -> List[int]:
@@ -129,6 +329,65 @@ def _render_markdown(plan: Dict[str, object]) -> str:
     lines.append("")
     lines.append(
         "Next gate: before any real MV3 transfer, each row still needs a transfer API mapping, STRM re-scan, Emby library confirmation, playback probe, qB seed-age check, and manual approval."
+    )
+    return "\n".join(lines)
+
+
+def _render_preview_manifest_markdown(manifest: Dict[str, object]) -> str:
+    context = manifest.get("mv3_context") if isinstance(manifest.get("mv3_context"), dict) else {}
+    lines = [
+        "# Series Cloud Archiver MV3 Preview Manifest",
+        "",
+        f"- Mode: `{manifest.get('mode', '')}`",
+        f"- Source mode: `{manifest.get('source_mode', '')}`",
+        f"- Available transfer items: `{manifest.get('available_items', 0)}`",
+        f"- Planned items in this manifest: `{manifest.get('planned_items', 0)}`",
+        f"- Planned size in this manifest: `{_human_size(int(manifest.get('total_size_bytes') or 0))}`",
+        f"- MV3 preview endpoint: `{MV3_PREVIEW_ENDPOINT['method']} {MV3_PREVIEW_ENDPOINT['path']}`",
+        f"- MV3 media-transfer instance: `{context.get('media_transfer_instance', '')}`",
+        f"- Proposed cloud root: `{context.get('cloud_root', '')}`",
+        "- Safety: readonly manifest only; no MV3 preview, transfer execute, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed.",
+        "",
+        "## Forbidden Endpoints",
+        "",
+    ]
+    for endpoint in manifest.get("forbidden_endpoints", []):
+        lines.append(f"- `{endpoint}`")
+    warnings = manifest.get("warnings", [])
+    if warnings:
+        lines.extend(["", "## Warnings", ""])
+        for warning in warnings:
+            lines.append(f"- {warning}")
+    lines.extend(
+        [
+            "",
+            "## Manifest Items",
+            "",
+            "| Priority | Size | TMDB ID | Season | Expected | Title | Proposed cloud destination | Preview call | Blockers | Source path sample |",
+            "| ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for item in manifest.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        preview_call = item.get("mv3_preview_call") if isinstance(item.get("mv3_preview_call"), dict) else {}
+        lines.append(
+            "| {priority} | {size} | {tmdbid} | {season} | {expected} | {title} | {destination} | {preview} | {blockers} | {source_path} |".format(
+                priority=item.get("priority") or "",
+                size=_human_size(int(item.get("size_bytes") or 0)),
+                tmdbid=item.get("tmdbid") or "",
+                season=item.get("season") or "",
+                expected=item.get("expected_count") or "",
+                title=_escape_cell(str(item.get("title") or "")),
+                destination=_escape_cell(str(item.get("proposed_cloud_destination") or "")),
+                preview=_escape_cell(f"{preview_call.get('method', '')} {preview_call.get('path', '')}".strip()),
+                blockers=_escape_cell(", ".join(_string_list(item.get("execution_blockers")))),
+                source_path=_escape_cell(_first(item.get("source_paths"))),
+            )
+        )
+    lines.append("")
+    lines.append(
+        "Next gate: fill MV3 source/target library IDs through a successful readonly library/item lookup, then call the preview endpoint for one approved row before any execute endpoint is allowed."
     )
     return "\n".join(lines)
 
