@@ -23,7 +23,7 @@ DEFAULT_INSTANCE_PATHS = [
 ]
 SENSITIVE_METHOD_HINTS = ("delete", "remove", "transfer", "save", "move", "rename", "strm", "download")
 SENSITIVE_KEY_RE = re.compile(
-    r"(token|cookie|password|passwd|secret|authorization|api[_-]?key|access[_-]?key|refresh|pick[_-]?code|receive[_-]?code|share[_-]?code|sign|credential|user[_-]?id|user[_-]?name|phone|email|vip)",
+    r"(^pc$|token|cookie|password|passwd|secret|authorization|api[_-]?key|access[_-]?key|refresh|pick[_-]?code|pickcode|receive[_-]?code|share[_-]?code|sign|credential|user[_-]?id|user[_-]?name|phone|email|vip)",
     re.IGNORECASE,
 )
 SENSITIVE_URL_KEY_RE = re.compile(

@@ -230,7 +230,7 @@ class MV3ProbeTest(unittest.TestCase):
                         "success": True,
                         "data": {
                             "items": [
-                                {"name": "Demo.S01E01.mkv", "file_id": "file-1", "is_dir": False, "size": 1024},
+                                {"name": "Demo.S01E01.mkv", "file_id": "file-1", "is_dir": False, "size": 1024, "pc": "private-pickcode"},
                                 {"name": "Demo.S01E03.mkv", "file_id": "file-3", "is_dir": False, "size": 2048},
                             ]
                         },
@@ -256,6 +256,7 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertTrue(any("/api/v1/files/cloud/browse?" in url for url in seen))
         self.assertTrue(all("/api/v1/files/115/list" not in url for url in seen))
         self.assertIn("Demo.S01E01.mkv", rendered)
+        self.assertNotIn("private-pickcode", render_mv3_cloud_browse_report(report, "json"))
 
     def test_offline_status_reports_not_ready_until_task_done_and_folder_has_files(self) -> None:
         class FakeResponse:
