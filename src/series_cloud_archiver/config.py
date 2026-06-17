@@ -50,6 +50,7 @@ class ScanConfig:
     mode: str = "dry-run"
     include_qb: bool = True
     include_emby: bool = False
+    path_aliases: Dict[str, str] = field(default_factory=dict)
     exclude_names: List[str] = field(
         default_factory=lambda: [
             "#recycle",
@@ -83,9 +84,23 @@ def config_from_env(env_file: Optional[str], media_roots: Iterable[str]) -> Scan
         mode=_get(values, "ARCHIVER_MODE", "dry-run"),
         include_qb=_get(values, "ARCHIVER_INCLUDE_QB", "true").lower() != "false",
         include_emby=_get(values, "ARCHIVER_INCLUDE_EMBY", "false").lower() == "true",
+        path_aliases=_parse_aliases(_get(values, "ARCHIVER_PATH_ALIASES")),
     )
 
 
 def db_path_from_env(env_file: Optional[str]) -> str:
     values = load_env_file(env_file)
     return _get(values, "ARCHIVER_DB_PATH", "data/series-cloud-archiver.sqlite3")
+
+
+def _parse_aliases(value: str) -> Dict[str, str]:
+    aliases: Dict[str, str] = {}
+    for item in _split_csv(value):
+        if "=" not in item:
+            continue
+        left, right = item.split("=", 1)
+        left = left.strip().rstrip("/")
+        right = right.strip().rstrip("/")
+        if left and right:
+            aliases[left] = right
+    return aliases

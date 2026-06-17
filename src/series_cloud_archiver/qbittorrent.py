@@ -70,16 +70,45 @@ def fetch_qb_evidence(base_url: str, user: str = "", qb_pass: str = "") -> List[
     return evidence
 
 
-def match_torrent(series: FileSystemSeries, torrents: List[QBTorrentEvidence]) -> Optional[QBTorrentEvidence]:
+def _path_variants(path: str, aliases: Dict[str, str]) -> List[str]:
+    normalized = path.rstrip("/")
+    variants = {normalized}
+    for left, right in aliases.items():
+        left = left.rstrip("/")
+        right = right.rstrip("/")
+        if normalized == left or normalized.startswith(left + "/"):
+            variants.add(right + normalized[len(left) :])
+        if normalized == right or normalized.startswith(right + "/"):
+            variants.add(left + normalized[len(right) :])
+    return sorted(variants)
+
+
+def match_torrent(
+    series: FileSystemSeries,
+    torrents: List[QBTorrentEvidence],
+    path_aliases: Optional[Dict[str, str]] = None,
+) -> Optional[QBTorrentEvidence]:
+    aliases = path_aliases or {}
     series_path = series.path.rstrip("/")
+    series_variants = _path_variants(series_path, aliases)
     best: Optional[QBTorrentEvidence] = None
     best_score = 0
     for torrent in torrents:
-        paths = [torrent.content_path.rstrip("/"), torrent.save_path.rstrip("/")]
+        paths = []
+        for path in [torrent.content_path.rstrip("/"), torrent.save_path.rstrip("/")]:
+            paths.extend(_path_variants(path, aliases))
         score = 0
-        if series_path in paths:
+        if any(variant in paths for variant in series_variants):
             score = 100
-        elif any(path and (series_path.startswith(path + "/") or path.startswith(series_path + "/")) for path in paths):
+        elif any(
+            path
+            and (
+                variant.startswith(path + "/")
+                or path.startswith(variant + "/")
+            )
+            for path in paths
+            for variant in series_variants
+        ):
             score = 80
         elif torrent.name and torrent.name.lower() in series.title.lower():
             score = 40

@@ -137,7 +137,7 @@ def scan(config: ScanConfig) -> ScanReport:
     candidates = [
         classify(
             series,
-            match_torrent(series, qb_items) if qb_items else None,
+            match_torrent(series, qb_items, config.path_aliases) if qb_items else None,
             match_emby(series, emby_items) if emby_items else None,
             config,
         )

@@ -4,7 +4,8 @@ from pathlib import Path
 
 from series_cloud_archiver.config import ScanConfig
 from series_cloud_archiver.episode import episode_signal
-from series_cloud_archiver.qbittorrent import QBClient
+from series_cloud_archiver.models import FileSystemSeries, EpisodeSignal, QBTorrentEvidence
+from series_cloud_archiver.qbittorrent import QBClient, match_torrent
 from series_cloud_archiver.scanner import scan
 
 
@@ -114,6 +115,31 @@ class QBittorrentClientTest(unittest.TestCase):
 
         client.opener = Opener()
         client.login()
+
+    def test_match_torrent_uses_path_alias(self) -> None:
+        series = FileSystemSeries(
+            title="Demo.Show.S01",
+            path="/example/library-host/TV/Demo.Show.S01",
+            size_bytes=10,
+            video_count=2,
+            latest_mtime=0,
+            age_days=10,
+            signal=EpisodeSignal(),
+        )
+        torrent = QBTorrentEvidence(
+            name="Different Display Name",
+            hash="abc",
+            state="uploading",
+            save_path="/example/qb-view/TV",
+            content_path="/example/qb-view/TV/Demo.Show.S01",
+            progress=1.0,
+            seeding_time_seconds=86400 * 8,
+            seed_days=8.0,
+            size_bytes=10,
+        )
+
+        match = match_torrent(series, [torrent], {"/example/library-host": "/example/qb-view"})
+        self.assertIs(match, torrent)
 
 
 if __name__ == "__main__":
