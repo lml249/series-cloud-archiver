@@ -4,6 +4,7 @@ from pathlib import Path
 
 from series_cloud_archiver.config import ScanConfig
 from series_cloud_archiver.episode import episode_signal
+from series_cloud_archiver.qbittorrent import QBClient
 from series_cloud_archiver.scanner import scan
 
 
@@ -89,6 +90,30 @@ class ReadonlyScanTest(unittest.TestCase):
 
             self.assertEqual(len(report.candidates), 1)
             self.assertEqual(report.status_counts["candidate_for_cloud_check"], 2)
+
+
+class QBittorrentClientTest(unittest.TestCase):
+    def test_login_accepts_ok_with_period(self) -> None:
+        client = QBClient("http://example.invalid", "user", "pass")
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b"Ok."
+
+        class Opener:
+            def open(self, request, timeout):
+                return Response()
+
+        client.opener = Opener()
+        client.login()
 
 
 if __name__ == "__main__":

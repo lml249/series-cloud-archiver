@@ -39,7 +39,7 @@ class QBClient:
         )
         with self.opener.open(request, timeout=self.timeout) as response:
             payload = response.read().decode("utf-8", "replace").strip()
-        if payload.lower() != "ok":
+        if payload.rstrip(".").lower() != "ok":
             raise RuntimeError("qBittorrent login failed")
 
     def torrents(self) -> List[Dict[str, object]]:
@@ -89,4 +89,3 @@ def match_torrent(series: FileSystemSeries, torrents: List[QBTorrentEvidence]) -
             best_score = score
             best = torrent
     return best
-
