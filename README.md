@@ -145,3 +145,16 @@ PYTHONPATH=src python3 -m series_cloud_archiver cloud-check \
 ```
 
 `identity-resolve` 只调用 MoviePilot 的媒体识别接口补齐 TMDB ID/季号，不触发下载或转存。`cloud-check` 只扫描 `.strm` 文件名里的 `tmdbid`、季号和集号，不读取 STRM 里的直链，也不会触发 MV3 转存、生成 STRM 或删除本地文件。`cloud_strm_complete` 只表示云端 STRM 文件名覆盖预期集数，后续仍要经过 Emby 入库、播放探测、qB 做种和人工审批。
+
+## MV3 转存待办 dry-run
+
+云端 STRM 复核后，可以把 `cloud_strm_not_found` 的项目整理成“待转存清单”：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver plan-mv3-transfer \
+  --cloud-report reports/volume3-tv-cloud-strm-check-with-identity-full.json \
+  --format markdown \
+  --output reports/mv3-transfer-plan.md
+```
+
+这一步只读取 `cloud-check` 的 JSON 报告并排序，不调用 MV3，也不生成 STRM。默认只纳入已有 TMDB ID 和季号、但云端完全没有 STRM 的剧集；季号不清的多季合集会继续留在人工复核里。

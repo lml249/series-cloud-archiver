@@ -11,6 +11,7 @@ from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
 from .reporting import render_report
 from .scanner import scan
 from .storage import StoredSeries
+from .transfer_plan import load_cloud_check_report, plan_mv3_transfers_from_cloud_report, render_mv3_transfer_plan
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,6 +63,13 @@ def build_parser() -> argparse.ArgumentParser:
     identity_parser.add_argument("--scan-report", required=True, help="JSON report from scan/evaluate")
     identity_parser.add_argument("--output", required=True, help="Write identity override JSON to file")
     identity_parser.add_argument("--top", type=int, default=None, help="Maximum missing-identity candidates to resolve")
+
+    transfer_parser = subcommands.add_parser("plan-mv3-transfer", help="Create a readonly MV3 transfer queue from cloud-check JSON")
+    transfer_parser.add_argument("--cloud-report", required=True, help="JSON report from cloud-check")
+    transfer_parser.add_argument("--status", action="append", default=[], help="Source status to include; defaults to cloud_strm_not_found")
+    transfer_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    transfer_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+    transfer_parser.add_argument("--top", type=int, default=0, help="Maximum transfer rows in report")
     return parser
 
 
@@ -224,6 +232,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             progress=print,
         )
         print(render_identity_overrides({"summary": payload["summary"], "warnings": payload["warnings"]}))
+        return 0
+
+    if args.command == "plan-mv3-transfer":
+        statuses = args.status or ["cloud_strm_not_found"]
+        plan = plan_mv3_transfers_from_cloud_report(load_cloud_check_report(args.cloud_report), statuses=statuses, top=args.top)
+        rendered = render_mv3_transfer_plan(plan, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
         return 0
 
     parser.error("unknown command")

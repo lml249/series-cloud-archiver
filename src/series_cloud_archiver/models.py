@@ -133,6 +133,7 @@ class CloudCheckItem:
     reasons: List[str]
     blockers: List[str]
     titles: List[str]
+    source_paths: List[str]
     strm_paths_sample: List[str]
 
 

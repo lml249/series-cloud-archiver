@@ -159,6 +159,7 @@ def _candidate_groups(
                 "season": season,
                 "size_bytes": 0,
                 "titles": set(),
+                "source_paths": set(),
                 "expected_episodes": set(),
                 "expected_count": 0,
                 "candidate_count": 0,
@@ -167,6 +168,9 @@ def _candidate_groups(
         group["candidate_count"] = int(group["candidate_count"]) + 1
         group["size_bytes"] = int(group["size_bytes"]) + int(candidate.get("size_bytes") or 0)
         group["titles"].add(str(candidate.get("title") or ""))
+        path_value = str(candidate.get("path") or "")
+        if path_value:
+            group["source_paths"].add(path_value)
         if tmdbid and not group["tmdbid"]:
             group["tmdbid"] = tmdbid
         if season and not group["season"]:
@@ -245,6 +249,7 @@ def _check_group(
         reasons=reasons,
         blockers=blockers,
         titles=sorted(title for title in group["titles"] if title),
+        source_paths=sorted(path for path in group["source_paths"] if path),
         strm_paths_sample=strm_paths_sample,
     )
 
