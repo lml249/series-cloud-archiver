@@ -215,7 +215,13 @@ def render_mv3_capabilities_report(report: Dict[str, object], output_format: str
     return _render_capabilities_markdown(report)
 
 
-def inspect_mv3_instances(base_url: str, token: str = "", paths: Optional[List[str]] = None) -> Dict[str, object]:
+def inspect_mv3_instances(
+    base_url: str,
+    token: str = "",
+    paths: Optional[List[str]] = None,
+    timeout: int = 10,
+    retry_failed_once: bool = False,
+) -> Dict[str, object]:
     if not base_url:
         return {
             "mode": "readonly-mv3-instance-probe",
@@ -229,7 +235,7 @@ def inspect_mv3_instances(base_url: str, token: str = "", paths: Optional[List[s
             "safety": _instance_safety_text(),
         }
 
-    client = MV3Client(base_url, token)
+    client = MV3Client(base_url, token, timeout=timeout)
     probes = []
     warnings: List[str] = []
     allow_dynamic_paths = paths is None
@@ -247,15 +253,25 @@ def inspect_mv3_instances(base_url: str, token: str = "", paths: Optional[List[s
             continue
         try:
             status, headers, body = client.get(path)
-            probes.append(_instance_probe_result(path, status, headers, body))
+            probes.append(_instance_probe_result(path, status, headers, body, attempts=1))
             if allow_dynamic_paths and path == "/api/v1/media-transfer/instances" and 200 <= status < 300:
                 parsed = _parse_json(body.decode("utf-8", "replace"))
                 for dynamic_path in _media_transfer_library_paths(_unwrap_api_payload(parsed)):
                     if dynamic_path not in seen_paths and dynamic_path not in paths_to_probe:
                         paths_to_probe.append(dynamic_path)
         except Exception as exc:  # noqa: BLE001
-            warnings.append(f"instance_probe_failed:{path}:{exc}")
-            probes.append({"path": path, "ok": False, "error": str(exc)})
+            if retry_failed_once:
+                warnings.append(f"instance_probe_retry:{path}:{exc}")
+                try:
+                    status, headers, body = client.get(path)
+                    probes.append(_instance_probe_result(path, status, headers, body, attempts=2, previous_error=str(exc)))
+                    continue
+                except Exception as retry_exc:  # noqa: BLE001
+                    warnings.append(f"instance_probe_failed:{path}:{retry_exc}")
+                    probes.append({"path": path, "ok": False, "error": str(retry_exc), "attempts": 2, "previous_error": str(exc)})
+            else:
+                warnings.append(f"instance_probe_failed:{path}:{exc}")
+                probes.append({"path": path, "ok": False, "error": str(exc), "attempts": 1})
 
     return {
         "mode": "readonly-mv3-instance-probe",
@@ -266,6 +282,8 @@ def inspect_mv3_instances(base_url: str, token: str = "", paths: Optional[List[s
         "probes": probes,
         "summary": _instance_probe_summary(probes),
         "warnings": warnings,
+        "timeout": timeout,
+        "retry_failed_once": retry_failed_once,
         "safety": _instance_safety_text(),
     }
 
@@ -297,7 +315,14 @@ def _probe_result(path: str, status: int, headers: Dict[str, str], body: bytes) 
     return result
 
 
-def _instance_probe_result(path: str, status: int, headers: Dict[str, str], body: bytes) -> Dict[str, object]:
+def _instance_probe_result(
+    path: str,
+    status: int,
+    headers: Dict[str, str],
+    body: bytes,
+    attempts: int = 1,
+    previous_error: str = "",
+) -> Dict[str, object]:
     content_type = _header(headers, "content-type")
     text = body.decode("utf-8", "replace")
     parsed = _parse_json(text)
@@ -311,7 +336,10 @@ def _instance_probe_result(path: str, status: int, headers: Dict[str, str], body
         "json": isinstance(parsed, (dict, list)),
         "payload_shape": _json_shape(payload),
         "payload_count": _json_count(payload),
+        "attempts": attempts,
     }
+    if previous_error:
+        result["previous_error"] = previous_error
     if isinstance(parsed, dict):
         result["json_keys"] = sorted(str(key) for key in parsed.keys())[:30]
     elif isinstance(parsed, list):
@@ -622,6 +650,8 @@ def _render_markdown(report: Dict[str, object]) -> str:
         f"- Configured: `{report.get('configured', False)}`",
         f"- Reachable: `{report.get('reachable', False)}`",
         f"- Token configured: `{report.get('token_configured', False)}`",
+        f"- Timeout: `{report.get('timeout', '')}`",
+        f"- Retry failed once: `{report.get('retry_failed_once', False)}`",
         "- Safety: readonly GET probe only; no MV3 transfer, STRM generation, save, move, rename, or delete endpoint is called.",
         "",
     ]

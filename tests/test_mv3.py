@@ -267,6 +267,30 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("/api/v1/media-transfer/libraries?instance=emby-default", called_paths)
         self.assertEqual(report["summary"]["failed_count"], 0)
 
+    def test_instance_probe_can_retry_failed_get_once(self) -> None:
+        attempts = {"count": 0}
+
+        def fake_get(_self, path):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise TimeoutError("slow")
+            return 200, {"Content-Type": "application/json"}, json.dumps({"data": [{"id": "tv"}]}).encode("utf-8")
+
+        with patch.object(MV3Client, "get", fake_get):
+            report = inspect_mv3_instances(
+                "http://mv3.example",
+                "token",
+                paths=["/api/v1/media-transfer/libraries?instance=emby-default"],
+                timeout=30,
+                retry_failed_once=True,
+            )
+
+        self.assertTrue(report["reachable"])
+        self.assertEqual(report["summary"]["failed_count"], 0)
+        self.assertEqual(report["probes"][0]["attempts"], 2)
+        self.assertEqual(report["probes"][0]["previous_error"], "slow")
+        self.assertIn("instance_probe_retry:/api/v1/media-transfer/libraries?instance=emby-default:slow", report["warnings"])
+
     def test_renders_instance_markdown(self) -> None:
         markdown = render_mv3_instances_report(
             {
@@ -302,7 +326,20 @@ class MV3ProbeTest(unittest.TestCase):
             output = tmp_path / "mv3-instances.json"
             env_file.write_text("MV3_BASE_URL=\nMV3_API_TOKEN=\n", encoding="utf-8")
 
-            code = main(["mv3-instances", "--env-file", str(env_file), "--format", "json", "--output", str(output)])
+            code = main(
+                [
+                    "mv3-instances",
+                    "--env-file",
+                    str(env_file),
+                    "--timeout",
+                    "30",
+                    "--retry-failed-once",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
 
             self.assertEqual(code, 0)
             payload = json.loads(output.read_text(encoding="utf-8"))

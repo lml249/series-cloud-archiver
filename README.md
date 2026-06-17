@@ -223,6 +223,8 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-capabilities \
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver mv3-instances \
   --env-file .env \
+  --timeout 30 \
+  --retry-failed-once \
   --format markdown \
   --output reports/mv3-instances.md
 ```

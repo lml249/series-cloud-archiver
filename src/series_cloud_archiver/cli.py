@@ -112,6 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
     mv3_instances_parser = subcommands.add_parser("mv3-instances", help="Readonly MV3 configured instance and STRM probe")
     mv3_instances_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
     mv3_instances_parser.add_argument("--path", action="append", default=[], help="Readonly GET path to inspect; can be repeated")
+    mv3_instances_parser.add_argument("--timeout", type=int, default=10, help="Per-request timeout in seconds")
+    mv3_instances_parser.add_argument("--retry-failed-once", action="store_true", help="Retry a failed readonly GET once")
     mv3_instances_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     mv3_instances_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
     return parser
@@ -326,7 +328,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "mv3-instances":
         config = config_from_env(args.env_file, [])
-        report = inspect_mv3_instances(config.mv3_base_url, config.mv3_token, paths=args.path or None)
+        report = inspect_mv3_instances(
+            config.mv3_base_url,
+            config.mv3_token,
+            paths=args.path or None,
+            timeout=args.timeout,
+            retry_failed_once=args.retry_failed_once,
+        )
         rendered = render_mv3_instances_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
