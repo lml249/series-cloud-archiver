@@ -127,3 +127,16 @@ PYTHONPATH=src python3 -m series_cloud_archiver plan-cleanup "Some Series" \
 ```
 
 `plan-cleanup` 当前只会生成 blocked dry-run 计划。缺少 MV3 STRM 证据、Emby STRM 验证、播放探测、qB 做种时长和人工批准时，删除目标必须为空。
+
+## 云端 STRM 只读检查
+
+完结候选进入下一关时，可以先检查 MV3/云盘已经生成的 STRM 文件是否覆盖预期集数：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver cloud-check \
+  --scan-report reports/volume3-tv-manual-completion-full.json \
+  --strm-root /media/cloud-strm \
+  --format markdown
+```
+
+这一步只扫描 `.strm` 文件名里的 `tmdbid`、季号和集号，不读取 STRM 里的直链，也不会触发 MV3 转存、生成 STRM 或删除本地文件。`cloud_strm_complete` 只表示云端 STRM 文件名覆盖预期集数，后续仍要经过 Emby 入库、播放探测、qB 做种和人工审批。

@@ -144,6 +144,7 @@ def classify(
         complete_markers=series.signal.complete_markers,
         seasons=series.signal.seasons,
         episode_sample=series.signal.episodes[:10],
+        episode_numbers=series.signal.episodes,
         qb=qb,
         emby=emby,
         mp=mp,

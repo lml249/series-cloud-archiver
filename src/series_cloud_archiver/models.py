@@ -83,6 +83,7 @@ class ScanCandidate:
     complete_markers: List[str]
     seasons: List[int]
     episode_sample: List[int]
+    episode_numbers: List[int] = field(default_factory=list)
     qb: Optional[QBTorrentEvidence] = None
     emby: Optional[EmbyEvidence] = None
     mp: Optional[MPSubscriptionEvidence] = None
@@ -112,4 +113,44 @@ class ScanReport:
             "status_counts": self.status_counts,
             "warnings": self.warnings,
             "candidates": [candidate.to_dict() for candidate in self.candidates],
+        }
+
+
+@dataclass
+class CloudCheckItem:
+    status: str
+    title: str
+    tmdbid: int
+    season: int
+    size_bytes: int
+    candidate_count: int
+    expected_count: int
+    expected_episodes: List[int]
+    cloud_episode_count: int
+    cloud_episodes: List[int]
+    missing_episodes: List[int]
+    extra_cloud_episodes: List[int]
+    reasons: List[str]
+    blockers: List[str]
+    titles: List[str]
+    strm_paths_sample: List[str]
+
+
+@dataclass
+class CloudCheckReport:
+    mode: str
+    strm_roots: List[str]
+    total_candidate_groups: int
+    status_counts: Dict[str, int]
+    items: List[CloudCheckItem]
+    warnings: List[str]
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "mode": self.mode,
+            "strm_roots": self.strm_roots,
+            "total_candidate_groups": self.total_candidate_groups,
+            "status_counts": self.status_counts,
+            "warnings": self.warnings,
+            "items": [asdict(item) for item in self.items],
         }

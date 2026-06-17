@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 from typing import List, Optional
 
+from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
 from .config import config_from_env, db_path_from_env
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
 from .reporting import render_report
@@ -45,6 +46,14 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup_parser.add_argument("--env-file", default=None)
     cleanup_parser.add_argument("--db", default=None)
     cleanup_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+
+    cloud_parser = subcommands.add_parser("cloud-check", help="Readonly STRM coverage check for cloud candidates")
+    cloud_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
+    cloud_parser.add_argument("--scan-report", required=True, help="JSON report from scan/evaluate")
+    cloud_parser.add_argument("--strm-root", action="append", default=[], help="STRM root to scan; can be repeated")
+    cloud_parser.add_argument("--format", choices=["markdown", "json"], default=None)
+    cloud_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+    cloud_parser.add_argument("--top", type=int, default=None, help="Maximum rows in report")
     return parser
 
 
@@ -177,6 +186,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"- Blockers: `{plan['blockers']}`")
                 print("")
                 print("No deletion was performed.")
+        return 0
+
+    if args.command == "cloud-check":
+        config = config_from_env(args.env_file, [])
+        roots = args.strm_root or config.strm_roots
+        top = args.top if args.top is not None else config.top
+        output_format = args.format or config.output_format
+        report = cloud_check_from_scan_report(load_scan_report(args.scan_report), roots, top=top)
+        rendered = render_cloud_check_report(report, output_format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
         return 0
 
     parser.error("unknown command")
