@@ -47,6 +47,8 @@ class ScanConfig:
     qb_pass: str = ""
     mp_base_url: str = ""
     mp_token: str = ""
+    mv3_base_url: str = ""
+    mv3_token: str = ""
     manual_completion_file: str = ""
     identity_file: str = ""
     strm_roots: List[str] = field(default_factory=list)
@@ -87,6 +89,8 @@ def config_from_env(env_file: Optional[str], media_roots: Iterable[str]) -> Scan
         qb_pass=_get(values, "QB_PASSWORD"),
         mp_base_url=_get(values, "MP_BASE_URL"),
         mp_token=_get(values, "MP_API_TOKEN"),
+        mv3_base_url=_get(values, "MV3_BASE_URL"),
+        mv3_token=_get(values, "MV3_API_TOKEN"),
         manual_completion_file=_get(values, "ARCHIVER_MANUAL_COMPLETION_FILE"),
         identity_file=_get(values, "ARCHIVER_IDENTITY_FILE"),
         strm_roots=_split_csv(_get(values, "ARCHIVER_STRM_ROOTS")),

@@ -158,3 +158,16 @@ PYTHONPATH=src python3 -m series_cloud_archiver plan-mv3-transfer \
 ```
 
 这一步只读取 `cloud-check` 的 JSON 报告并排序，不调用 MV3，也不生成 STRM。默认只纳入已有 TMDB ID 和季号、但云端完全没有 STRM 的剧集；季号不清的多季合集会继续留在人工复核里。
+
+## MV3 只读探针
+
+正式接入 MV3 转存前，先确认 MV3 的地址、鉴权方式和可用接口：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-check \
+  --env-file .env \
+  --format markdown \
+  --output reports/mv3-check.md
+```
+
+`mv3-check` 只会访问少量 GET 路径，例如 `/openapi.json` 和 `/api/v1/openapi.json`。它不会调用转存、保存、移动、重命名、生成 STRM 或删除接口；如果 `.env` 中还没有 `MV3_BASE_URL`，报告会直接标记为未配置。

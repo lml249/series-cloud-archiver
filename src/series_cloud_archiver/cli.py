@@ -7,6 +7,7 @@ from typing import List, Optional
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
 from .config import config_from_env, db_path_from_env
 from .identity import render_identity_overrides, resolve_identity_overrides_from_scan_report
+from .mv3 import probe_mv3, render_mv3_probe_report
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
 from .reporting import render_report
 from .scanner import scan
@@ -70,6 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
     transfer_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     transfer_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
     transfer_parser.add_argument("--top", type=int, default=0, help="Maximum transfer rows in report")
+
+    mv3_parser = subcommands.add_parser("mv3-check", help="Readonly MV3 connectivity and capability probe")
+    mv3_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
+    mv3_parser.add_argument("--path", action="append", default=[], help="Readonly GET path to probe; can be repeated")
+    mv3_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    mv3_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
     return parser
 
 
@@ -238,6 +245,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         statuses = args.status or ["cloud_strm_not_found"]
         plan = plan_mv3_transfers_from_cloud_report(load_cloud_check_report(args.cloud_report), statuses=statuses, top=args.top)
         rendered = render_mv3_transfer_plan(plan, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mv3-check":
+        config = config_from_env(args.env_file, [])
+        report = probe_mv3(config.mv3_base_url, config.mv3_token, paths=args.path or None)
+        rendered = render_mv3_probe_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:
