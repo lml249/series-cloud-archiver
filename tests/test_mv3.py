@@ -368,7 +368,7 @@ class MV3ProbeTest(unittest.TestCase):
                     }
                 )
             if path == "/api/v1/share-transfer/parse":
-                return FakeResponse({"success": True, "data": {"share_code": "parsed-code", "receive_code": "abcd"}})
+                return FakeResponse({"success": True, "data": {"share_code": "parsed-code", "receive_code": "abcd", "face": "http://avatars.example.test/private.jpg"}})
             if path == "/api/v1/share-transfer/browse":
                 return FakeResponse(
                     {
@@ -376,7 +376,7 @@ class MV3ProbeTest(unittest.TestCase):
                         "data": {
                             "items": [
                                 {"name": "楚汉传奇", "is_dir": True},
-                                {"name": "楚汉传奇.E01.mkv", "size": "2GB", "is_dir": False},
+                                {"name": "楚汉传奇.E01.mkv", "size": "2147483648", "is_dir": False},
                             ]
                         },
                     }
@@ -396,8 +396,10 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual([item[0] for item in seen], ["/api/v1/resource-search/search", "/api/v1/share-transfer/parse", "/api/v1/share-transfer/browse"])
         self.assertTrue(report["ok"])
         self.assertEqual(report["browse"]["item_count"], 2)
+        self.assertEqual(report["browse"]["items"][1]["size"], "2.00 GiB")
         self.assertNotIn("receive", [item[0] for item in seen])
         self.assertNotIn("https://example.test", rendered)
+        self.assertNotIn("http://avatars.example.test", rendered)
         self.assertNotIn("safe-code", rendered)
         self.assertNotIn("parsed-code", rendered)
         self.assertNotIn("abcd", rendered)

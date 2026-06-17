@@ -27,7 +27,7 @@ SENSITIVE_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 SENSITIVE_URL_KEY_RE = re.compile(
-    r"(direct|download|redirect|play|stream|thumb|thumbnail|cover|poster|image|pic|photo|avatar|url|uri|link)",
+    r"(^face$|direct|download|redirect|play|stream|thumb|thumbnail|cover|poster|image|pic|photo|avatar|url|uri|link)",
     re.IGNORECASE,
 )
 OPENAPI_PATHS = ["/openapi.json", "/api/v1/openapi.json"]
@@ -1091,7 +1091,7 @@ def _share_browse_item_summary(item: Dict[str, object], index: int) -> Dict[str,
         "index": index,
         "name": _first_present(item, ["name", "file_name", "filename", "n", "title"]),
         "kind": _share_item_kind(item),
-        "size": _first_present(item, ["size", "size_text", "file_size", "file_size_text", "s"]),
+        "size": _format_size_value(_first_raw_present(item, ["size", "size_text", "file_size", "file_size_text", "s"])),
         "raw": _sanitize_json(_sample_json(item, max_keys=30)),
     }
 
@@ -1129,6 +1129,24 @@ def _first_raw_present(item: Dict[str, object], keys: List[str]) -> str:
         if value not in (None, ""):
             return str(value)
     return ""
+
+
+def _format_size_value(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if not text.isdigit():
+        return text
+    size = float(text)
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    unit = units[0]
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            break
+        size /= 1024
+    if unit == "B":
+        return f"{int(size)} {unit}"
+    return f"{size:.2f} {unit}"
 
 
 def _find_first_raw_key(value: object, keys: List[str], depth: int = 0) -> str:
