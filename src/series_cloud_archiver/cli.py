@@ -7,7 +7,14 @@ from typing import List, Optional
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
 from .config import config_from_env, db_path_from_env
 from .identity import render_identity_overrides, resolve_identity_overrides_from_scan_report
-from .mv3 import inspect_mv3_capabilities, probe_mv3, render_mv3_capabilities_report, render_mv3_probe_report
+from .mv3 import (
+    inspect_mv3_capabilities,
+    inspect_mv3_instances,
+    probe_mv3,
+    render_mv3_capabilities_report,
+    render_mv3_instances_report,
+    render_mv3_probe_report,
+)
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
 from .reporting import render_report
 from .scanner import scan
@@ -83,6 +90,12 @@ def build_parser() -> argparse.ArgumentParser:
     mv3_cap_parser.add_argument("--include-all", action="store_true", help="Include all OpenAPI endpoints, not just media-relevant paths")
     mv3_cap_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     mv3_cap_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    mv3_instances_parser = subcommands.add_parser("mv3-instances", help="Readonly MV3 configured instance and STRM probe")
+    mv3_instances_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
+    mv3_instances_parser.add_argument("--path", action="append", default=[], help="Readonly GET path to inspect; can be repeated")
+    mv3_instances_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    mv3_instances_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
     return parser
 
 
@@ -271,6 +284,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         config = config_from_env(args.env_file, [])
         report = inspect_mv3_capabilities(config.mv3_base_url, config.mv3_token, include_all=args.include_all)
         rendered = render_mv3_capabilities_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mv3-instances":
+        config = config_from_env(args.env_file, [])
+        report = inspect_mv3_instances(config.mv3_base_url, config.mv3_token, paths=args.path or None)
+        rendered = render_mv3_instances_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

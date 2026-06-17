@@ -191,3 +191,30 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-capabilities \
 - `Destructive/Cleanup`：可能删除、清空、移动、重命名、取消或清理，默认永远不会自动调用。
 
 这份报告的作用是先把 MV3 能做什么讲清楚，再决定第一批只读查询和第一条 `--execute --limit 1` 试运行该怎么设计。
+
+## MV3 实例只读探测
+
+能力报告确认接口存在后，可以读取 MV3 当前配置了哪些网盘实例、转存实例、媒体库、STRM 配置和任务状态：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-instances \
+  --env-file .env \
+  --format markdown \
+  --output reports/mv3-instances.md
+```
+
+`mv3-instances` 只调用 GET 接口。默认读取：
+
+- `/api/v1/cloud-drive/instances`
+- `/api/v1/media-transfer/instances`
+- `/api/v1/media-transfer/libraries`
+- `/api/v1/media-transfer/status`
+- `/api/v1/media-transfer/records?page=1&page_size=5`
+- `/api/v1/strm/config`
+- `/api/v1/strm/generate/status`
+- `/api/v1/strm/records/dirs`
+- `/api/v1/strm/records/stats`
+- `/api/v1/files/115/offline/quota`
+- `/api/v1/files/115/offline/tasks`
+
+报告样本会自动打码 token、cookie、password、pickcode、key 类字段和 URL 类字段。它的目的只是搞清楚“下一步转到哪里、用哪个实例、STRM 输出在哪里”，不会创建转存任务，也不会生成 STRM 或清理本地文件。

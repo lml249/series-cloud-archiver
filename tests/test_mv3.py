@@ -8,8 +8,10 @@ from series_cloud_archiver.cli import main
 from series_cloud_archiver.mv3 import (
     MV3Client,
     inspect_mv3_capabilities,
+    inspect_mv3_instances,
     probe_mv3,
     render_mv3_capabilities_report,
+    render_mv3_instances_report,
     render_mv3_probe_report,
 )
 
@@ -203,6 +205,104 @@ class MV3ProbeTest(unittest.TestCase):
             env_file.write_text("MV3_BASE_URL=\nMV3_API_TOKEN=\n", encoding="utf-8")
 
             code = main(["mv3-capabilities", "--env-file", str(env_file), "--format", "json", "--output", str(output)])
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertFalse(payload["configured"])
+
+    def test_inspects_instances_with_redacted_samples(self) -> None:
+        payloads = {
+            "/api/v1/cloud-drive/instances": {
+                "code": 0,
+                "message": "ok",
+                "data": [
+                    {
+                        "slug": "default",
+                        "name": "115",
+                        "cookie": "UID=private-cookie",
+                        "direct_url": "https://example.test/private",
+                        "root": "/cloud/media",
+                    }
+                ],
+            },
+            "/api/v1/strm/config": {
+                "code": 0,
+                "message": "ok",
+                "data": {"enabled": True, "output_dir": "/strm", "api_key": "private-key"},
+            },
+        }
+        called_paths = []
+
+        def fake_get(_self, path):
+            called_paths.append(path)
+            return 200, {"Content-Type": "application/json"}, json.dumps(payloads.get(path, {})).encode("utf-8")
+
+        with patch.object(MV3Client, "get", fake_get):
+            report = inspect_mv3_instances("http://mv3.example", "token", paths=list(payloads.keys()))
+
+        rendered = render_mv3_instances_report(report, "json")
+        self.assertEqual(called_paths, list(payloads.keys()))
+        self.assertTrue(report["reachable"])
+        self.assertEqual(report["summary"]["ok_count"], 2)
+        self.assertIn("[REDACTED]", rendered)
+        self.assertNotIn("private-cookie", rendered)
+        self.assertNotIn("private-key", rendered)
+        self.assertNotIn("https://example.test/private", rendered)
+
+    def test_instance_probe_expands_media_transfer_libraries_by_instance(self) -> None:
+        payloads = {
+            "/api/v1/media-transfer/instances": [{"slug": "emby-default", "name": "Emby"}],
+            "/api/v1/media-transfer/libraries?instance=emby-default": [{"id": "tv", "name": "TV"}],
+        }
+        called_paths = []
+
+        def fake_get(_self, path):
+            called_paths.append(path)
+            return 200, {"Content-Type": "application/json"}, json.dumps(payloads.get(path, {})).encode("utf-8")
+
+        with patch.object(MV3Client, "get", fake_get):
+            report = inspect_mv3_instances("http://mv3.example", "token", paths=None)
+
+        self.assertIn("/api/v1/media-transfer/instances", called_paths)
+        self.assertIn("/api/v1/media-transfer/libraries?instance=emby-default", called_paths)
+        self.assertEqual(report["summary"]["failed_count"], 0)
+
+    def test_renders_instance_markdown(self) -> None:
+        markdown = render_mv3_instances_report(
+            {
+                "mode": "readonly-mv3-instance-probe",
+                "configured": True,
+                "reachable": True,
+                "token_configured": True,
+                "summary": {"ok_count": 1, "failed_count": 0},
+                "warnings": [],
+                "probes": [
+                    {
+                        "path": "/api/v1/cloud-drive/instances",
+                        "ok": True,
+                        "status": 200,
+                        "payload_shape": "list",
+                        "payload_count": 1,
+                        "json_keys": ["code", "data"],
+                        "sample": [{"slug": "default"}],
+                    }
+                ],
+            },
+            "markdown",
+        )
+
+        self.assertIn("MV3 Instance Probe", markdown)
+        self.assertIn("Sanitized Samples", markdown)
+        self.assertIn("/api/v1/cloud-drive/instances", markdown)
+
+    def test_cli_writes_mv3_instances_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "mv3-instances.json"
+            env_file.write_text("MV3_BASE_URL=\nMV3_API_TOKEN=\n", encoding="utf-8")
+
+            code = main(["mv3-instances", "--env-file", str(env_file), "--format", "json", "--output", str(output)])
 
             self.assertEqual(code, 0)
             payload = json.loads(output.read_text(encoding="utf-8"))
