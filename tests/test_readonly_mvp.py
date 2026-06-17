@@ -11,7 +11,9 @@ from series_cloud_archiver.moviepilot import (
     MPTransferHistoryRecord,
     build_mp_cleanup_preview,
     build_mp_subscription_evidence,
+    execute_mp_cleanup_from_preview,
     match_mp_subscription,
+    render_mp_cleanup_execute_report,
     render_mp_cleanup_preview,
 )
 from series_cloud_archiver.qbittorrent import QBClient, match_torrent
@@ -351,6 +353,106 @@ class MoviePilotEvidenceTest(unittest.TestCase):
 
         self.assertFalse(report["ok"])
         self.assertIn("no_matching_mp_transfer_history", report["blockers"])
+
+    def test_mp_cleanup_execute_uses_validated_preview_ids(self) -> None:
+        preview = build_mp_cleanup_preview(
+            "楚汉传奇",
+            [
+                MPTransferHistoryRecord(
+                    id=10,
+                    title="楚汉传奇",
+                    episodes="E01",
+                    src="/example/source/King.War/King.War.S01E01.mkv",
+                    dest="/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E01.mkv",
+                    mode="link",
+                    status=True,
+                    downloader="20099",
+                    download_hash="feedface00001234567890",
+                    tmdbid=41146,
+                ),
+                MPTransferHistoryRecord(
+                    id=11,
+                    title="楚汉传奇",
+                    episodes="E02",
+                    src="/example/source/King.War/King.War.S01E02.mkv",
+                    dest="/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E02.mkv",
+                    mode="link",
+                    status=True,
+                    downloader="20099",
+                    download_hash="feedface00001234567890",
+                    tmdbid=41146,
+                ),
+            ],
+            expected_title="楚汉传奇",
+            expected_tmdbid=41146,
+            expected_hash_prefix="feedface0000",
+        )
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def delete_transfer_history(self, history_id, deletesrc=True, deletedest=True):
+                self.calls.append((history_id, deletesrc, deletedest))
+                return {"http_status": 200, "ok": True, "response": {"success": True}}
+
+        client = FakeClient()
+        report = execute_mp_cleanup_from_preview(
+            client,
+            preview,
+            expected_title="楚汉传奇",
+            expected_tmdbid=41146,
+            expected_hash_prefix="feedface0000",
+            expected_record_count=2,
+            expected_episode_count=2,
+            expected_episode_min=1,
+            expected_episode_max=2,
+        )
+        rendered = render_mp_cleanup_execute_report(report, "markdown")
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(client.calls, [(10, True, True), (11, True, True)])
+        self.assertEqual(report["summary"]["success_count"], 2)
+        self.assertIn("Attempted: `2`", rendered)
+
+    def test_mp_cleanup_execute_blocks_before_delete_on_mismatch(self) -> None:
+        preview = build_mp_cleanup_preview(
+            "楚汉传奇",
+            [
+                MPTransferHistoryRecord(
+                    id=10,
+                    title="楚汉传奇",
+                    episodes="E01",
+                    mode="link",
+                    status=True,
+                    download_hash="feedface00001234567890",
+                    tmdbid=41146,
+                )
+            ],
+            expected_title="楚汉传奇",
+            expected_tmdbid=41146,
+            expected_hash_prefix="feedface0000",
+        )
+
+        class FakeClient:
+            def delete_transfer_history(self, history_id, deletesrc=True, deletedest=True):
+                raise AssertionError("delete should be blocked before API call")
+
+        report = execute_mp_cleanup_from_preview(
+            FakeClient(),
+            preview,
+            expected_title="楚汉传奇",
+            expected_tmdbid=41146,
+            expected_hash_prefix="feedface0000",
+            expected_record_count=2,
+            expected_episode_count=2,
+            expected_episode_min=1,
+            expected_episode_max=2,
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["summary"]["attempted_count"], 0)
+        self.assertIn("record_count_mismatch", report["blockers"])
 
     def test_history_match_respects_explicit_season(self) -> None:
         evidence = build_mp_subscription_evidence(

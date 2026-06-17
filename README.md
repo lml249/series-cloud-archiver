@@ -281,6 +281,26 @@ PYTHONPATH=src python3 -m series_cloud_archiver mp-cleanup-preview \
 
 这条 MP 删除入口在 MoviePilot 内部会删除目标媒体文件、删除源文件，并在源文件删除后发出下载文件删除事件；MoviePilot 的下载链会据此从 qBittorrent 移除对应任务。当前命令只做预览，不会删除 qB 任务、种子文件、本地源文件或 hlink。
 
+真正执行必须从预览 JSON 报告进入，并带完整校验项和人工批准开关：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mp-cleanup-execute \
+  --env-file .env \
+  --preview-report reports/mp-cleanup-preview-chuhan.json \
+  --expected-title 楚汉传奇 \
+  --expected-tmdbid 41146 \
+  --expected-hash-prefix cb0e53779a3a \
+  --expected-record-count 80 \
+  --expected-episode-count 80 \
+  --expected-episode-min 1 \
+  --expected-episode-max 80 \
+  --approve-mp-cleanup \
+  --format markdown \
+  --output reports/mp-cleanup-execute-chuhan.md
+```
+
+`mp-cleanup-execute` 会在发送任何 DELETE 前重新校验预览报告：标题、TMDB ID、qB hash 前缀、整理历史条数、集数数量、首尾集、缺失集、每条 MP history ID 和删除范围必须全部对上。只要校验失败，就不会发送删除请求。
+
 ## MV3 原生资源搜索
 
 MV3 的原生链路不是 qB magnet 离线，而是先搜索网盘资源，再解析分享、转存到 `/未整理`，之后由整理/STRM 流程接手。第一步只做搜索：

@@ -7,7 +7,12 @@ from typing import List, Optional
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
 from .config import config_from_env, db_path_from_env
 from .identity import render_identity_overrides, resolve_identity_overrides_from_scan_report
-from .moviepilot import mp_cleanup_preview_from_transfer_history, render_mp_cleanup_preview
+from .moviepilot import (
+    execute_mp_cleanup_from_preview_report,
+    render_mp_cleanup_execute_report,
+    mp_cleanup_preview_from_transfer_history,
+    render_mp_cleanup_preview,
+)
 from .mv3 import (
     add_mv3_offline_task,
     browse_mv3_cloud_folder,
@@ -96,6 +101,24 @@ def build_parser() -> argparse.ArgumentParser:
     mp_cleanup_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
     mp_cleanup_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     mp_cleanup_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    mp_cleanup_exec_parser = subcommands.add_parser("mp-cleanup-execute", help="Execute approved MoviePilot cleanup from a validated preview report")
+    mp_cleanup_exec_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    mp_cleanup_exec_parser.add_argument("--preview-report", required=True, help="JSON report from mp-cleanup-preview")
+    mp_cleanup_exec_parser.add_argument("--expected-title", required=True, help="Safety check: exact title expected")
+    mp_cleanup_exec_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Safety check: expected TMDB ID")
+    mp_cleanup_exec_parser.add_argument("--expected-hash-prefix", required=True, help="Safety check: qB hash prefix")
+    mp_cleanup_exec_parser.add_argument("--expected-record-count", type=int, required=True, help="Safety check: exact MP history record count")
+    mp_cleanup_exec_parser.add_argument("--expected-episode-count", type=int, required=True, help="Safety check: exact episode count")
+    mp_cleanup_exec_parser.add_argument("--expected-episode-min", type=int, required=True, help="Safety check: first episode number")
+    mp_cleanup_exec_parser.add_argument("--expected-episode-max", type=int, required=True, help="Safety check: last episode number")
+    mp_cleanup_exec_parser.add_argument("--keep-source", action="store_true", help="Execute without deletesrc=true")
+    mp_cleanup_exec_parser.add_argument("--keep-dest", action="store_true", help="Execute without deletedest=true")
+    mp_cleanup_exec_parser.add_argument("--continue-on-error", action="store_true", help="Continue deleting remaining MP records if one record fails")
+    mp_cleanup_exec_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    mp_cleanup_exec_parser.add_argument("--approve-mp-cleanup", action="store_true", help="Required: actually send MoviePilot DELETE requests")
+    mp_cleanup_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    mp_cleanup_exec_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     cloud_parser = subcommands.add_parser("cloud-check", help="Readonly STRM coverage check for cloud candidates")
     cloud_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -392,6 +415,38 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mp_cleanup_preview(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mp-cleanup-execute":
+        if not args.approve_mp_cleanup:
+            parser.error("mp-cleanup-execute requires --approve-mp-cleanup")
+        config = config_from_env(args.env_file, [])
+        if not config.mp_base_url or not config.mp_token:
+            parser.error("mp-cleanup-execute requires MP_BASE_URL and MP_API_TOKEN")
+        preview = load_optional_json_report(args.preview_report)
+        if not isinstance(preview, dict):
+            parser.error("preview report must be a JSON object")
+        report = execute_mp_cleanup_from_preview_report(
+            config.mp_base_url,
+            config.mp_token,
+            preview,
+            expected_title=args.expected_title,
+            expected_tmdbid=args.expected_tmdbid,
+            expected_hash_prefix=args.expected_hash_prefix,
+            expected_record_count=args.expected_record_count,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            include_deletesrc=not args.keep_source,
+            include_deletedest=not args.keep_dest,
+            timeout=args.timeout,
+            continue_on_error=args.continue_on_error,
+        )
+        rendered = render_mp_cleanup_execute_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

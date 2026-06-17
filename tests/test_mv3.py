@@ -969,6 +969,39 @@ class MV3ProbeTest(unittest.TestCase):
                     ]
                 )
 
+    def test_cli_refuses_mp_cleanup_without_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            preview = tmp_path / "preview.json"
+            env_file.write_text("MP_BASE_URL=http://moviepilot.example\nMP_API_TOKEN=token\n", encoding="utf-8")
+            preview.write_text(json.dumps({"mode": "readonly-mp-cleanup-preview"}), encoding="utf-8")
+
+            with self.assertRaises(SystemExit):
+                main(
+                    [
+                        "mp-cleanup-execute",
+                        "--env-file",
+                        str(env_file),
+                        "--preview-report",
+                        str(preview),
+                        "--expected-title",
+                        "Demo",
+                        "--expected-tmdbid",
+                        "123",
+                        "--expected-hash-prefix",
+                        "feedface0000",
+                        "--expected-record-count",
+                        "2",
+                        "--expected-episode-count",
+                        "2",
+                        "--expected-episode-min",
+                        "1",
+                        "--expected-episode-max",
+                        "2",
+                    ]
+                )
+
     def test_cli_writes_offline_status_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -63,6 +64,35 @@ class MoviePilotClient:
             text = response.read().decode("utf-8", "replace")
         return json.loads(text) if text else []
 
+    def _delete_json(self, path: str, query: Optional[Dict[str, object]] = None, body: Optional[Dict[str, object]] = None) -> Dict[str, object]:
+        query = dict(query or {})
+        if self.token:
+            query["token"] = self.token
+        url = f"{self.base_url}{path}"
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(body or {}, ensure_ascii=False).encode("utf-8"),
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            method="DELETE",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                text = response.read().decode("utf-8", "replace")
+                return {
+                    "http_status": response.status,
+                    "ok": 200 <= response.status < 300,
+                    "response": json.loads(text) if text else {},
+                }
+        except urllib.error.HTTPError as exc:
+            text = exc.read().decode("utf-8", "replace")
+            return {
+                "http_status": exc.code,
+                "ok": False,
+                "response": _parse_json_object(text),
+            }
+
     def current_subscriptions(self) -> List[MPSubscriptionRecord]:
         payload = self._get("/api/v1/subscribe/list")
         return [_record_from_payload(item) for item in _as_list(payload)]
@@ -104,6 +134,18 @@ class MoviePilotClient:
                 break
             page += 1
         return records
+
+    def delete_transfer_history(
+        self,
+        history_id: int,
+        deletesrc: bool = True,
+        deletedest: bool = True,
+    ) -> Dict[str, object]:
+        return self._delete_json(
+            "/api/v1/history/transfer",
+            query={"deletesrc": str(deletesrc).lower(), "deletedest": str(deletedest).lower()},
+            body={"id": history_id},
+        )
 
 
 def mp_cleanup_preview_from_transfer_history(
@@ -230,6 +272,178 @@ def build_mp_cleanup_preview(
     return report
 
 
+def execute_mp_cleanup_from_preview_report(
+    base_url: str,
+    token: str,
+    preview: Dict[str, object],
+    expected_title: str,
+    expected_tmdbid: int,
+    expected_hash_prefix: str,
+    expected_record_count: int,
+    expected_episode_count: int,
+    expected_episode_min: int,
+    expected_episode_max: int,
+    include_deletesrc: bool = True,
+    include_deletedest: bool = True,
+    timeout: int = 20,
+    continue_on_error: bool = False,
+) -> Dict[str, object]:
+    client = MoviePilotClient(base_url, token, timeout=timeout)
+    return execute_mp_cleanup_from_preview(
+        client,
+        preview,
+        expected_title=expected_title,
+        expected_tmdbid=expected_tmdbid,
+        expected_hash_prefix=expected_hash_prefix,
+        expected_record_count=expected_record_count,
+        expected_episode_count=expected_episode_count,
+        expected_episode_min=expected_episode_min,
+        expected_episode_max=expected_episode_max,
+        include_deletesrc=include_deletesrc,
+        include_deletedest=include_deletedest,
+        continue_on_error=continue_on_error,
+    )
+
+
+def execute_mp_cleanup_from_preview(
+    client: MoviePilotClient,
+    preview: Dict[str, object],
+    expected_title: str,
+    expected_tmdbid: int,
+    expected_hash_prefix: str,
+    expected_record_count: int,
+    expected_episode_count: int,
+    expected_episode_min: int,
+    expected_episode_max: int,
+    include_deletesrc: bool = True,
+    include_deletedest: bool = True,
+    continue_on_error: bool = False,
+) -> Dict[str, object]:
+    blockers = _mp_cleanup_execution_blockers(
+        preview,
+        expected_title=expected_title,
+        expected_tmdbid=expected_tmdbid,
+        expected_hash_prefix=expected_hash_prefix,
+        expected_record_count=expected_record_count,
+        expected_episode_count=expected_episode_count,
+        expected_episode_min=expected_episode_min,
+        expected_episode_max=expected_episode_max,
+        include_deletesrc=include_deletesrc,
+        include_deletedest=include_deletedest,
+    )
+    records = preview.get("records") if isinstance(preview.get("records"), list) else []
+    result: Dict[str, object] = {
+        "mode": "mp-cleanup-execute-result",
+        "title": preview.get("title", ""),
+        "ok": False,
+        "approved": True,
+        "endpoint": {"method": "DELETE", "path": "/api/v1/history/transfer"},
+        "query": {"deletesrc": include_deletesrc, "deletedest": include_deletedest},
+        "expected": {
+            "title": expected_title,
+            "tmdbid": expected_tmdbid,
+            "hash_prefix": expected_hash_prefix,
+            "record_count": expected_record_count,
+            "episode_count": expected_episode_count,
+            "episode_min": expected_episode_min,
+            "episode_max": expected_episode_max,
+        },
+        "summary": {
+            "planned_count": len(records),
+            "attempted_count": 0,
+            "success_count": 0,
+            "failure_count": 0,
+            "stopped_on_failure": False,
+        },
+        "results": [],
+        "blockers": blockers,
+        "safety": "approved MoviePilot cleanup execution; delete requests are sent only for validated transfer history IDs from the preview report",
+    }
+    if blockers:
+        result["safety"] = "blocked before sending any MoviePilot DELETE request"
+        return result
+
+    execution_results = []
+    stopped = False
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        history_id = int(item.get("id") or 0)
+        if history_id <= 0:
+            response = {"id": history_id, "ok": False, "message": "invalid_history_id"}
+        else:
+            delete_result = client.delete_transfer_history(history_id, deletesrc=include_deletesrc, deletedest=include_deletedest)
+            api_response = delete_result.get("response") if isinstance(delete_result.get("response"), dict) else {}
+            api_success = bool(api_response.get("success")) if api_response else bool(delete_result.get("ok"))
+            response = {
+                "id": history_id,
+                "episode": item.get("episodes") or "",
+                "hash_prefix": item.get("hash_prefix") or "",
+                "src": item.get("src") or "",
+                "dest": item.get("dest") or "",
+                "ok": bool(delete_result.get("ok")) and api_success,
+                "http_status": delete_result.get("http_status"),
+                "api_success": api_success,
+                "message": str(api_response.get("message") or ""),
+            }
+        execution_results.append(response)
+        if not response["ok"] and not continue_on_error:
+            stopped = True
+            break
+
+    success_count = sum(1 for item in execution_results if isinstance(item, dict) and item.get("ok"))
+    failure_count = sum(1 for item in execution_results if isinstance(item, dict) and not item.get("ok"))
+    result["ok"] = len(execution_results) == len(records) and failure_count == 0
+    result["summary"] = {
+        "planned_count": len(records),
+        "attempted_count": len(execution_results),
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "stopped_on_failure": stopped,
+    }
+    result["results"] = execution_results
+    return result
+
+
+def render_mp_cleanup_execute_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    query = report.get("query") if isinstance(report.get("query"), dict) else {}
+    lines = [
+        "# MoviePilot Cleanup Execute",
+        "",
+        f"- Title: `{report.get('title', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Approved: `{bool(report.get('approved'))}`",
+        f"- Planned: `{summary.get('planned_count', 0)}`",
+        f"- Attempted: `{summary.get('attempted_count', 0)}`",
+        f"- Success: `{summary.get('success_count', 0)}`",
+        f"- Failure: `{summary.get('failure_count', 0)}`",
+        f"- Stopped on failure: `{summary.get('stopped_on_failure', False)}`",
+        f"- MP endpoint: `DELETE /api/v1/history/transfer?deletesrc={str(query.get('deletesrc')).lower()}&deletedest={str(query.get('deletedest')).lower()}`",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    lines.extend(["", "| # | MP ID | Episode | OK | HTTP | Message |", "| ---: | ---: | --- | --- | ---: | --- |"])
+    for index, item in enumerate(report.get("results", []), start=1):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {index} | {id} | {episode} | {ok} | {http_status} | {message} |".format(
+                index=index,
+                id=item.get("id") or "",
+                episode=_escape(str(item.get("episode") or "")),
+                ok=item.get("ok"),
+                http_status=item.get("http_status") or "",
+                message=_escape(str(item.get("message") or "")),
+            )
+        )
+    return "\n".join(lines)
+
+
 def render_mp_cleanup_preview(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -354,6 +568,100 @@ def _transfer_record_from_payload(item: object) -> MPTransferHistoryRecord:
         imdbid=str(data.get("imdbid") or ""),
         doubanid=str(data.get("doubanid") or ""),
     )
+
+
+def _parse_json_object(text: str) -> Dict[str, object]:
+    try:
+        parsed = json.loads(text) if text else {}
+    except json.JSONDecodeError:
+        return {"raw": text}
+    return parsed if isinstance(parsed, dict) else {"data": parsed}
+
+
+def _mp_cleanup_execution_blockers(
+    preview: Dict[str, object],
+    expected_title: str,
+    expected_tmdbid: int,
+    expected_hash_prefix: str,
+    expected_record_count: int,
+    expected_episode_count: int,
+    expected_episode_min: int,
+    expected_episode_max: int,
+    include_deletesrc: bool,
+    include_deletedest: bool,
+) -> List[str]:
+    blockers: List[str] = []
+    if preview.get("mode") != "readonly-mp-cleanup-preview":
+        blockers.append("preview_mode_not_supported")
+    if not preview.get("ready_for_manual_cleanup_approval"):
+        blockers.append("preview_not_ready_for_manual_cleanup_approval")
+    if preview.get("blockers"):
+        blockers.append("preview_has_blockers")
+    if preview.get("warnings"):
+        blockers.append("preview_has_warnings")
+    if expected_title and preview.get("title") != expected_title:
+        blockers.append("expected_title_mismatch")
+    if expected_tmdbid and int(preview.get("expected_tmdbid") or 0) not in {0, expected_tmdbid}:
+        blockers.append("expected_tmdbid_mismatch")
+    if expected_hash_prefix and str(preview.get("expected_hash_prefix") or "").lower() not in {"", expected_hash_prefix.lower()}:
+        blockers.append("expected_hash_prefix_mismatch")
+    if not include_deletesrc and not include_deletedest:
+        blockers.append("no_mp_delete_scope_selected")
+
+    summary = preview.get("summary") if isinstance(preview.get("summary"), dict) else {}
+    records = preview.get("records") if isinstance(preview.get("records"), list) else []
+    if expected_record_count and len(records) != expected_record_count:
+        blockers.append("record_count_mismatch")
+    if expected_record_count and int(summary.get("records_matched") or 0) != expected_record_count:
+        blockers.append("summary_record_count_mismatch")
+    if expected_episode_count and int(summary.get("episode_count") or 0) != expected_episode_count:
+        blockers.append("episode_count_mismatch")
+    if expected_episode_min and int(summary.get("episode_min") or 0) != expected_episode_min:
+        blockers.append("episode_min_mismatch")
+    if expected_episode_max and int(summary.get("episode_max") or 0) != expected_episode_max:
+        blockers.append("episode_max_mismatch")
+    if summary.get("missing_in_range"):
+        blockers.append("preview_episode_gap_detected")
+
+    plan = preview.get("mp_delete_plan") if isinstance(preview.get("mp_delete_plan"), dict) else {}
+    query = plan.get("query") if isinstance(plan.get("query"), dict) else {}
+    if bool(query.get("deletesrc")) != include_deletesrc:
+        blockers.append("deletesrc_scope_mismatch")
+    if bool(query.get("deletedest")) != include_deletedest:
+        blockers.append("deletedest_scope_mismatch")
+
+    expected_hash_prefix = expected_hash_prefix.lower()
+    ids: Set[int] = set()
+    episodes: Set[int] = set()
+    for item in records:
+        if not isinstance(item, dict):
+            blockers.append("invalid_record_shape")
+            continue
+        history_id = int(item.get("id") or 0)
+        if history_id <= 0:
+            blockers.append("invalid_history_id")
+        if history_id in ids:
+            blockers.append("duplicate_history_id")
+        ids.add(history_id)
+        episode = int(item.get("episode_number") or 0)
+        if episode <= 0:
+            blockers.append("invalid_episode_number")
+        if episode in episodes:
+            blockers.append("duplicate_episode_number")
+        episodes.add(episode)
+        if expected_hash_prefix and not str(item.get("hash_prefix") or "").lower().startswith(expected_hash_prefix):
+            blockers.append("record_hash_prefix_mismatch")
+        if expected_title and str(item.get("title") or "") != expected_title:
+            blockers.append("record_title_mismatch")
+        if expected_tmdbid and int(item.get("tmdbid") or 0) not in {0, expected_tmdbid}:
+            blockers.append("record_tmdbid_mismatch")
+        if item.get("status") is not True:
+            blockers.append("record_not_successful")
+    if expected_episode_min and expected_episode_max and episodes:
+        expected_episodes = set(range(expected_episode_min, expected_episode_max + 1))
+        if episodes != expected_episodes:
+            blockers.append("record_episode_range_mismatch")
+    return sorted(set(blockers))
 
 
 def _transfer_history_items(payload: object) -> List[object]:
