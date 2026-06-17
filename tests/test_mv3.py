@@ -8,12 +8,14 @@ from series_cloud_archiver.cli import main
 from series_cloud_archiver.mv3 import (
     MV3Client,
     add_mv3_offline_task,
+    browse_mv3_cloud_folder,
     check_mv3_offline_task,
     ensure_mv3_115_path,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
     probe_mv3,
     render_mv3_capabilities_report,
+    render_mv3_cloud_browse_report,
     render_mv3_ensure_path_report,
     render_mv3_instances_report,
     render_mv3_offline_add_report,
@@ -192,7 +194,68 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["final_folder_id"], "300")
         self.assertEqual([step["action"] for step in report["steps"]], ["reused", "created", "created"])
         self.assertEqual(sum(1 for method, _url, _body in calls if method == "POST"), 2)
+        self.assertTrue(all("/api/v1/files/115/list" not in url for _method, url, _body in calls))
+        self.assertTrue(any("/api/v1/files/115/browse" in url for method, url, _body in calls if method == "GET"))
         self.assertNotIn("token", rendered)
+
+    def test_cloud_browse_uses_cloud_browse_and_reports_episode_gaps(self) -> None:
+        seen = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen.append(request.full_url)
+            if "/api/v1/files/cloud/info?" in request.full_url:
+                return FakeResponse({"success": True, "data": {"file_name": "Demo", "file_id": "folder-1", "is_dir": True}})
+            if "/api/v1/files/cloud/browse?" in request.full_url:
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {"name": "Demo.S01E01.mkv", "file_id": "file-1", "is_dir": False, "size": 1024},
+                                {"name": "Demo.S01E03.mkv", "file_id": "file-3", "is_dir": False, "size": 2048},
+                            ]
+                        },
+                    }
+                )
+            raise AssertionError(f"unexpected url: {request.full_url}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = browse_mv3_cloud_folder(
+                "http://mv3.example",
+                "token",
+                path="/未整理/Demo",
+                storage="115-default",
+            )
+
+        rendered = render_mv3_cloud_browse_report(report, "markdown")
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["folder_id"], "folder-1")
+        self.assertEqual(report["summary"]["file_count"], 2)
+        self.assertEqual(report["summary"]["missing_in_range"], [2])
+        self.assertIn("episode_gap_detected", report["warnings"])
+        self.assertTrue(any("/api/v1/files/cloud/info?" in url for url in seen))
+        self.assertTrue(any("/api/v1/files/cloud/browse?" in url for url in seen))
+        self.assertTrue(all("/api/v1/files/115/list" not in url for url in seen))
+        self.assertIn("Demo.S01E01.mkv", rendered)
 
     def test_offline_status_reports_not_ready_until_task_done_and_folder_has_files(self) -> None:
         class FakeResponse:
@@ -1174,6 +1237,48 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertEqual(code, 0)
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["summary"]["total"], 1)
+
+    def test_cli_writes_cloud_browse_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "cloud-browse.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return b'{"success":true,"data":{"items":[{"name":"Demo.S01E01.mp4","file_id":"file-1","is_dir":false}]}}'
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                code = main(
+                    [
+                        "mv3-cloud-browse",
+                        "--env-file",
+                        str(env_file),
+                        "--folder-id",
+                        "folder-1",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["summary"]["item_count"], 1)
 
     def test_cli_executes_one_offline_add_from_manifest_without_leaking_magnet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

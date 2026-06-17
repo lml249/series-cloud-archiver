@@ -9,12 +9,14 @@ from .config import config_from_env, db_path_from_env
 from .identity import render_identity_overrides, resolve_identity_overrides_from_scan_report
 from .mv3 import (
     add_mv3_offline_task,
+    browse_mv3_cloud_folder,
     ensure_mv3_115_path,
     check_mv3_offline_task,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
     probe_mv3,
     render_mv3_capabilities_report,
+    render_mv3_cloud_browse_report,
     render_mv3_ensure_path_report,
     render_mv3_instances_report,
     render_mv3_offline_add_report,
@@ -197,6 +199,16 @@ def build_parser() -> argparse.ArgumentParser:
     organize_scan_parser.add_argument("--timeout", type=int, default=120, help="Per-request timeout in seconds")
     organize_scan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     organize_scan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    cloud_browse_parser = subcommands.add_parser("mv3-cloud-browse", help="Readonly MV3 cloud folder browse")
+    cloud_browse_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    cloud_browse_parser.add_argument("--folder-id", default="", help="Cloud folder id to browse")
+    cloud_browse_parser.add_argument("--path", default="", help="Optional cloud path to resolve before browsing")
+    cloud_browse_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    cloud_browse_parser.add_argument("--limit", type=int, default=1150, help="Maximum folder items to request")
+    cloud_browse_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    cloud_browse_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    cloud_browse_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mv3_parser = subcommands.add_parser("mv3-check", help="Readonly MV3 connectivity and capability probe")
     mv3_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -584,6 +596,26 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_organize_scan_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mv3-cloud-browse":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-cloud-browse requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = browse_mv3_cloud_folder(
+            config.mv3_base_url,
+            config.mv3_token,
+            folder_id=args.folder_id,
+            path=args.path,
+            storage=args.storage,
+            limit=args.limit,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_cloud_browse_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

@@ -270,6 +270,115 @@ def check_mv3_offline_task(
     }
 
 
+def browse_mv3_cloud_folder(
+    base_url: str,
+    token: str,
+    folder_id: str = "",
+    path: str = "",
+    storage: str = "115-default",
+    limit: int = 1150,
+    timeout: int = 60,
+) -> Dict[str, object]:
+    client = MV3Client(base_url, token, timeout=timeout)
+    warnings: List[str] = []
+    normalized_path = _normalize_cloud_path(path) if path else ""
+    folder_id = str(folder_id or "")
+    if not folder_id and not normalized_path:
+        warnings.append("folder_id_or_path_required")
+
+    info: Dict[str, object] = {}
+    info_status = 0
+    info_content_type = ""
+    if normalized_path:
+        info, info_status, info_content_type = _read_cloud_info_status(client, "", normalized_path, storage)
+        if info and not folder_id:
+            folder_id = _extract_folder_id(info)
+        if not info:
+            warnings.append("path_info_not_found")
+
+    folder_payload: object = {}
+    browse_status = 0
+    browse_content_type = ""
+    if folder_id:
+        folder_payload, browse_status, browse_content_type = _read_cloud_folder_status(client, folder_id, storage, limit)
+    rows = _cloud_rows(folder_payload)
+    items = [_cloud_browse_item_summary(row, index) for index, row in enumerate(rows[:200], start=1)]
+    episode_numbers = _episode_numbers_from_scan_items([{"name": item.get("name")} for item in items if isinstance(item, dict)])
+    if not rows and folder_id:
+        warnings.append("no_cloud_items_found")
+    if episode_numbers and _missing_episode_numbers(episode_numbers):
+        warnings.append("episode_gap_detected")
+    if episode_numbers and min(episode_numbers) > 1:
+        warnings.append("episode_range_does_not_start_at_1")
+
+    return {
+        "mode": "readonly-mv3-cloud-browse",
+        "endpoint": {"method": "GET", "path": "/api/v1/files/cloud/browse"},
+        "ok": 200 <= browse_status < 300 and bool(rows),
+        "http_ok": 200 <= browse_status < 300,
+        "browse_status": browse_status,
+        "browse_content_type": browse_content_type,
+        "info_status": info_status,
+        "info_content_type": info_content_type,
+        "folder_id": folder_id,
+        "path": normalized_path,
+        "storage": storage,
+        "limit": limit,
+        "summary": {
+            "item_count": len(rows),
+            "folder_count": sum(1 for row in rows if _cloud_item_kind(row) == "folder"),
+            "file_count": sum(1 for row in rows if _cloud_item_kind(row) == "file"),
+            "episode_count": len(episode_numbers),
+            "episode_min": min(episode_numbers) if episode_numbers else None,
+            "episode_max": max(episode_numbers) if episode_numbers else None,
+            "missing_in_range": _missing_episode_numbers(episode_numbers),
+        },
+        "folder_info": _cloud_info_summary(info) if info else {},
+        "items": items,
+        "warnings": warnings,
+        "safety": "readonly cloud browse only; no organize transfer, rename, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
+    }
+
+
+def render_mv3_cloud_browse_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    lines = [
+        "# MV3 Cloud Browse",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Path: `{report.get('path', '')}`",
+        f"- Folder ID: `{report.get('folder_id', '')}`",
+        f"- Storage: `{report.get('storage', '')}`",
+        f"- Items: `{summary.get('item_count', 0)}`",
+        f"- Files: `{summary.get('file_count', 0)}`",
+        f"- Folders: `{summary.get('folder_count', 0)}`",
+        f"- Episode count: `{summary.get('episode_count', 0)}`",
+        f"- Episode range: `{summary.get('episode_min', '')}-{summary.get('episode_max', '')}`",
+        f"- Missing in range: `{summary.get('missing_in_range', [])}`",
+        "- Safety: cloud browse only; no transfer, rename, STRM generation, or deletion was performed.",
+    ]
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    lines.extend(["", "| # | Name | Kind | Episode | Size |", "| ---: | --- | --- | ---: | ---: |"])
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {index} | {name} | {kind} | {episode} | {size} |".format(
+                index=item.get("index") or "",
+                name=_escape(str(item.get("name") or "")),
+                kind=_escape(str(item.get("kind") or "")),
+                episode=item.get("episode") or "",
+                size=_escape(str(item.get("size") or "")),
+            )
+        )
+    return "\n".join(lines)
+
+
 def search_mv3_resources(
     base_url: str,
     token: str,
@@ -1008,16 +1117,12 @@ def _api_success(parsed: object) -> bool:
 
 def _find_115_child_folder(client: MV3Client, parent_id: str, name: str, storage: str) -> Dict[str, object]:
     query = urllib.parse.urlencode({"cid": parent_id, "limit": 1000, "storage": storage})
-    status, _headers, body = client.get(f"/api/v1/files/115/list?{query}")
+    status, _headers, body = client.get(f"/api/v1/files/115/browse?{query}")
     if not (200 <= status < 300):
         return {}
     parsed = _parse_json(body.decode("utf-8", "replace"))
     payload = _unwrap_api_payload(parsed)
-    rows = []
-    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
-        rows = payload["data"]
-    elif isinstance(payload, list):
-        rows = payload
+    rows = _cloud_rows(payload)
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -1043,21 +1148,109 @@ def _extract_folder_id(value: object) -> str:
 
 
 def _read_115_folder(client: MV3Client, folder_id: str, storage: str) -> Dict[str, object]:
-    query = urllib.parse.urlencode({"cid": folder_id, "limit": 20, "storage": storage})
-    status, _headers, body = client.get(f"/api/v1/files/115/list?{query}")
-    if not (200 <= status < 300):
-        return {}
-    payload = _unwrap_api_payload(_parse_json(body.decode("utf-8", "replace")))
-    return payload if isinstance(payload, dict) else {}
+    payload, _status, _content_type = _read_cloud_folder_status(client, folder_id, storage, 20)
+    if isinstance(payload, dict):
+        rows = _cloud_rows(payload)
+        if "count" not in payload and rows:
+            payload = dict(payload)
+            payload["count"] = len(rows)
+        return payload
+    if isinstance(payload, list):
+        return {"count": len(payload), "items": payload}
+    return {}
 
 
 def _read_115_info(client: MV3Client, path: str, storage: str) -> Dict[str, object]:
-    query = urllib.parse.urlencode({"path": path, "storage": storage})
-    status, _headers, body = client.get(f"/api/v1/files/115/info?{query}")
+    payload, _status, _content_type = _read_cloud_info_status(client, "", path, storage)
+    return payload
+
+
+def _read_cloud_folder_status(client: MV3Client, folder_id: str, storage: str, limit: int) -> Tuple[object, int, str]:
+    query = urllib.parse.urlencode({"cid": folder_id, "limit": max(1, limit), "storage": storage})
+    status, headers, body = client.get(f"/api/v1/files/cloud/browse?{query}")
     if not (200 <= status < 300):
-        return {}
+        fallback_status, fallback_headers, fallback_body = client.get(f"/api/v1/files/115/browse?{query}")
+        fallback_payload = _unwrap_api_payload(_parse_json(fallback_body.decode("utf-8", "replace")))
+        return fallback_payload, fallback_status, _header(fallback_headers, "content-type")
     payload = _unwrap_api_payload(_parse_json(body.decode("utf-8", "replace")))
-    return payload if isinstance(payload, dict) else {}
+    return payload, status, _header(headers, "content-type")
+
+
+def _read_cloud_info_status(client: MV3Client, file_id: str, path: str, storage: str) -> Tuple[Dict[str, object], int, str]:
+    params: Dict[str, str] = {"storage": storage}
+    if file_id:
+        params["file_id"] = file_id
+    if path:
+        params["path"] = path
+    query = urllib.parse.urlencode(params)
+    status, headers, body = client.get(f"/api/v1/files/cloud/info?{query}")
+    if not (200 <= status < 300):
+        return {}, status, _header(headers, "content-type")
+    payload = _unwrap_api_payload(_parse_json(body.decode("utf-8", "replace")))
+    return payload if isinstance(payload, dict) else {}, status, _header(headers, "content-type")
+
+
+def _cloud_rows(payload: object) -> List[Dict[str, object]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("items", "files", "list", "data", "children", "results"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    for key in ("data", "result", "payload"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            nested = _cloud_rows(value)
+            if nested:
+                return nested
+    return []
+
+
+def _cloud_browse_item_summary(item: Dict[str, object], index: int) -> Dict[str, object]:
+    name = _first_present(item, ["name", "file_name", "filename", "n", "title"])
+    return {
+        "index": index,
+        "name": name,
+        "kind": _cloud_item_kind(item),
+        "episode": _episode_number_from_text(name),
+        "size": _format_size_value(_first_raw_present(item, ["size", "size_text", "file_size", "file_size_text", "s"])),
+        "file_id": _first_present(item, ["cid", "file_id", "id", "fid", "folder_id"]),
+        "raw": _sanitize_json(_sample_json(item, max_keys=30)),
+    }
+
+
+def _cloud_item_kind(item: Dict[str, object]) -> str:
+    raw_type = str(_first_present(item, ["type", "file_type", "kind", "category"])).lower()
+    if raw_type in ("folder", "dir", "directory"):
+        return "folder"
+    if raw_type in ("file", "video", "subtitle"):
+        return "file"
+    for key in ("is_dir", "is_folder", "folder", "isdir", "is_directory"):
+        value = item.get(key)
+        if isinstance(value, bool):
+            return "folder" if value else "file"
+        if str(value).lower() in ("1", "true", "yes"):
+            return "folder"
+        if str(value).lower() in ("0", "false", "no"):
+            return "file"
+    if str(item.get("fid") or ""):
+        return "file"
+    if str(item.get("cid") or item.get("folder_id") or ""):
+        return "folder"
+    return raw_type or "unknown"
+
+
+def _cloud_info_summary(info: Dict[str, object]) -> Dict[str, object]:
+    name = _first_present(info, ["name", "file_name", "filename", "n", "title"])
+    return {
+        "name": name,
+        "kind": _cloud_item_kind(info),
+        "file_id": _extract_folder_id(info),
+        "size": _format_size_value(_first_raw_present(info, ["size", "size_text", "file_size", "file_size_text", "s"])),
+        "raw": _sanitize_json(_sample_json(info, max_keys=30)),
+    }
 
 
 def _find_offline_task(payload: object, info_hash: str) -> Dict[str, object]:

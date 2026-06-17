@@ -301,7 +301,21 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-share-receive-one \
 
 `mv3-share-receive-one` 会重新搜索并预览同一个候选，只在通过标题校验和 `--approve-receive` 时调用 `/api/v1/share-transfer/receive`。它只转存选中的一个分享条目，不会整理、识别媒体类型、生成 STRM、操作 qB 或删除本地文件。
 
-转存完成后，先只读扫描 `/未整理` 里的文件，不直接整理：
+转存完成后，先只读确认 `/未整理` 的云盘目录内容：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-cloud-browse \
+  --env-file .env \
+  --folder-id 3453317028314611284 \
+  --path "/未整理/楚汉传奇 (2012)" \
+  --storage 115-default \
+  --format markdown \
+  --output reports/mv3-cloud-browse-chuhan.md
+```
+
+`mv3-cloud-browse` 只调用 `/api/v1/files/cloud/info` 和 `/api/v1/files/cloud/browse`，用于确认目录下真实文件、集数范围和明显断集。它不会整理、移动、生成 STRM 或删除任何东西。
+
+确认目录内容后，再只读扫描 `/未整理` 里的文件，不直接整理：
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-scan-source \
