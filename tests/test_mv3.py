@@ -5,7 +5,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from series_cloud_archiver.cli import main
-from series_cloud_archiver.mv3 import MV3Client, probe_mv3, render_mv3_probe_report
+from series_cloud_archiver.mv3 import (
+    MV3Client,
+    inspect_mv3_capabilities,
+    probe_mv3,
+    render_mv3_capabilities_report,
+    render_mv3_probe_report,
+)
 
 
 class MV3ProbeTest(unittest.TestCase):
@@ -99,6 +105,104 @@ class MV3ProbeTest(unittest.TestCase):
             env_file.write_text("MV3_BASE_URL=\nMV3_API_TOKEN=\n", encoding="utf-8")
 
             code = main(["mv3-check", "--env-file", str(env_file), "--format", "json", "--output", str(output)])
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertFalse(payload["configured"])
+
+    def test_inspects_openapi_capabilities_without_calling_write_paths(self) -> None:
+        payload = {
+            "openapi": "3.0.0",
+            "info": {"title": "MediaVault", "version": "3.2.0-5"},
+            "components": {
+                "schemas": {
+                    "PreviewRequest": {
+                        "type": "object",
+                        "required": ["items"],
+                        "properties": {"items": {"type": "array"}, "target": {"type": "string"}},
+                    },
+                    "ExecuteRequest": {
+                        "type": "object",
+                        "required": ["items"],
+                        "properties": {"items": {"type": "array"}},
+                    },
+                }
+            },
+            "paths": {
+                "/api/v1/cloud-drive/instances": {"get": {"summary": "List instances"}},
+                "/api/v1/media-transfer/preview": {
+                    "post": {
+                        "summary": "Preview transfer",
+                        "requestBody": {
+                            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PreviewRequest"}}}
+                        },
+                    }
+                },
+                "/api/v1/media-transfer/execute": {
+                    "post": {
+                        "summary": "Execute transfer",
+                        "requestBody": {
+                            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExecuteRequest"}}}
+                        },
+                    }
+                },
+                "/api/v1/resource-search/hdhive/unlock": {"post": {"summary": "Unlock Hdhive"}},
+                "/api/v1/resource-search/hdhive/oauth/logout": {"post": {"summary": "Hdhive Oauth Logout"}},
+                "/api/v1/organize/recognize": {"post": {"summary": "Recognize"}},
+                "/api/v1/strm/records/clear-all": {"delete": {"summary": "Clear all"}},
+                "/api/v1/health": {"get": {"summary": "Health"}},
+            },
+        }
+        called_paths = []
+
+        def fake_get(_self, path):
+            called_paths.append(path)
+            return 200, {"Content-Type": "application/json"}, json.dumps(payload).encode("utf-8")
+
+        with patch.object(MV3Client, "get", fake_get):
+            report = inspect_mv3_capabilities("http://mv3.example", "token")
+
+        self.assertEqual(called_paths, ["/openapi.json"])
+        self.assertTrue(report["reachable"])
+        self.assertEqual(report["openapi"]["version"], "3.2.0-5")
+        self.assertEqual(len(report["categories"]["readonly_get"]), 1)
+        self.assertEqual(len(report["categories"]["preview_or_search_post"]), 1)
+        self.assertEqual(len(report["categories"]["transfer_or_write_post"]), 4)
+        self.assertEqual(len(report["categories"]["destructive_or_cleanup"]), 1)
+        self.assertEqual(report["categories"]["preview_or_search_post"][0]["request_schema"]["ref"], "PreviewRequest")
+
+    def test_renders_capability_markdown(self) -> None:
+        markdown = render_mv3_capabilities_report(
+            {
+                "mode": "readonly-mv3-capabilities",
+                "configured": True,
+                "reachable": True,
+                "token_configured": True,
+                "openapi": {"source_path": "/openapi.json", "title": "MediaVault", "version": "3.2.0-5"},
+                "categories": {
+                    "readonly_get": [{"method": "GET", "path": "/api/v1/cloud-drive/instances", "summary": "", "request_schema": {}}],
+                    "preview_or_search_post": [],
+                    "transfer_or_write_post": [],
+                    "destructive_or_cleanup": [],
+                    "other_relevant": [],
+                },
+                "warnings": [],
+            },
+            "markdown",
+        )
+
+        self.assertIn("MV3 Capabilities", markdown)
+        self.assertIn("Readonly GET", markdown)
+        self.assertIn("/api/v1/cloud-drive/instances", markdown)
+
+    def test_cli_writes_mv3_capabilities_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "mv3-capabilities.json"
+            env_file.write_text("MV3_BASE_URL=\nMV3_API_TOKEN=\n", encoding="utf-8")
+
+            code = main(["mv3-capabilities", "--env-file", str(env_file), "--format", "json", "--output", str(output)])
 
             self.assertEqual(code, 0)
             payload = json.loads(output.read_text(encoding="utf-8"))

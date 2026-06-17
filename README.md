@@ -171,3 +171,23 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-check \
 ```
 
 `mv3-check` 只会访问少量 GET 路径，例如 `/openapi.json` 和 `/api/v1/openapi.json`。它不会调用转存、保存、移动、重命名、生成 STRM 或删除接口；如果 `.env` 中还没有 `MV3_BASE_URL`，报告会直接标记为未配置。
+
+## MV3 能力报告
+
+确认 API key 可用之后，可以让编排器读取 MV3 的 OpenAPI，并把接口按风险分组：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-capabilities \
+  --env-file .env \
+  --format markdown \
+  --output reports/mv3-capabilities.md
+```
+
+`mv3-capabilities` 只读取 `/openapi.json` 或 `/api/v1/openapi.json`，不会调用真实的转存、接收分享、生成 STRM、移动、重命名、清理或删除接口。报告会把接口分成：
+
+- `Readonly GET`：通常可直接用来确认网盘实例、转存实例、任务状态和历史记录。
+- `Preview/Search POST`：看起来像搜索或预览，但因为是 POST，后续仍要逐个验证是否完全无副作用。
+- `Transfer/Write POST`：可能创建转存、离线下载、STRM 或其他写入任务，必须等人工批准后才能接入。
+- `Destructive/Cleanup`：可能删除、清空、移动、重命名、取消或清理，默认永远不会自动调用。
+
+这份报告的作用是先把 MV3 能做什么讲清楚，再决定第一批只读查询和第一条 `--execute --limit 1` 试运行该怎么设计。

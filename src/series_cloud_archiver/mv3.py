@@ -8,6 +8,47 @@ from typing import Dict, List, Optional, Tuple
 
 DEFAULT_PROBE_PATHS = ["/", "/api", "/api/v1", "/openapi.json", "/api/v1/openapi.json", "/api/v1/config"]
 SENSITIVE_METHOD_HINTS = ("delete", "remove", "transfer", "save", "move", "rename", "strm", "download")
+OPENAPI_PATHS = ["/openapi.json", "/api/v1/openapi.json"]
+MV3_RELEVANT_PATH_HINTS = (
+    "cloud-drive",
+    "files/115",
+    "files/cloud",
+    "media-transfer",
+    "share-transfer",
+    "resource-search",
+    "strm",
+    "organize",
+    "offline",
+    "task",
+)
+MV3_PREVIEW_HINTS = ("search", "preview", "parse", "recommend", "status", "quota", "records", "items", "libraries")
+MV3_WRITE_HINTS = (
+    "create",
+    "execute",
+    "receive",
+    "generate",
+    "offline/add",
+    "copy",
+    "folder",
+    "upload",
+    "download",
+    "refresh",
+    "set-default",
+    "regenerate",
+    "fill-pickcode",
+    "redirect",
+    "run",
+    "save",
+    "share",
+    "trigger",
+    "logout",
+    "unlock",
+    "skip",
+    "organize",
+    "recognize",
+    "reorganize",
+)
+MV3_DESTRUCTIVE_HINTS = ("delete", "remove", "clear", "cleanup", "move", "rename", "cancel", "revert", "reset")
 
 
 class MV3Client:
@@ -78,6 +119,83 @@ def render_mv3_probe_report(report: Dict[str, object], output_format: str) -> st
     return _render_markdown(report)
 
 
+def inspect_mv3_capabilities(base_url: str, token: str = "", include_all: bool = False) -> Dict[str, object]:
+    if not base_url:
+        return {
+            "mode": "readonly-mv3-capabilities",
+            "configured": False,
+            "reachable": False,
+            "base_url_configured": False,
+            "token_configured": bool(token),
+            "openapi": {},
+            "categories": _empty_capability_categories(),
+            "warnings": ["mv3_base_url_not_configured"],
+            "safety": _capability_safety_text(),
+        }
+
+    client = MV3Client(base_url, token)
+    warnings: List[str] = []
+    openapi_path = ""
+    payload: Optional[Dict[str, object]] = None
+    for path in OPENAPI_PATHS:
+        try:
+            status, headers, body = client.get(path)
+            probe = _probe_result(path, status, headers, body)
+            if isinstance(probe.get("openapi"), dict):
+                openapi_path = path
+                payload = probe["openapi"]  # type: ignore[assignment]
+                break
+            warnings.append(f"openapi_probe_unusable:{path}:status_{status}")
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"openapi_probe_failed:{path}:{exc}")
+
+    if payload is None:
+        return {
+            "mode": "readonly-mv3-capabilities",
+            "configured": True,
+            "reachable": False,
+            "base_url_configured": True,
+            "token_configured": bool(token),
+            "openapi": {},
+            "categories": _empty_capability_categories(),
+            "warnings": warnings or ["openapi_not_found"],
+            "safety": _capability_safety_text(),
+        }
+
+    categories = _classify_openapi(payload, include_all=include_all)
+    paths = payload.get("paths") if isinstance(payload.get("paths"), dict) else {}
+    info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+    return {
+        "mode": "readonly-mv3-capabilities",
+        "configured": True,
+        "reachable": True,
+        "base_url_configured": True,
+        "token_configured": bool(token),
+        "openapi": {
+            "source_path": openapi_path,
+            "title": str(info.get("title") or ""),
+            "description": str(info.get("description") or ""),
+            "version": str(info.get("version") or ""),
+            "path_count": len(paths),
+            "method_count": sum(len(value) for value in paths.values() if isinstance(value, dict)),
+        },
+        "categories": categories,
+        "suggested_flow": [
+            "先用 GET /api/v1/cloud-drive/instances、GET /api/v1/media-transfer/instances 确认 MV3 已配置的网盘和转存实例。",
+            "再用 POST /api/v1/media-transfer/preview 或资源搜索类 POST 做预览；这些接口仍需先单独验证是否完全无副作用。",
+            "最后才允许人工审批后的 POST /api/v1/media-transfer/execute 或 STRM 生成接口；默认命令不会调用它们。",
+        ],
+        "warnings": warnings,
+        "safety": _capability_safety_text(),
+    }
+
+
+def render_mv3_capabilities_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    return _render_capabilities_markdown(report)
+
+
 def _probe_result(path: str, status: int, headers: Dict[str, str], body: bytes) -> Dict[str, object]:
     content_type = _header(headers, "content-type")
     text = body.decode("utf-8", "replace")
@@ -123,6 +241,159 @@ def _openapi_summary(probe: Dict[str, object]) -> Dict[str, object]:
         "safe_get_paths_sample": [item for item in methods if item["method"] == "GET"][:20],
         "sensitive_method_hints_sample": sensitive[:20],
     }
+
+
+def _classify_openapi(payload: Dict[str, object], include_all: bool = False) -> Dict[str, List[Dict[str, object]]]:
+    paths = payload.get("paths") if isinstance(payload.get("paths"), dict) else {}
+    schemas = ((payload.get("components") or {}).get("schemas") or {}) if isinstance(payload.get("components"), dict) else {}
+    categories = _empty_capability_categories()
+    for path, value in sorted(paths.items()):
+        if not isinstance(value, dict):
+            continue
+        for method, operation in sorted(value.items()):
+            if not isinstance(operation, dict):
+                continue
+            endpoint = _endpoint_summary(str(method).upper(), str(path), operation, schemas if isinstance(schemas, dict) else {})
+            if not include_all and not _is_relevant_endpoint(endpoint):
+                continue
+            category = _endpoint_category(endpoint)
+            categories[category].append(endpoint)
+    return categories
+
+
+def _empty_capability_categories() -> Dict[str, List[Dict[str, object]]]:
+    return {
+        "readonly_get": [],
+        "preview_or_search_post": [],
+        "transfer_or_write_post": [],
+        "destructive_or_cleanup": [],
+        "other_relevant": [],
+    }
+
+
+def _endpoint_summary(method: str, path: str, operation: Dict[str, object], schemas: Dict[str, object]) -> Dict[str, object]:
+    request = _request_schema_summary(operation, schemas)
+    return {
+        "method": method,
+        "path": path,
+        "summary": str(operation.get("summary") or ""),
+        "tags": [str(tag) for tag in operation.get("tags", []) if isinstance(operation.get("tags"), list)],
+        "parameters": _parameter_summary(operation),
+        "request_schema": request,
+    }
+
+
+def _parameter_summary(operation: Dict[str, object]) -> List[Dict[str, object]]:
+    output: List[Dict[str, object]] = []
+    parameters = operation.get("parameters")
+    if not isinstance(parameters, list):
+        return output
+    for parameter in parameters:
+        if not isinstance(parameter, dict):
+            continue
+        output.append(
+            {
+                "name": str(parameter.get("name") or ""),
+                "in": str(parameter.get("in") or ""),
+                "required": bool(parameter.get("required", False)),
+                "type": _schema_type(parameter.get("schema")),
+            }
+        )
+    return output
+
+
+def _request_schema_summary(operation: Dict[str, object], schemas: Dict[str, object]) -> Dict[str, object]:
+    body = operation.get("requestBody")
+    if not isinstance(body, dict):
+        return {}
+    content = body.get("content")
+    if not isinstance(content, dict):
+        return {}
+    for content_type in ("application/json", "multipart/form-data", "application/x-www-form-urlencoded"):
+        value = content.get(content_type)
+        if isinstance(value, dict):
+            schema = value.get("schema")
+            return _schema_summary(content_type, schema, schemas)
+    for content_type, value in sorted(content.items()):
+        if isinstance(value, dict):
+            return _schema_summary(str(content_type), value.get("schema"), schemas)
+    return {}
+
+
+def _schema_summary(content_type: str, schema: object, schemas: Dict[str, object]) -> Dict[str, object]:
+    ref = _schema_ref(schema)
+    resolved = schemas.get(ref, {}) if ref else schema
+    summary: Dict[str, object] = {
+        "content_type": content_type,
+        "ref": ref,
+        "type": _schema_type(resolved),
+        "required": [],
+        "properties": [],
+    }
+    if isinstance(resolved, dict):
+        required = resolved.get("required")
+        if isinstance(required, list):
+            summary["required"] = [str(item) for item in required]
+        properties = resolved.get("properties")
+        if isinstance(properties, dict):
+            summary["properties"] = [
+                {"name": str(name), "type": _schema_type(value)}
+                for name, value in sorted(properties.items())
+                if isinstance(value, dict)
+            ]
+    return summary
+
+
+def _schema_ref(schema: object) -> str:
+    if not isinstance(schema, dict):
+        return ""
+    ref = schema.get("$ref")
+    if isinstance(ref, str):
+        return ref.rsplit("/", 1)[-1]
+    items = schema.get("items")
+    if isinstance(items, dict):
+        return _schema_ref(items)
+    return ""
+
+
+def _schema_type(schema: object) -> str:
+    if not isinstance(schema, dict):
+        return ""
+    if "$ref" in schema:
+        return str(schema["$ref"]).rsplit("/", 1)[-1]
+    if "type" in schema:
+        schema_type = str(schema.get("type") or "")
+        if schema_type == "array" and isinstance(schema.get("items"), dict):
+            item_type = _schema_type(schema["items"])
+            return f"array[{item_type}]" if item_type else "array"
+        return schema_type
+    if "anyOf" in schema and isinstance(schema.get("anyOf"), list):
+        return " | ".join(part for part in (_schema_type(item) for item in schema["anyOf"]) if part)
+    return ""
+
+
+def _is_relevant_endpoint(endpoint: Dict[str, object]) -> bool:
+    text = _endpoint_text(endpoint)
+    return any(hint in text for hint in MV3_RELEVANT_PATH_HINTS)
+
+
+def _endpoint_category(endpoint: Dict[str, object]) -> str:
+    method = str(endpoint.get("method") or "").upper()
+    text = _endpoint_text(endpoint)
+    if method == "GET":
+        return "readonly_get"
+    if method in {"DELETE", "PUT", "PATCH"} or any(hint in text for hint in MV3_DESTRUCTIVE_HINTS):
+        return "destructive_or_cleanup"
+    if method == "POST" and any(hint in text for hint in MV3_WRITE_HINTS):
+        return "transfer_or_write_post"
+    if method == "POST" and any(hint in text for hint in MV3_PREVIEW_HINTS):
+        return "preview_or_search_post"
+    return "other_relevant"
+
+
+def _endpoint_text(endpoint: Dict[str, object]) -> str:
+    tags = " ".join(endpoint.get("tags", [])) if isinstance(endpoint.get("tags"), list) else ""
+    return f"{endpoint.get('method', '')} {endpoint.get('path', '')} {endpoint.get('summary', '')} {tags}".lower()
 
 
 def _best_openapi_probe(probes: List[Dict[str, object]]) -> Optional[Dict[str, object]]:
@@ -203,9 +474,102 @@ def _render_markdown(report: Dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def _render_capabilities_markdown(report: Dict[str, object]) -> str:
+    lines = [
+        "# Series Cloud Archiver MV3 Capabilities",
+        "",
+        f"- Mode: `{report.get('mode', '')}`",
+        f"- Configured: `{report.get('configured', False)}`",
+        f"- Reachable: `{report.get('reachable', False)}`",
+        f"- Token configured: `{report.get('token_configured', False)}`",
+        "- Safety: readonly OpenAPI GET only; no MV3 transfer, STRM generation, save, move, rename, or delete endpoint is called.",
+        "",
+    ]
+    openapi = report.get("openapi")
+    if isinstance(openapi, dict) and openapi:
+        lines.extend(
+            [
+                "## OpenAPI",
+                "",
+                f"- Source: `{openapi.get('source_path', '')}`",
+                f"- Title: `{openapi.get('title', '')}`",
+                f"- Version: `{openapi.get('version', '')}`",
+                f"- Paths: `{openapi.get('path_count', 0)}`",
+                f"- Methods: `{openapi.get('method_count', 0)}`",
+                "",
+            ]
+        )
+
+    warnings = report.get("warnings", [])
+    if warnings:
+        lines.extend(["## Warnings", ""])
+        for warning in warnings:
+            lines.append(f"- {warning}")
+        lines.append("")
+
+    categories = report.get("categories")
+    if isinstance(categories, dict):
+        title_map = {
+            "readonly_get": "Readonly GET",
+            "preview_or_search_post": "Preview/Search POST",
+            "transfer_or_write_post": "Transfer/Write POST",
+            "destructive_or_cleanup": "Destructive/Cleanup",
+            "other_relevant": "Other Relevant",
+        }
+        for key in ("readonly_get", "preview_or_search_post", "transfer_or_write_post", "destructive_or_cleanup", "other_relevant"):
+            rows = categories.get(key, [])
+            if not isinstance(rows, list):
+                continue
+            lines.extend([f"## {title_map[key]} ({len(rows)})", ""])
+            if not rows:
+                lines.append("- None")
+                lines.append("")
+                continue
+            lines.extend(["| Method | Path | Summary | Request |", "| --- | --- | --- | --- |"])
+            for endpoint in rows:
+                if isinstance(endpoint, dict):
+                    lines.append(
+                        "| {method} | {path} | {summary} | {request} |".format(
+                            method=_escape(str(endpoint.get("method") or "")),
+                            path=_escape(str(endpoint.get("path") or "")),
+                            summary=_escape(str(endpoint.get("summary") or "")),
+                            request=_escape(_format_request_schema(endpoint.get("request_schema"))),
+                        )
+                    )
+            lines.append("")
+
+    suggested = report.get("suggested_flow", [])
+    if isinstance(suggested, list) and suggested:
+        lines.extend(["## Suggested Flow", ""])
+        for item in suggested:
+            lines.append(f"- {item}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _format_request_schema(schema: object) -> str:
+    if not isinstance(schema, dict) or not schema:
+        return ""
+    ref = str(schema.get("ref") or schema.get("type") or "")
+    required = schema.get("required") if isinstance(schema.get("required"), list) else []
+    properties = schema.get("properties") if isinstance(schema.get("properties"), list) else []
+    parts = []
+    if ref:
+        parts.append(ref)
+    if required:
+        parts.append("required: " + ", ".join(str(item) for item in required))
+    elif properties:
+        parts.append("fields: " + ", ".join(str(item.get("name")) for item in properties[:8] if isinstance(item, dict)))
+    return "; ".join(parts)
+
+
 def _escape(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ")
 
 
 def _safety_text() -> str:
     return "readonly GET probe only; no MV3 transfer, STRM generation, save, move, rename, or delete endpoint is called"
+
+
+def _capability_safety_text() -> str:
+    return "readonly OpenAPI GET only; no MV3 transfer, STRM generation, save, move, rename, or delete endpoint is called"
