@@ -231,6 +231,33 @@ class MoviePilotEvidenceTest(unittest.TestCase):
 
         self.assertEqual(evidence, [])
 
+    def test_history_match_respects_explicit_season(self) -> None:
+        evidence = build_mp_subscription_evidence(
+            current=[],
+            history=[
+                MPSubscriptionRecord(
+                    name="Demo Show",
+                    year="2026",
+                    media_type="电视剧",
+                    tmdbid=123,
+                    season=2,
+                    total_episode=10,
+                    date="2026-06-17 08:00:00",
+                )
+            ],
+        )
+        series = FileSystemSeries(
+            title="Demo.Show.S03.2026.1080p",
+            path="/example/library/Demo.Show.S03.2026.1080p",
+            size_bytes=10,
+            video_count=10,
+            latest_mtime=0,
+            age_days=10,
+            signal=EpisodeSignal(),
+        )
+
+        self.assertIsNone(match_mp_subscription(series, evidence))
+
 
 if __name__ == "__main__":
     unittest.main()

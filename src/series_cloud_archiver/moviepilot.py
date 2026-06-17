@@ -114,10 +114,12 @@ def match_mp_subscription(
     evidence: List[MPSubscriptionEvidence],
 ) -> Optional[MPSubscriptionEvidence]:
     series_text = _normalize(series.title)
-    series_seasons = set(series.signal.seasons)
+    series_seasons = _series_seasons(series)
     best: Optional[MPSubscriptionEvidence] = None
     best_score = 0
     for item in evidence:
+        if item.season and series_seasons and item.season not in series_seasons:
+            continue
         score = 0
         item_name = _normalize(item.name)
         if item_name and item_name in series_text:
@@ -128,7 +130,7 @@ def match_mp_subscription(
             score = 55
         if score and item.year and item.year in series.title:
             score += 10
-        if score and item.season and (not series_seasons or item.season in series_seasons):
+        if score and item.season:
             score += 5
         if score > best_score:
             best_score = score
@@ -202,6 +204,15 @@ def _normalize(text: str) -> str:
 
 def _compact(text: str) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", text.casefold())
+
+
+def _series_seasons(series: FileSystemSeries) -> Set[int]:
+    seasons = set(series.signal.seasons)
+    for match in re.finditer(r"(?i)\bS(?P<season>\d{1,2})\b", series.title):
+        seasons.add(int(match.group("season")))
+    for match in re.finditer(r"第\s*(?P<season>\d{1,2})\s*季", series.title):
+        seasons.add(int(match.group("season")))
+    return seasons
 
 
 def _word_overlap(left: str, right: str) -> float:
