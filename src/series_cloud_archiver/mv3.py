@@ -26,7 +26,10 @@ SENSITIVE_KEY_RE = re.compile(
     r"(token|cookie|password|passwd|secret|authorization|api[_-]?key|access[_-]?key|refresh|pick[_-]?code|receive[_-]?code|share[_-]?code|sign|credential|user[_-]?id|user[_-]?name|phone|email|vip)",
     re.IGNORECASE,
 )
-SENSITIVE_URL_KEY_RE = re.compile(r"(direct|download|redirect|play|stream|thumb|cover|url|uri|link)", re.IGNORECASE)
+SENSITIVE_URL_KEY_RE = re.compile(
+    r"(direct|download|redirect|play|stream|thumb|thumbnail|cover|poster|image|pic|photo|avatar|url|uri|link)",
+    re.IGNORECASE,
+)
 OPENAPI_PATHS = ["/openapi.json", "/api/v1/openapi.json"]
 MV3_RELEVANT_PATH_HINTS = (
     "cloud-drive",

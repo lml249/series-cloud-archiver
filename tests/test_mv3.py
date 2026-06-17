@@ -295,6 +295,7 @@ class MV3ProbeTest(unittest.TestCase):
                                     "title": "楚汉传奇 全集",
                                     "channel": "pansou",
                                     "share_url": "https://example.test/s/private",
+                                    "image": "https://cdn.example.test/private-cover.jpg",
                                     "receive_code": "abcd",
                                     "share_code": "safe-code",
                                     "size": "150GB",
@@ -323,6 +324,7 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(report["result_count"], 1)
         self.assertNotIn("https://example.test", rendered)
+        self.assertNotIn("https://cdn.example.test", rendered)
         self.assertNotIn("abcd", rendered)
 
     def test_reports_missing_configuration_without_network(self) -> None:
