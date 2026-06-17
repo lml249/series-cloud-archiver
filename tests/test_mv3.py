@@ -437,6 +437,7 @@ class MV3ProbeTest(unittest.TestCase):
                                 "proposed_cloud_destination": "/series/Demo",
                                 "titles": ["Demo.S01"],
                                 "source_paths": ["/media/Demo.S01"],
+                                "qb_matches": [{"hash": "abc"}],
                             }
                         ],
                     }
@@ -449,6 +450,7 @@ class MV3ProbeTest(unittest.TestCase):
                         "torrents": [
                             {
                                 "name": "Demo.S01",
+                                "hash": "abc",
                                 "content_path": "/media/Demo.S01",
                                 "magnet_uri": "magnet:?xt=urn:btih:private",
                                 "seeding_time": 9 * 86400,

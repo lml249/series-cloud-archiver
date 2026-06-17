@@ -439,8 +439,6 @@ def _execute_mv3_offline_add_one(
     expected_title: str,
     timeout: int = 30,
 ):
-    from .transfer_plan import _match_qb_torrents_for_transfer_item
-
     if not isinstance(manifest, dict):
         raise SystemExit("manifest must be a JSON object")
     items = manifest.get("items")
@@ -452,7 +450,7 @@ def _execute_mv3_offline_add_one(
     title = str(selected.get("title") or "")
     if title != expected_title:
         raise SystemExit(f"expected title mismatch: manifest has {title!r}")
-    matches = _match_qb_torrents_for_transfer_item(selected, qb_torrents)
+    matches = _qb_matches_for_manifest_selection(selected, qb_torrents)
     magnets = [str(item.get("magnet_uri") or "").strip() for item in matches if str(item.get("magnet_uri") or "").strip()]
     if len(magnets) != 1:
         raise SystemExit(f"expected exactly one qB magnet for first execution, got {len(magnets)}")
@@ -482,3 +480,19 @@ def _execute_mv3_offline_add_one(
         "proposed_cloud_destination": destination,
     }
     return result
+
+
+def _qb_matches_for_manifest_selection(selected, qb_torrents):
+    from .transfer_plan import _match_qb_torrents_for_transfer_item
+
+    wanted_hashes = set()
+    for item in selected.get("qb_matches", []) if isinstance(selected.get("qb_matches"), list) else []:
+        if isinstance(item, dict) and item.get("hash"):
+            wanted_hashes.add(str(item.get("hash")).lower())
+    if wanted_hashes:
+        return [
+            torrent
+            for torrent in qb_torrents
+            if isinstance(torrent, dict) and str(torrent.get("hash") or "").lower() in wanted_hashes
+        ]
+    return _match_qb_torrents_for_transfer_item(selected, qb_torrents)
