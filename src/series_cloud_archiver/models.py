@@ -46,6 +46,19 @@ class EmbyEvidence:
 
 
 @dataclass
+class MPSubscriptionEvidence:
+    name: str
+    year: str
+    media_type: str
+    tmdbid: int
+    season: int
+    total_episode: int
+    history_date: str
+    current_subscription_found: bool
+    matched: bool
+
+
+@dataclass
 class ScanCandidate:
     title: str
     path: str
@@ -61,6 +74,7 @@ class ScanCandidate:
     episode_sample: List[int]
     qb: Optional[QBTorrentEvidence] = None
     emby: Optional[EmbyEvidence] = None
+    mp: Optional[MPSubscriptionEvidence] = None
 
     def to_dict(self) -> Dict[str, object]:
         data = asdict(self)
@@ -87,4 +101,3 @@ class ScanReport:
             "warnings": self.warnings,
             "candidates": [candidate.to_dict() for candidate in self.candidates],
         }
-

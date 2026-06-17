@@ -1,10 +1,12 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from series_cloud_archiver.config import ScanConfig
 from series_cloud_archiver.episode import episode_signal
 from series_cloud_archiver.models import FileSystemSeries, EpisodeSignal, QBTorrentEvidence
+from series_cloud_archiver.moviepilot import MPSubscriptionRecord, build_mp_subscription_evidence, match_mp_subscription
 from series_cloud_archiver.qbittorrent import QBClient, match_torrent
 from series_cloud_archiver.scanner import scan
 
@@ -92,6 +94,46 @@ class ReadonlyScanTest(unittest.TestCase):
             self.assertEqual(len(report.candidates), 1)
             self.assertEqual(report.status_counts["candidate_for_cloud_check"], 2)
 
+    def test_mp_subscription_history_can_prove_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "TV"
+            show = root / "Demo.Show.S01.2026.1080p"
+            for index in [1, 2, 4, 5, 7, 8, 10]:
+                touch(show / f"Demo.Show.S01E{index:02d}.mkv")
+
+            with patch(
+                "series_cloud_archiver.scanner.fetch_mp_subscription_evidence",
+                return_value=build_mp_subscription_evidence(
+                    current=[],
+                    history=[
+                        MPSubscriptionRecord(
+                            name="Demo Show",
+                            year="2026",
+                            media_type="电视剧",
+                            tmdbid=123,
+                            season=1,
+                            total_episode=10,
+                            date="2026-06-17 08:00:00",
+                        )
+                    ],
+                ),
+            ):
+                report = scan(
+                    ScanConfig(
+                        media_roots=[str(root)],
+                        include_qb=False,
+                        min_seed_days=0,
+                        min_age_days=0,
+                        max_depth=2,
+                        mp_base_url="http://moviepilot.example",
+                        mp_token="example-token",
+                    )
+                )
+
+            self.assertEqual(report.candidates[0].status, "candidate_for_cloud_check")
+            self.assertIn("mp_subscription_history_completed", report.candidates[0].reasons)
+            self.assertNotIn("needs_completion_evidence", report.candidates[0].blockers)
+
 
 class QBittorrentClientTest(unittest.TestCase):
     def test_login_accepts_ok_with_period(self) -> None:
@@ -140,6 +182,54 @@ class QBittorrentClientTest(unittest.TestCase):
 
         match = match_torrent(series, [torrent], {"/example/library-host": "/example/qb-view"})
         self.assertIs(match, torrent)
+
+
+class MoviePilotEvidenceTest(unittest.TestCase):
+    def test_history_without_current_subscription_counts_as_completed(self) -> None:
+        evidence = build_mp_subscription_evidence(
+            current=[],
+            history=[
+                MPSubscriptionRecord(
+                    name="Demo Show",
+                    year="2026",
+                    media_type="电视剧",
+                    tmdbid=123,
+                    season=1,
+                    total_episode=10,
+                    date="2026-06-17 08:00:00",
+                )
+            ],
+        )
+        series = FileSystemSeries(
+            title="Demo.Show.S01.2026.1080p",
+            path="/example/library/Demo.Show.S01.2026.1080p",
+            size_bytes=10,
+            video_count=7,
+            latest_mtime=0,
+            age_days=10,
+            signal=EpisodeSignal(seasons=[1], episodes=[1, 2, 4, 5, 7, 8, 10]),
+        )
+
+        match = match_mp_subscription(series, evidence)
+
+        self.assertIsNotNone(match)
+        self.assertTrue(match.matched)
+        self.assertFalse(match.current_subscription_found)
+
+    def test_current_subscription_blocks_history_completion_evidence(self) -> None:
+        history = MPSubscriptionRecord(
+            name="Demo Show",
+            year="2026",
+            media_type="电视剧",
+            tmdbid=123,
+            season=1,
+            total_episode=10,
+            date="2026-06-17 08:00:00",
+        )
+
+        evidence = build_mp_subscription_evidence(current=[history], history=[history])
+
+        self.assertEqual(evidence, [])
 
 
 if __name__ == "__main__":

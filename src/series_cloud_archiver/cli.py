@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--min-seed-days", type=int, default=None, help="Minimum qBittorrent seed age for candidate status")
     scan_parser.add_argument("--max-depth", type=int, default=None, help="Maximum scan depth under each series folder")
     scan_parser.add_argument("--no-qb", action="store_true", help="Skip qBittorrent evidence")
+    scan_parser.add_argument("--no-mp", action="store_true", help="Skip MoviePilot subscription evidence")
     scan_parser.add_argument("--emby", action="store_true", help="Use Emby evidence when configured")
 
     eval_parser = subcommands.add_parser("evaluate", help="Scan and store readonly state in SQLite")
@@ -57,6 +58,7 @@ def add_scan_args(scan_parser: argparse.ArgumentParser) -> None:
     scan_parser.add_argument("--min-seed-days", type=int, default=None, help="Minimum qBittorrent seed age for candidate status")
     scan_parser.add_argument("--max-depth", type=int, default=None, help="Maximum scan depth under each series folder")
     scan_parser.add_argument("--no-qb", action="store_true", help="Skip qBittorrent evidence")
+    scan_parser.add_argument("--no-mp", action="store_true", help="Skip MoviePilot subscription evidence")
     scan_parser.add_argument("--emby", action="store_true", help="Use Emby evidence when configured")
 
 
@@ -73,6 +75,8 @@ def apply_scan_overrides(config, args):
         config.max_depth = args.max_depth
     if args.no_qb:
         config.include_qb = False
+    if args.no_mp:
+        config.include_mp = False
     if args.emby:
         config.include_emby = True
     return config

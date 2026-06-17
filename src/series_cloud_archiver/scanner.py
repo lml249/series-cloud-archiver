@@ -6,11 +6,14 @@ from typing import List, Optional
 from .config import ScanConfig
 from .emby import fetch_emby_evidence, match_emby
 from .filesystem import scan_series_roots
-from .models import EmbyEvidence, FileSystemSeries, QBTorrentEvidence, ScanCandidate, ScanReport
+from .models import EmbyEvidence, FileSystemSeries, MPSubscriptionEvidence, QBTorrentEvidence, ScanCandidate, ScanReport
+from .moviepilot import fetch_mp_subscription_evidence, match_mp_subscription
 from .qbittorrent import UP_STATES, fetch_qb_evidence, match_torrent
 
 
-def _looks_complete(series: FileSystemSeries) -> bool:
+def _looks_complete(series: FileSystemSeries, mp: Optional[MPSubscriptionEvidence] = None) -> bool:
+    if mp and mp.matched and not mp.current_subscription_found:
+        return True
     signal = series.signal
     if signal.complete_markers:
         return True
@@ -23,10 +26,18 @@ def _looks_complete(series: FileSystemSeries) -> bool:
     return False
 
 
-def _score(series: FileSystemSeries, qb: Optional[QBTorrentEvidence], emby: Optional[EmbyEvidence], min_seed_days: int) -> int:
+def _score(
+    series: FileSystemSeries,
+    qb: Optional[QBTorrentEvidence],
+    emby: Optional[EmbyEvidence],
+    mp: Optional[MPSubscriptionEvidence],
+    min_seed_days: int,
+) -> int:
     score = 0
-    if _looks_complete(series):
+    if _looks_complete(series, mp):
         score += 40
+    if mp and mp.matched:
+        score += 10
     if qb and qb.progress >= 0.999:
         score += 20
     if qb and qb.seed_days >= min_seed_days:
@@ -42,14 +53,19 @@ def classify(
     series: FileSystemSeries,
     qb: Optional[QBTorrentEvidence],
     emby: Optional[EmbyEvidence],
+    mp: Optional[MPSubscriptionEvidence],
     config: ScanConfig,
 ) -> ScanCandidate:
     reasons: List[str] = []
     blockers: List[str] = []
+    fs_complete = _looks_complete(series)
+    mp_complete = bool(mp and mp.matched and not mp.current_subscription_found)
 
-    if _looks_complete(series):
+    if mp_complete:
+        reasons.append("mp_subscription_history_completed")
+    if fs_complete:
         reasons.append("filesystem_looks_complete")
-    else:
+    if not (fs_complete or mp_complete):
         blockers.append("needs_completion_evidence")
 
     if series.age_days >= config.min_seed_days:
@@ -99,7 +115,7 @@ def classify(
         size_bytes=series.size_bytes,
         video_count=series.video_count,
         age_days=round(series.age_days, 2),
-        score=_score(series, qb, emby, config.min_seed_days),
+        score=_score(series, qb, emby, mp, config.min_seed_days),
         status=status,
         reasons=reasons,
         blockers=blockers,
@@ -108,6 +124,7 @@ def classify(
         episode_sample=series.signal.episodes[:10],
         qb=qb,
         emby=emby,
+        mp=mp,
     )
 
 
@@ -134,11 +151,19 @@ def scan(config: ScanConfig) -> ScanReport:
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"emby_unavailable: {exc}")
 
+    mp_items: List[MPSubscriptionEvidence] = []
+    if config.include_mp and config.mp_base_url and config.mp_token:
+        try:
+            mp_items = fetch_mp_subscription_evidence(config.mp_base_url, config.mp_token)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"moviepilot_unavailable: {exc}")
+
     candidates = [
         classify(
             series,
             match_torrent(series, qb_items, config.path_aliases) if qb_items else None,
             match_emby(series, emby_items) if emby_items else None,
+            match_mp_subscription(series, mp_items) if mp_items else None,
             config,
         )
         for series in series_items
