@@ -148,6 +148,105 @@ def add_mv3_offline_task(
     }
 
 
+def ensure_mv3_115_path(
+    base_url: str,
+    token: str,
+    target_path: str,
+    storage: str = "",
+    timeout: int = 30,
+) -> Dict[str, object]:
+    segments = [segment for segment in target_path.strip("/").split("/") if segment]
+    if not segments:
+        raise ValueError("target_path must contain at least one segment")
+
+    client = MV3Client(base_url, token, timeout=timeout)
+    parent_id = "0"
+    current_path = ""
+    steps = []
+    for segment in segments:
+        current_path = f"{current_path}/{segment}"
+        existing = _find_115_child_folder(client, parent_id, segment, storage)
+        if existing:
+            parent_id = str(existing.get("cid") or existing.get("file_id") or existing.get("id") or "")
+            steps.append(
+                {
+                    "path": current_path,
+                    "name": segment,
+                    "action": "reused",
+                    "folder_id": parent_id,
+                }
+            )
+            continue
+        body: Dict[str, object] = {"parent_id": parent_id, "name": segment}
+        if storage:
+            body["storage"] = storage
+        status, headers, response_body = client.post_json("/api/v1/files/115/folder", body)
+        text = response_body.decode("utf-8", "replace")
+        parsed = _parse_json(text)
+        payload = _unwrap_api_payload(parsed)
+        api_success = _api_success(parsed)
+        folder_id = _extract_folder_id(payload)
+        steps.append(
+            {
+                "path": current_path,
+                "name": segment,
+                "action": "created",
+                "ok": 200 <= status < 300 and api_success and bool(folder_id),
+                "http_ok": 200 <= status < 300,
+                "api_success": api_success,
+                "status": status,
+                "response_content_type": _header(headers, "content-type"),
+                "folder_id": folder_id,
+                "request": _sanitize_json(body),
+                "response": _sanitize_json(payload if isinstance(payload, (dict, list)) else parsed),
+            }
+        )
+        if not (200 <= status < 300 and api_success and folder_id):
+            break
+        parent_id = folder_id
+    ok = bool(steps) and len(steps) == len(segments) and all(step.get("action") == "reused" or step.get("ok") for step in steps)
+    return {
+        "mode": "mv3-ensure-115-path-result",
+        "endpoint": {"method": "POST", "path": "/api/v1/files/115/folder"},
+        "ok": ok,
+        "target_path": "/" + "/".join(segments),
+        "storage": storage,
+        "final_folder_id": parent_id if ok else "",
+        "steps": steps,
+        "safety": "creates missing folders only for the approved target path; no files, torrents, STRM records, or existing folders are deleted or moved",
+    }
+
+
+def render_mv3_ensure_path_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# MV3 Ensure 115 Path Result",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Storage: `{report.get('storage', '')}`",
+        f"- Target path: `{report.get('target_path', '')}`",
+        f"- Final folder ID: `{report.get('final_folder_id', '')}`",
+        "",
+        "## Steps",
+        "",
+        "| Path | Action | OK | Folder ID |",
+        "| --- | --- | --- | --- |",
+    ]
+    for step in report.get("steps", []):
+        if not isinstance(step, dict):
+            continue
+        lines.append(
+            "| {path} | {action} | {ok} | {folder_id} |".format(
+                path=_escape(str(step.get("path") or "")),
+                action=_escape(str(step.get("action") or "")),
+                ok=str(step.get("ok", step.get("action") == "reused")),
+                folder_id=_escape(str(step.get("folder_id") or "")),
+            )
+        )
+    return "\n".join(lines)
+
+
 def render_mv3_offline_add_report(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -510,6 +609,42 @@ def _api_success(parsed: object) -> bool:
     if "code" in parsed:
         return parsed.get("code") in (0, "0", "success", "ok")
     return True
+
+
+def _find_115_child_folder(client: MV3Client, parent_id: str, name: str, storage: str) -> Dict[str, object]:
+    query = urllib.parse.urlencode({"cid": parent_id, "limit": 1000, "storage": storage})
+    status, _headers, body = client.get(f"/api/v1/files/115/list?{query}")
+    if not (200 <= status < 300):
+        return {}
+    parsed = _parse_json(body.decode("utf-8", "replace"))
+    payload = _unwrap_api_payload(parsed)
+    rows = []
+    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        rows = payload["data"]
+    elif isinstance(payload, list):
+        rows = payload
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_name = str(row.get("n") or row.get("name") or "")
+        folder_id = str(row.get("cid") or row.get("file_id") or row.get("id") or "")
+        if row_name == name and folder_id:
+            return row
+    return {}
+
+
+def _extract_folder_id(value: object) -> str:
+    if isinstance(value, dict):
+        for key in ("cid", "file_id", "id", "folder_id"):
+            if value.get(key):
+                return str(value.get(key))
+        for key in ("data", "folder", "result"):
+            nested = _extract_folder_id(value.get(key))
+            if nested:
+                return nested
+    if isinstance(value, list) and value:
+        return _extract_folder_id(value[0])
+    return ""
 
 
 def _is_sensitive_key(key: str) -> bool:

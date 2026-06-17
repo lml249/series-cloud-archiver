@@ -226,6 +226,20 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-offline-add-one \
 
 第一轮实测故意要求该行只能匹配到 1 个 qB magnet，避免一次把多版本、多分集、多来源批量送进 115。执行结果报告会记录 HTTP 状态、目标云端目录和 MV3 返回内容，但不会写出 magnet 原文。
 
+如果 MV3 返回 `云盘目录不存在`，先用带确认的目录创建命令补齐目标路径：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-ensure-115-path \
+  --env-file .env \
+  --target-path "/series/楚汉传奇 {tmdbid=41146}/Season 01" \
+  --storage 115-default \
+  --approve-create-path \
+  --format markdown \
+  --output reports/mv3-ensure-path-chuhan.md
+```
+
+`mv3-ensure-115-path` 会逐层读取 115 目录；已有目录复用，缺失目录才调用 `/api/v1/files/115/folder` 创建。它不会删除、移动或重命名任何云盘文件。
+
 ## MV3 只读探针
 
 正式接入 MV3 转存前，先确认 MV3 的地址、鉴权方式和可用接口：

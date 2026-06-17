@@ -9,10 +9,12 @@ from .config import config_from_env, db_path_from_env
 from .identity import render_identity_overrides, resolve_identity_overrides_from_scan_report
 from .mv3 import (
     add_mv3_offline_task,
+    ensure_mv3_115_path,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
     probe_mv3,
     render_mv3_capabilities_report,
+    render_mv3_ensure_path_report,
     render_mv3_instances_report,
     render_mv3_offline_add_report,
     render_mv3_probe_report,
@@ -123,6 +125,15 @@ def build_parser() -> argparse.ArgumentParser:
     offline_add_parser.add_argument("--approve-offline-add", action="store_true", help="Required: actually create one MV3 offline task")
     offline_add_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     offline_add_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    ensure_path_parser = subcommands.add_parser("mv3-ensure-115-path", help="Create missing 115 folders for one approved target path")
+    ensure_path_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    ensure_path_parser.add_argument("--target-path", required=True, help="Absolute 115 cloud path to ensure")
+    ensure_path_parser.add_argument("--storage", default="", help="Override MV3 cloud drive slug; defaults to 115-default when omitted")
+    ensure_path_parser.add_argument("--timeout", type=int, default=30, help="Per-request timeout in seconds")
+    ensure_path_parser.add_argument("--approve-create-path", action="store_true", help="Required: actually create missing 115 folders")
+    ensure_path_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    ensure_path_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mv3_parser = subcommands.add_parser("mv3-check", help="Readonly MV3 connectivity and capability probe")
     mv3_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -384,6 +395,27 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_offline_add_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mv3-ensure-115-path":
+        if not args.approve_create_path:
+            parser.error("mv3-ensure-115-path requires --approve-create-path")
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-ensure-115-path requires MV3_BASE_URL and MV3_API_TOKEN")
+        storage = args.storage or "115-default"
+        report = ensure_mv3_115_path(
+            config.mv3_base_url,
+            config.mv3_token,
+            args.target_path,
+            storage=storage,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_ensure_path_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

@@ -8,10 +8,12 @@ from series_cloud_archiver.cli import main
 from series_cloud_archiver.mv3 import (
     MV3Client,
     add_mv3_offline_task,
+    ensure_mv3_115_path,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
     probe_mv3,
     render_mv3_capabilities_report,
+    render_mv3_ensure_path_report,
     render_mv3_instances_report,
     render_mv3_offline_add_report,
     render_mv3_probe_report,
@@ -131,6 +133,56 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertTrue(report["http_ok"])
         self.assertFalse(report["api_success"])
         self.assertEqual(report["response"]["message"], "云盘目录不存在")
+
+    def test_ensure_115_path_reuses_existing_and_creates_missing_folders(self) -> None:
+        calls = []
+        folders = {
+            "0": [{"n": "series", "cid": "100"}],
+            "100": [],
+            "200": [],
+        }
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            calls.append((request.get_method(), request.full_url, request.data.decode("utf-8") if request.data else ""))
+            if request.get_method() == "GET":
+                query = request.full_url.split("?", 1)[1]
+                params = dict(part.split("=", 1) for part in query.split("&"))
+                return FakeResponse({"data": folders.get(params["cid"], [])})
+            body = json.loads(request.data.decode("utf-8"))
+            if body["name"] == "Demo":
+                folders["100"].append({"n": "Demo", "cid": "200"})
+                return FakeResponse({"success": True, "data": {"cid": "200"}})
+            folders["200"].append({"n": "Season 01", "cid": "300"})
+            return FakeResponse({"success": True, "data": {"cid": "300"}})
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = ensure_mv3_115_path("http://mv3.example", "token", "/series/Demo/Season 01", storage="115-default")
+
+        rendered = render_mv3_ensure_path_report(report, "json")
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["final_folder_id"], "300")
+        self.assertEqual([step["action"] for step in report["steps"]], ["reused", "created", "created"])
+        self.assertEqual(sum(1 for method, _url, _body in calls if method == "POST"), 2)
+        self.assertNotIn("token", rendered)
 
     def test_reports_missing_configuration_without_network(self) -> None:
         report = probe_mv3("", "")
@@ -446,6 +498,23 @@ class MV3ProbeTest(unittest.TestCase):
                         "1",
                         "--expected-title",
                         "Demo",
+                    ]
+                )
+
+    def test_cli_refuses_ensure_path_without_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            with self.assertRaises(SystemExit):
+                main(
+                    [
+                        "mv3-ensure-115-path",
+                        "--env-file",
+                        str(env_file),
+                        "--target-path",
+                        "/series/Demo",
                     ]
                 )
 
