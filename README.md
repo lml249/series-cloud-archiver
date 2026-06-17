@@ -301,6 +301,20 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-share-receive-one \
 
 `mv3-share-receive-one` 会重新搜索并预览同一个候选，只在通过标题校验和 `--approve-receive` 时调用 `/api/v1/share-transfer/receive`。它只转存选中的一个分享条目，不会整理、识别媒体类型、生成 STRM、操作 qB 或删除本地文件。
 
+转存完成后，先只读扫描 `/未整理` 里的文件，不直接整理：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-scan-source \
+  --env-file .env \
+  --source-path "/未整理/楚汉传奇 (2012)" \
+  --source-file-id 3453317028314611284 \
+  --storage 115-default \
+  --format markdown \
+  --output reports/mv3-organize-scan-chuhan.md
+```
+
+`mv3-organize-scan-source` 只调用 `/api/v1/organize/scan-source`。MV3 的接口说明把它描述为“扫描 + 过滤，返回候选媒体文件清单（不做识别、不写盘）”，所以它不会调用 `/api/v1/organize/transfer`、不会移动文件、不会生成 STRM，也不会操作 qB。
+
 ## MV3 只读探针
 
 正式接入 MV3 转存前，先确认 MV3 的地址、鉴权方式和可用接口：

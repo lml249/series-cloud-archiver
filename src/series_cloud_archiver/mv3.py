@@ -401,6 +401,103 @@ def receive_mv3_share(
     return report
 
 
+def scan_mv3_organize_source(
+    base_url: str,
+    token: str,
+    source_path: str,
+    source_file_id: str = "",
+    storage: str = "115-default",
+    is_cloud_source: bool = True,
+    is_dir: bool = True,
+    timeout: int = 120,
+) -> Dict[str, object]:
+    body: Dict[str, object] = {
+        "sources": [
+            {
+                "source_path": source_path,
+                "source_file_id": source_file_id,
+                "is_cloud_source": is_cloud_source,
+                "is_dir": is_dir,
+            }
+        ],
+        "exclude_extensions": [],
+        "max_size_bytes": 0,
+    }
+    client = MV3Client(base_url, token, timeout=timeout)
+    status, headers, response_body = client.post_json("/api/v1/organize/scan-source", body)
+    parsed = _parse_json(response_body.decode("utf-8", "replace"))
+    payload = _unwrap_api_payload(parsed)
+    api_success = _api_success(parsed)
+    rows = _organize_scan_items(payload)
+    summary = payload.get("summary") if isinstance(payload, dict) and isinstance(payload.get("summary"), dict) else {}
+    episode_numbers = _episode_numbers_from_scan_items(rows)
+    return {
+        "mode": "readonly-mv3-organize-scan-source",
+        "endpoint": {"method": "POST", "path": "/api/v1/organize/scan-source"},
+        "ok": 200 <= status < 300 and api_success,
+        "http_ok": 200 <= status < 300,
+        "api_success": api_success,
+        "status": status,
+        "response_content_type": _header(headers, "content-type"),
+        "source_path": source_path,
+        "source_file_id": source_file_id,
+        "storage": storage,
+        "is_cloud_source": is_cloud_source,
+        "is_dir": is_dir,
+        "summary": {
+            "total": int(summary.get("total") or len(rows)),
+            "candidate": int(summary.get("candidate") or sum(1 for row in rows if not str(row.get("skip_reason") or ""))),
+            "skip_ext": int(summary.get("skip_ext") or 0),
+            "skip_size": int(summary.get("skip_size") or 0),
+            "skip_other": int(summary.get("skip_other") or 0),
+            "in_library": int(summary.get("in_library") or sum(1 for row in rows if bool(row.get("in_library")))),
+            "episode_count": len(episode_numbers),
+            "episode_min": min(episode_numbers) if episode_numbers else None,
+            "episode_max": max(episode_numbers) if episode_numbers else None,
+            "missing_in_range": _missing_episode_numbers(episode_numbers),
+        },
+        "items": [_organize_scan_item_summary(row, index) for index, row in enumerate(rows[:100], start=1)],
+        "warnings": _organize_scan_warnings(rows, episode_numbers),
+        "safety": "organize scan-source only; MV3 documents this endpoint as scan/filter preview that does not recognize media or write to disk; no organize transfer, rename, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
+    }
+
+
+def render_mv3_organize_scan_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    lines = [
+        "# MV3 Organize Scan Source",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Source path: `{report.get('source_path', '')}`",
+        f"- Total: `{summary.get('total', 0)}`",
+        f"- Candidate: `{summary.get('candidate', 0)}`",
+        f"- In library: `{summary.get('in_library', 0)}`",
+        f"- Episode count: `{summary.get('episode_count', 0)}`",
+        f"- Episode range: `{summary.get('episode_min', '')}-{summary.get('episode_max', '')}`",
+        f"- Missing in range: `{summary.get('missing_in_range', [])}`",
+        "- Safety: scan-source only; no transfer, rename, STRM generation, or deletion was performed.",
+        "",
+        "| # | Name | Episode | Size | Skip reason | In library |",
+        "| ---: | --- | ---: | ---: | --- | --- |",
+    ]
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {index} | {name} | {episode} | {size} | {skip_reason} | {in_library} |".format(
+                index=item.get("index") or "",
+                name=_escape(str(item.get("name") or "")),
+                episode=item.get("episode") or "",
+                size=_escape(str(item.get("size") or "")),
+                skip_reason=_escape(str(item.get("skip_reason") or "")),
+                in_library=str(bool(item.get("in_library"))),
+            )
+        )
+    return "\n".join(lines)
+
+
 def render_mv3_share_preview_report(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -1188,6 +1285,75 @@ def _resolve_mv3_share(
 
 def _public_share_resolution(resolution: Dict[str, object]) -> Dict[str, object]:
     return {key: value for key, value in resolution.items() if key != "_raw"}
+
+
+def _organize_scan_items(payload: object) -> List[Dict[str, object]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("items", "files", "data", "list", "results"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _organize_scan_item_summary(item: Dict[str, object], index: int) -> Dict[str, object]:
+    name = _first_present(item, ["name", "file_name", "filename", "n", "path"])
+    path = _first_present(item, ["path", "source_path"])
+    return {
+        "index": index,
+        "name": name,
+        "path": path,
+        "episode": _episode_number_from_text(name or path),
+        "size": _format_size_value(_first_raw_present(item, ["size", "size_bytes", "file_size", "s"])),
+        "is_cloud_source": bool(item.get("is_cloud_source")),
+        "source_file_id": _first_present(item, ["source_file_id", "file_id", "fid", "cid"]),
+        "skip_reason": _first_present(item, ["skip_reason", "skipReason"]),
+        "in_library": bool(item.get("in_library")),
+        "raw": _sanitize_json(_sample_json(item, max_keys=30)),
+    }
+
+
+def _episode_numbers_from_scan_items(items: List[Dict[str, object]]) -> List[int]:
+    episodes = []
+    for item in items:
+        name = str(item.get("name") or item.get("path") or "")
+        episode = _episode_number_from_text(name)
+        if episode is not None:
+            episodes.append(episode)
+    return sorted(set(episodes))
+
+
+def _episode_number_from_text(text: str) -> Optional[int]:
+    match = re.search(r"[Ss](\d{1,2})[Ee](\d{1,3})", text)
+    if match:
+        return int(match.group(2))
+    match = re.search(r"(?:第\s*)?(\d{1,3})(?:\s*[集话話])", text)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _missing_episode_numbers(episodes: List[int]) -> List[int]:
+    if not episodes:
+        return []
+    found = set(episodes)
+    return [episode for episode in range(min(found), max(found) + 1) if episode not in found]
+
+
+def _organize_scan_warnings(items: List[Dict[str, object]], episodes: List[int]) -> List[str]:
+    warnings = []
+    if not items:
+        warnings.append("no_scan_items_found")
+    if episodes and _missing_episode_numbers(episodes):
+        warnings.append("episode_gap_detected")
+    if episodes and min(episodes) > 1:
+        warnings.append("episode_range_does_not_start_at_1")
+    if items and all(bool(item.get("in_library")) for item in items):
+        warnings.append("all_scan_items_marked_in_library")
+    return warnings
 
 
 def _share_browse_items(payload: object) -> List[Dict[str, object]]:

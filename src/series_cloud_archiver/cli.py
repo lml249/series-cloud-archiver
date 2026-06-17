@@ -19,12 +19,14 @@ from .mv3 import (
     render_mv3_instances_report,
     render_mv3_offline_add_report,
     render_mv3_offline_status_report,
+    render_mv3_organize_scan_report,
     render_mv3_probe_report,
     render_mv3_resource_search_report,
     render_mv3_share_receive_report,
     render_mv3_share_preview_report,
     preview_mv3_share,
     receive_mv3_share,
+    scan_mv3_organize_source,
     search_mv3_resources,
 )
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
@@ -184,6 +186,17 @@ def build_parser() -> argparse.ArgumentParser:
     share_receive_parser.add_argument("--approve-receive", action="store_true", help="Required: actually receive one selected share item")
     share_receive_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     share_receive_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    organize_scan_parser = subcommands.add_parser("mv3-organize-scan-source", help="Readonly MV3 organize scan-source preview")
+    organize_scan_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    organize_scan_parser.add_argument("--source-path", required=True, help="Source path to scan")
+    organize_scan_parser.add_argument("--source-file-id", default="", help="Optional source file/folder id for cloud paths")
+    organize_scan_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    organize_scan_parser.add_argument("--local-source", action="store_true", help="Treat source as local instead of cloud")
+    organize_scan_parser.add_argument("--file", action="store_true", help="Treat source as a single file instead of a directory")
+    organize_scan_parser.add_argument("--timeout", type=int, default=120, help="Per-request timeout in seconds")
+    organize_scan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    organize_scan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mv3_parser = subcommands.add_parser("mv3-check", help="Readonly MV3 connectivity and capability probe")
     mv3_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -550,6 +563,27 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_share_receive_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mv3-organize-scan-source":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-organize-scan-source requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = scan_mv3_organize_source(
+            config.mv3_base_url,
+            config.mv3_token,
+            args.source_path,
+            source_file_id=args.source_file_id,
+            storage=args.storage,
+            is_cloud_source=not args.local_source,
+            is_dir=not args.file,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_organize_scan_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

@@ -18,10 +18,12 @@ from series_cloud_archiver.mv3 import (
     render_mv3_instances_report,
     render_mv3_offline_add_report,
     render_mv3_offline_status_report,
+    render_mv3_organize_scan_report,
     render_mv3_probe_report,
     render_mv3_resource_search_report,
     render_mv3_share_receive_report,
     render_mv3_share_preview_report,
+    scan_mv3_organize_source,
     search_mv3_resources,
     preview_mv3_share,
     receive_mv3_share,
@@ -484,6 +486,76 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertNotIn("https://example.test", rendered)
         self.assertNotIn("parsed-code", rendered)
         self.assertNotIn("abcd", rendered)
+
+    def test_organize_scan_source_reports_episode_gaps_without_transfer(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {
+                                    "path": "/未整理/Demo/Demo.S01E01.mp4",
+                                    "name": "Demo.S01E01.mp4",
+                                    "size": 1024,
+                                    "is_cloud_source": True,
+                                    "source_file_id": "file-1",
+                                    "skip_reason": "",
+                                    "in_library": True,
+                                },
+                                {
+                                    "path": "/未整理/Demo/Demo.S01E03.mp4",
+                                    "name": "Demo.S01E03.mp4",
+                                    "size": 2048,
+                                    "is_cloud_source": True,
+                                    "source_file_id": "file-3",
+                                    "skip_reason": "",
+                                    "in_library": True,
+                                },
+                            ],
+                            "summary": {"total": 2, "candidate": 2, "in_library": 2},
+                        },
+                    }
+                ).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = scan_mv3_organize_source(
+                "http://mv3.example",
+                "token",
+                "/未整理/Demo",
+                source_file_id="folder-1",
+            )
+
+        rendered = render_mv3_organize_scan_report(report, "markdown")
+        self.assertEqual(seen["url"], "http://mv3.example/api/v1/organize/scan-source")
+        self.assertEqual(seen["body"]["sources"][0]["source_path"], "/未整理/Demo")
+        self.assertEqual(seen["body"]["sources"][0]["source_file_id"], "folder-1")
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["summary"]["episode_count"], 2)
+        self.assertEqual(report["summary"]["missing_in_range"], [2])
+        self.assertIn("episode_gap_detected", report["warnings"])
+        self.assertIn("all_scan_items_marked_in_library", report["warnings"])
+        self.assertIn("Demo.S01E01.mp4", rendered)
 
     def test_reports_missing_configuration_without_network(self) -> None:
         report = probe_mv3("", "")
@@ -1058,6 +1130,50 @@ class MV3ProbeTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["target_path"], "/未整理")
+
+    def test_cli_writes_organize_scan_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "organize-scan.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return b'{"success":true,"data":{"items":[{"name":"Demo.S01E01.mp4","source_file_id":"file-1"}],"summary":{"total":1,"candidate":1}}}'
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                code = main(
+                    [
+                        "mv3-organize-scan-source",
+                        "--env-file",
+                        str(env_file),
+                        "--source-path",
+                        "/未整理/Demo",
+                        "--source-file-id",
+                        "folder-1",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["summary"]["total"], 1)
 
     def test_cli_executes_one_offline_add_from_manifest_without_leaking_magnet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
