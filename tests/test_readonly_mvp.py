@@ -134,6 +134,46 @@ class ReadonlyScanTest(unittest.TestCase):
             self.assertIn("mp_subscription_history_completed", report.candidates[0].reasons)
             self.assertNotIn("needs_completion_evidence", report.candidates[0].blockers)
 
+    def test_manual_completion_file_can_prove_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            root = tmp_path / "TV"
+            show = root / "Demo.Show.S01.2026.1080p"
+            touch(show / "Demo.Show.S01E01.mkv")
+            manual_file = tmp_path / "manual-completions.json"
+            manual_file.write_text(
+                """
+                {
+                  "manual_completions": [
+                    {
+                      "title": "Demo Show",
+                      "tmdbid": 123,
+                      "season": 1,
+                      "paths": ["%s"],
+                      "confirmed_at": "2026-06-17"
+                    }
+                  ]
+                }
+                """
+                % str(show),
+                encoding="utf-8",
+            )
+
+            report = scan(
+                ScanConfig(
+                    media_roots=[str(root)],
+                    include_qb=False,
+                    min_seed_days=0,
+                    min_age_days=0,
+                    max_depth=2,
+                    manual_completion_file=str(manual_file),
+                )
+            )
+
+            self.assertEqual(report.candidates[0].status, "candidate_for_cloud_check")
+            self.assertIn("manual_completion_confirmed", report.candidates[0].reasons)
+            self.assertNotIn("needs_completion_evidence", report.candidates[0].blockers)
+
 
 class QBittorrentClientTest(unittest.TestCase):
     def test_login_accepts_ok_with_period(self) -> None:

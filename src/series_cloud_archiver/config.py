@@ -47,6 +47,7 @@ class ScanConfig:
     qb_pass: str = ""
     mp_base_url: str = ""
     mp_token: str = ""
+    manual_completion_file: str = ""
     emby_base_url: str = ""
     emby_key: str = ""
     mode: str = "dry-run"
@@ -84,6 +85,7 @@ def config_from_env(env_file: Optional[str], media_roots: Iterable[str]) -> Scan
         qb_pass=_get(values, "QB_PASSWORD"),
         mp_base_url=_get(values, "MP_BASE_URL"),
         mp_token=_get(values, "MP_API_TOKEN"),
+        manual_completion_file=_get(values, "ARCHIVER_MANUAL_COMPLETION_FILE"),
         emby_base_url=_get(values, "EMBY_BASE_URL"),
         emby_key=_get(values, "EMBY_API_KEY"),
         mode=_get(values, "ARCHIVER_MODE", "dry-run"),

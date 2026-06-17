@@ -17,6 +17,8 @@ logs/
 reports/
 artifacts/
 backups/
+manual-completions*.json
+!examples/manual-completions.example.json
 *.log
 *.sqlite
 *.sqlite3

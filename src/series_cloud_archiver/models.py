@@ -59,6 +59,17 @@ class MPSubscriptionEvidence:
 
 
 @dataclass
+class ManualCompletionEvidence:
+    title: str
+    path: str
+    tmdbid: int = 0
+    season: int = 0
+    confirmed_at: str = ""
+    note: str = ""
+    matched: bool = False
+
+
+@dataclass
 class ScanCandidate:
     title: str
     path: str
@@ -75,6 +86,7 @@ class ScanCandidate:
     qb: Optional[QBTorrentEvidence] = None
     emby: Optional[EmbyEvidence] = None
     mp: Optional[MPSubscriptionEvidence] = None
+    manual_completion: Optional[ManualCompletionEvidence] = None
 
     def to_dict(self) -> Dict[str, object]:
         data = asdict(self)

@@ -99,6 +99,14 @@ PYTHONPATH=src python3 -m series_cloud_archiver scan \
 
 DSM 上可以用本地 `.env` 提供真实路径和服务地址，但 `.env` 不要提交。
 
+如果人工复核确认某批剧季已经完结，可以把确认结果写到独立 JSON 文件，并在 `.env` 里配置：
+
+```bash
+ARCHIVER_MANUAL_COMPLETION_FILE=/media/config/manual-completions.json
+```
+
+文件格式见 [manual-completions.example.json](examples/manual-completions.example.json)。扫描器会把命中的路径标记为 `manual_completion_confirmed`，这只代表“完结证据已人工确认”，不会跳过后续 MV3、Emby、qB 做种和人工删除审批门禁。
+
 ## 编排器第一版
 
 第一版编排器提供 SQLite 状态库和审计记录，但仍然不会执行删除。

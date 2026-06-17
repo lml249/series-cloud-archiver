@@ -1,0 +1,15 @@
+{
+  "manual_completions": [
+    {
+      "title": "Example Show",
+      "tmdbid": 12345,
+      "season": 1,
+      "paths": [
+        "/media/local-series/Example.Show.S01.1080p",
+        "/media/local-series/Example.Show.S01.2160p"
+      ],
+      "confirmed_at": "2026-06-17",
+      "note": "Human review confirmed this season is complete across all matching folders."
+    }
+  ]
+}
