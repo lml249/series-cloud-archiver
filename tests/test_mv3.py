@@ -9,6 +9,40 @@ from series_cloud_archiver.mv3 import MV3Client, probe_mv3, render_mv3_probe_rep
 
 
 class MV3ProbeTest(unittest.TestCase):
+    def test_client_sends_api_key_header_without_query_token(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return b"{}"
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["api_key"] = request.headers.get("X-api-key")
+            seen["authorization"] = request.headers.get("Authorization")
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            MV3Client("http://mv3.example", "secret-token").get("/api/v1/config")
+
+        self.assertEqual(seen["url"], "http://mv3.example/api/v1/config")
+        self.assertEqual(seen["api_key"], "secret-token")
+        self.assertIsNone(seen["authorization"])
+        self.assertEqual(seen["timeout"], 10)
+
     def test_reports_missing_configuration_without_network(self) -> None:
         report = probe_mv3("", "")
 

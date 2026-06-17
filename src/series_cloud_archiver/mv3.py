@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import json
 import urllib.error
-import urllib.parse
 import urllib.request
 from typing import Dict, List, Optional, Tuple
 
 
-DEFAULT_PROBE_PATHS = ["/", "/api", "/api/v1", "/openapi.json", "/api/v1/openapi.json"]
+DEFAULT_PROBE_PATHS = ["/", "/api", "/api/v1", "/openapi.json", "/api/v1/openapi.json", "/api/v1/config"]
 SENSITIVE_METHOD_HINTS = ("delete", "remove", "transfer", "save", "move", "rename", "strm", "download")
 
 
@@ -19,7 +18,10 @@ class MV3Client:
 
     def get(self, path: str) -> Tuple[int, Dict[str, str], bytes]:
         url = self._url(path)
-        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        headers = {"Accept": "application/json"}
+        if self.token:
+            headers["X-API-Key"] = self.token
+        request = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 return response.status, dict(response.headers.items()), response.read(1024 * 1024)
@@ -27,12 +29,7 @@ class MV3Client:
             return exc.code, dict(exc.headers.items()), exc.read(64 * 1024)
 
     def _url(self, path: str) -> str:
-        query = {}
-        if self.token:
-            query["token"] = self.token
         url = f"{self.base_url}{path if path.startswith('/') else '/' + path}"
-        if query:
-            url += "?" + urllib.parse.urlencode(query)
         return url
 
 
