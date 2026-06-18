@@ -241,6 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
     share_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
     share_preview_parser.add_argument("--keyword", required=True, help="Search keyword")
     share_preview_parser.add_argument("--selection-index", type=int, default=1, help="1-based search result to parse/browse")
+    share_preview_parser.add_argument("--browse-cid", default="", help="Optional share folder cid to browse instead of the share root")
     share_preview_parser.add_argument("--expected-title-contains", default="", help="Safety check: selected title must contain this text")
     share_preview_parser.add_argument("--channel", action="append", default=[], help="Optional channel filter; can be repeated")
     share_preview_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
@@ -252,6 +253,7 @@ def build_parser() -> argparse.ArgumentParser:
     share_receive_parser.add_argument("--keyword", required=True, help="Search keyword")
     share_receive_parser.add_argument("--selection-index", type=int, default=1, help="1-based search result to parse/browse")
     share_receive_parser.add_argument("--browse-index", type=int, default=1, help="1-based browsed share item to receive")
+    share_receive_parser.add_argument("--browse-cid", default="", help="Optional share folder cid to browse before selecting --browse-index")
     share_receive_parser.add_argument("--expected-title-contains", required=True, help="Safety check: selected title must contain this text")
     share_receive_parser.add_argument("--target-path", default="/未整理", help="115 target path; defaults to /未整理")
     share_receive_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
@@ -727,6 +729,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             config.mv3_token,
             args.keyword,
             selection_index=args.selection_index,
+            browse_cid=args.browse_cid,
             channels=args.channel,
             expected_title_contains=args.expected_title_contains,
             timeout=args.timeout,
@@ -750,6 +753,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             args.keyword,
             selection_index=args.selection_index,
             browse_index=args.browse_index,
+            browse_cid=args.browse_cid,
             channels=args.channel,
             expected_title_contains=args.expected_title_contains,
             target_path=args.target_path,

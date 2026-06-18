@@ -419,12 +419,13 @@ def preview_mv3_share(
     token: str,
     keyword: str,
     selection_index: int = 1,
+    browse_cid: str = "",
     channels: Optional[List[str]] = None,
     expected_title_contains: str = "",
     timeout: int = 60,
 ) -> Dict[str, object]:
     client = MV3Client(base_url, token, timeout=timeout)
-    resolution = _resolve_mv3_share(client, keyword, selection_index, channels, expected_title_contains)
+    resolution = _resolve_mv3_share(client, keyword, selection_index, browse_cid, channels, expected_title_contains)
     report = _public_share_resolution(resolution)
     search = report.get("search") if isinstance(report.get("search"), dict) else {}
     parse_report = report.get("parse") if isinstance(report.get("parse"), dict) else {}
@@ -444,6 +445,7 @@ def receive_mv3_share(
     keyword: str,
     selection_index: int = 1,
     browse_index: int = 1,
+    browse_cid: str = "",
     channels: Optional[List[str]] = None,
     expected_title_contains: str = "",
     target_path: str = "/未整理",
@@ -451,7 +453,7 @@ def receive_mv3_share(
     timeout: int = 60,
 ) -> Dict[str, object]:
     client = MV3Client(base_url, token, timeout=timeout)
-    resolution = _resolve_mv3_share(client, keyword, selection_index, channels, expected_title_contains)
+    resolution = _resolve_mv3_share(client, keyword, selection_index, browse_cid, channels, expected_title_contains)
     report = _public_share_resolution(resolution)
     warnings = list(report.get("warnings", [])) if isinstance(report.get("warnings"), list) else []
     raw = resolution.get("_raw") if isinstance(resolution.get("_raw"), dict) else {}
@@ -501,6 +503,7 @@ def receive_mv3_share(
     report["mode"] = "mv3-share-receive-one-result"
     report["ok"] = bool(receive_report.get("ok"))
     report["browse_index"] = browse_index
+    report["browse_cid"] = browse_cid
     report["browse_selection"] = _share_browse_item_summary(browse_selection, browse_index) if isinstance(browse_selection, dict) and browse_selection else {}
     report["target_path"] = normalized_target_path
     report["storage"] = storage
@@ -1377,6 +1380,7 @@ def _resolve_mv3_share(
     client: MV3Client,
     keyword: str,
     selection_index: int,
+    browse_cid: str,
     channels: Optional[List[str]],
     expected_title_contains: str,
 ) -> Dict[str, object]:
@@ -1438,6 +1442,8 @@ def _resolve_mv3_share(
             browse_body: Dict[str, object] = {"share_code": share_code}
             if receive_code:
                 browse_body["receive_code"] = receive_code
+            if browse_cid:
+                browse_body["cid"] = browse_cid
             browse_status, browse_headers, browse_response_body = client.post_json("/api/v1/share-transfer/browse", browse_body)
             browse_parsed = _parse_json(browse_response_body.decode("utf-8", "replace"))
             browse_payload = _unwrap_api_payload(browse_parsed)
@@ -1455,6 +1461,7 @@ def _resolve_mv3_share(
         "keyword": keyword,
         "channels": channels or [],
         "selection_index": selection_index,
+        "browse_cid": browse_cid,
         "selected": selected_summary,
         "search": {
             "endpoint": {"method": "POST", "path": "/api/v1/resource-search/search"},
@@ -1578,6 +1585,7 @@ def _share_browse_item_summary(item: Dict[str, object], index: int) -> Dict[str,
         "name": _first_present(item, ["name", "file_name", "filename", "n", "title"]),
         "kind": _share_item_kind(item),
         "size": _format_size_value(_first_raw_present(item, ["size", "size_text", "file_size", "file_size_text", "s"])),
+        "file_id": _share_item_file_id(item),
         "raw": _sanitize_json(_sample_json(item, max_keys=30)),
     }
 
