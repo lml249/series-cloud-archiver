@@ -237,6 +237,44 @@ class QBittorrentClientTest(unittest.TestCase):
         match = match_torrent(series, [torrent], {"/example/library-host": "/example/qb-view"})
         self.assertIs(match, torrent)
 
+    def test_match_torrent_does_not_match_shared_save_parent(self) -> None:
+        series = FileSystemSeries(
+            title="Breaking.Bad.S01.2008.1080p.BluRay.x264.DTS-ADE",
+            path="/example/library-view/TV/Breaking.Bad.S01.2008.1080p.BluRay.x264.DTS-ADE",
+            size_bytes=10,
+            video_count=7,
+            latest_mtime=0,
+            age_days=10,
+            signal=EpisodeSignal(seasons=[1], episodes=[1, 2, 3, 4, 5, 6, 7]),
+        )
+        wrong_torrent = QBTorrentEvidence(
+            name="Bloodhounds.S02.2023.2160p.NF.WEB-DL.DDP5.1.Atmos.HDR.H.265-HHWEB",
+            hash="wrong",
+            state="stalledUP",
+            save_path="/example/qb-view/TV/",
+            content_path="/example/qb-view/TV/Bloodhounds.S02.2023.2160p.NF.WEB-DL.DDP5.1.Atmos.HDR.H.265-HHWEB",
+            progress=1.0,
+            seeding_time_seconds=86400 * 8,
+            seed_days=8.0,
+            size_bytes=10,
+        )
+        right_torrent = QBTorrentEvidence(
+            name="Breaking.Bad.S01.2008.1080p.BluRay.x264.DTS-ADE",
+            hash="right",
+            state="stalledUP",
+            save_path="/example/qb-view/TV/",
+            content_path="/example/qb-view/TV/Breaking.Bad.S01.2008.1080p.BluRay.x264.DTS-ADE",
+            progress=1.0,
+            seeding_time_seconds=86400 * 8,
+            seed_days=8.0,
+            size_bytes=10,
+        )
+
+        aliases = {"/example/library-view": "/example/qb-view"}
+
+        self.assertIsNone(match_torrent(series, [wrong_torrent], aliases))
+        self.assertIs(match_torrent(series, [wrong_torrent, right_torrent], aliases), right_torrent)
+
 
 class EmbyRefreshVerifyTest(unittest.TestCase):
     def test_verify_emby_library_paths_blocks_stale_local_records(self) -> None:

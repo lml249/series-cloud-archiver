@@ -4,6 +4,7 @@ import json
 import urllib.parse
 import urllib.request
 from http.cookiejar import CookieJar
+from pathlib import PurePosixPath
 from typing import Dict, List, Optional
 
 from .models import FileSystemSeries, QBTorrentEvidence
@@ -88,6 +89,18 @@ def _path_variants(path: str, aliases: Dict[str, str]) -> List[str]:
     return sorted(variants)
 
 
+def _torrent_content_paths(torrent: QBTorrentEvidence) -> List[str]:
+    paths = set()
+    content_path = torrent.content_path.rstrip("/")
+    if content_path:
+        paths.add(content_path)
+    save_path = torrent.save_path.rstrip("/")
+    name = torrent.name.strip().strip("/")
+    if save_path and name:
+        paths.add(str(PurePosixPath(save_path) / name))
+    return sorted(paths)
+
+
 def match_torrent(
     series: FileSystemSeries,
     torrents: List[QBTorrentEvidence],
@@ -100,7 +113,7 @@ def match_torrent(
     best_score = 0
     for torrent in torrents:
         paths = []
-        for path in [torrent.content_path.rstrip("/"), torrent.save_path.rstrip("/")]:
+        for path in _torrent_content_paths(torrent):
             paths.extend(_path_variants(path, aliases))
         score = 0
         if any(variant in paths for variant in series_variants):
