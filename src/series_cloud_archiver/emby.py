@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Sequence
 
 from .episode import episode_signal
 from .models import EmbyEvidence, FileSystemSeries
+from .redaction import redact_sensitive_text
 
 
 REFRESH_LIBRARY_TASK_KEY = "RefreshLibrary"
@@ -22,19 +23,22 @@ class EmbyClient:
         self.api_key = api_key
         self.timeout = timeout
 
+    def _auth_headers(self) -> Dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self.api_key:
+            headers["X-Emby-Token"] = self.api_key
+        return headers
+
     def _get(self, path: str, query: Dict[str, str]) -> object:
-        query = dict(query)
-        query["api_key"] = self.api_key
-        url = f"{self.base_url}{path}?{urllib.parse.urlencode(query)}"
-        with urllib.request.urlopen(url, timeout=self.timeout) as response:
+        url = _url_with_query(f"{self.base_url}{path}", query)
+        request = urllib.request.Request(url, headers=self._auth_headers())
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
             text = response.read().decode("utf-8", "replace")
         return json.loads(text) if text else {}
 
     def _post_empty(self, path: str, query: Optional[Dict[str, str]] = None) -> Dict[str, object]:
-        query = dict(query or {})
-        query["api_key"] = self.api_key
-        url = f"{self.base_url}{path}?{urllib.parse.urlencode(query)}"
-        request = urllib.request.Request(url, data=b"", method="POST")
+        url = _url_with_query(f"{self.base_url}{path}", query or {})
+        request = urllib.request.Request(url, data=b"", headers=self._auth_headers(), method="POST")
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 text = response.read().decode("utf-8", "replace")
@@ -367,7 +371,7 @@ def _verify_emby_paths_from_db(
             "blockers": ["emby_library_db_not_found"],
             "warnings": [],
         }
-    connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    connection = sqlite3.connect(_sqlite_readonly_uri(db_path), uri=True)
     connection.row_factory = sqlite3.Row
     try:
         stale_rows = _db_rows_for_prefixes(connection, stale_path_prefixes)
@@ -563,8 +567,20 @@ def _parse_json_object(text: str) -> object:
     try:
         return json.loads(text) if text else {}
     except json.JSONDecodeError:
-        return {"raw": text}
+        return {"raw": redact_sensitive_text(text)}
 
 
 def _escape(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ")
+
+
+def _url_with_query(base_url: str, query: Dict[str, str]) -> str:
+    if not query:
+        return base_url
+    return f"{base_url}?{urllib.parse.urlencode(query)}"
+
+
+def _sqlite_readonly_uri(db_path: Path) -> str:
+    path = str(db_path.expanduser().resolve(strict=False))
+    quoted_path = urllib.parse.quote(path, safe="/:")
+    return f"file:{quoted_path}?mode=ro"

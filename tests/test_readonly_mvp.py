@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,7 +8,7 @@ from unittest.mock import patch
 from series_cloud_archiver.cli import main
 from series_cloud_archiver.config import ScanConfig
 from series_cloud_archiver.cleanup_verify import build_mp_cleanup_verification, render_mp_cleanup_verification
-from series_cloud_archiver.emby import refresh_and_verify_emby_library, render_emby_refresh_verify_report, verify_emby_library_paths
+from series_cloud_archiver.emby import EmbyClient, refresh_and_verify_emby_library, render_emby_refresh_verify_report, verify_emby_library_paths
 from series_cloud_archiver.episode import episode_signal
 from series_cloud_archiver.models import FileSystemSeries, EpisodeSignal, QBTorrentEvidence
 from series_cloud_archiver.moviepilot import (
@@ -409,6 +410,109 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["verification"]["totals"]["stale_records"], 0)
+
+    def test_emby_client_uses_token_header_without_query_api_key(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self):
+                return b'{"Items":[]}'
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["headers"] = request.headers
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            items = EmbyClient("http://emby.example", "secret-key", timeout=7).series_items()
+
+        self.assertEqual(items, [])
+        self.assertIn("IncludeItemTypes=Series", seen["url"])
+        self.assertNotIn("secret-key", seen["url"])
+        self.assertNotIn("api_key=", seen["url"])
+        self.assertEqual(seen["headers"].get("X-emby-token"), "secret-key")
+        self.assertEqual(seen["timeout"], 7)
+
+    def test_emby_refresh_error_redacts_echoed_api_key(self) -> None:
+        class FakeHTTPError(Exception):
+            code = 500
+
+            def read(self):
+                return b"failed url=http://emby.example/emby/Library/Refresh?api_key=secret-key token=also-secret"
+
+        def fake_urlopen(_request, timeout):
+            raise FakeHTTPError()
+
+        with patch("urllib.request.urlopen", fake_urlopen), patch("urllib.error.HTTPError", FakeHTTPError):
+            result = EmbyClient("http://emby.example", "secret-key").refresh_library()
+
+        rendered = json.dumps(result, ensure_ascii=False)
+        self.assertFalse(result["ok"])
+        self.assertIn("[REDACTED]", rendered)
+        self.assertNotIn("secret-key", rendered)
+        self.assertNotIn("also-secret", rendered)
+
+    def test_verify_emby_library_paths_reads_sqlite_uri_with_special_chars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "emby?library#1.db"
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE MediaItems (
+                        Id TEXT,
+                        type TEXT,
+                        Name TEXT,
+                        SeriesName TEXT,
+                        Path TEXT,
+                        IndexNumber INTEGER,
+                        ParentIndexNumber INTEGER
+                    )
+                    """
+                )
+                connection.execute(
+                    "INSERT INTO MediaItems VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "episode-strm-1",
+                        "Episode",
+                        "第1集",
+                        "楚汉传奇",
+                        "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E01.strm",
+                        1,
+                        1,
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            class FakeClient:
+                def items_by_search(self, _search_term):
+                    raise AssertionError("sqlite path should be used before Emby API search")
+
+            report = verify_emby_library_paths(
+                FakeClient(),
+                title="楚汉传奇",
+                stale_path_prefixes=["/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}"],
+                strm_path_prefixes=["/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}"],
+                expected_episode_count=1,
+                expected_episode_min=1,
+                expected_episode_max=1,
+                library_db_path=str(db_path),
+            )
+
+        self.assertEqual(report["method"], "sqlite_library_db")
+        self.assertEqual(report["totals"]["strm_records"], 1)
+        self.assertEqual(report["blockers"], [])
 
 
 class MoviePilotEvidenceTest(unittest.TestCase):

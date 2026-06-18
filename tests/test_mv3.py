@@ -407,9 +407,15 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(seen["body"]["channels"], ["pansou"])
         self.assertTrue(report["ok"])
         self.assertEqual(report["result_count"], 1)
+        self.assertTrue(report["items"][0]["share_code_available"])
+        self.assertNotIn("share_code", report["items"][0])
         self.assertNotIn("https://example.test", rendered)
         self.assertNotIn("https://cdn.example.test", rendered)
         self.assertNotIn("abcd", rendered)
+        self.assertNotIn("safe-code", rendered)
+        markdown = render_mv3_resource_search_report(report, "markdown")
+        self.assertIn("Share code available", markdown)
+        self.assertNotIn("safe-code", markdown)
 
     def test_share_preview_parses_and_browses_selected_resource_without_receiving(self) -> None:
         seen = []

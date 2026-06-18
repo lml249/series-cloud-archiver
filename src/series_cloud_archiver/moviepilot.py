@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from .models import FileSystemSeries, MPSubscriptionEvidence
+from .redaction import redact_sensitive_text
 
 
 TV_TYPE = "电视剧"
@@ -574,7 +575,7 @@ def _parse_json_object(text: str) -> Dict[str, object]:
     try:
         parsed = json.loads(text) if text else {}
     except json.JSONDecodeError:
-        return {"raw": text}
+        return {"raw": redact_sensitive_text(text)}
     return parsed if isinstance(parsed, dict) else {"data": parsed}
 
 

@@ -680,20 +680,20 @@ def render_mv3_resource_search_report(report: Dict[str, object], output_format: 
         f"- Result count: `{report.get('result_count', 0)}`",
         "- Safety: search only; no transfer or STRM generation was performed.",
         "",
-        "| # | Title | Channel | Size | Type | Share code |",
+        "| # | Title | Channel | Size | Type | Share code available |",
         "| ---: | --- | --- | ---: | --- | --- |",
     ]
     for item in report.get("items", []):
         if not isinstance(item, dict):
             continue
         lines.append(
-            "| {index} | {title} | {channel} | {size} | {media_type} | {share_code} |".format(
+            "| {index} | {title} | {channel} | {size} | {media_type} | {share_code_available} |".format(
                 index=item.get("index") or "",
                 title=_escape(str(item.get("title") or "")),
                 channel=_escape(str(item.get("channel") or "")),
                 size=_escape(str(item.get("size") or "")),
                 media_type=_escape(str(item.get("media_type") or "")),
-                share_code=_escape(str(item.get("share_code") or "")),
+                share_code_available=str(bool(item.get("share_code_available"))),
             )
         )
     return "\n".join(lines)
@@ -1316,7 +1316,7 @@ def _resource_search_summary(item: Dict[str, object], index: int) -> Dict[str, o
         "channel": _first_present(item, ["channel", "source", "site", "provider", "platform"]),
         "media_type": _first_present(item, ["media_type", "type", "category"]),
         "size": _first_present(item, ["size", "size_text", "file_size", "file_size_text"]),
-        "share_code": _first_present(item, ["share_code", "shareId", "share_id"]),
+        "share_code_available": bool(_first_raw_present(item, ["share_code", "shareId", "share_id"])),
         "receive_code_available": bool(_first_present(item, ["receive_code", "receiveCode", "password", "pwd"])),
         "raw": _sanitize_json(_sample_json(item, max_keys=30)),
     }
