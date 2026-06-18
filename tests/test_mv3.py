@@ -99,7 +99,7 @@ class MV3ProbeTest(unittest.TestCase):
                 "secret-token",
                 ["magnet:?xt=urn:btih:private"],
                 storage="115-default",
-                wp_path="/series/Demo",
+                wp_path="/已整理/series/Demo",
                 timeout=12,
             )
 
@@ -138,7 +138,7 @@ class MV3ProbeTest(unittest.TestCase):
                 "secret-token",
                 ["magnet:?xt=urn:btih:private"],
                 storage="115-default",
-                wp_path="/series/Missing",
+                wp_path="/已整理/series/Missing",
             )
 
         self.assertFalse(report["ok"])
@@ -149,7 +149,8 @@ class MV3ProbeTest(unittest.TestCase):
     def test_ensure_115_path_reuses_existing_and_creates_missing_folders(self) -> None:
         calls = []
         folders = {
-            "0": [{"n": "series", "cid": "100"}],
+            "0": [{"n": "已整理", "cid": "50"}],
+            "50": [{"n": "series", "cid": "100"}],
             "100": [],
             "200": [],
         }
@@ -187,12 +188,12 @@ class MV3ProbeTest(unittest.TestCase):
             return FakeResponse({"success": True, "data": {"cid": "300"}})
 
         with patch("urllib.request.urlopen", fake_urlopen):
-            report = ensure_mv3_115_path("http://mv3.example", "token", "/series/Demo/Season 01", storage="115-default")
+            report = ensure_mv3_115_path("http://mv3.example", "token", "/已整理/series/Demo/Season 01", storage="115-default")
 
         rendered = render_mv3_ensure_path_report(report, "json")
         self.assertTrue(report["ok"])
         self.assertEqual(report["final_folder_id"], "300")
-        self.assertEqual([step["action"] for step in report["steps"]], ["reused", "created", "created"])
+        self.assertEqual([step["action"] for step in report["steps"]], ["reused", "reused", "created", "created"])
         self.assertEqual(sum(1 for method, _url, _body in calls if method == "POST"), 2)
         self.assertTrue(all("/api/v1/files/115/list" not in url for _method, url, _body in calls))
         self.assertTrue(any("/api/v1/files/115/browse" in url for method, url, _body in calls if method == "GET"))
@@ -305,7 +306,7 @@ class MV3ProbeTest(unittest.TestCase):
                 "token",
                 "abc",
                 target_folder_id="300",
-                target_path="/series/Demo/Season 01",
+                target_path="/已整理/series/Demo/Season 01",
                 storage="115-default",
             )
 
@@ -348,7 +349,7 @@ class MV3ProbeTest(unittest.TestCase):
                 "token",
                 "abc",
                 target_folder_id="300",
-                target_path="/series/Demo/Season 01",
+                target_path="/已整理/series/Demo/Season 01",
                 storage="115-default",
             )
 
@@ -971,7 +972,7 @@ class MV3ProbeTest(unittest.TestCase):
                         "--env-file",
                         str(env_file),
                         "--target-path",
-                        "/series/Demo",
+                        "/已整理/series/Demo",
                     ]
                 )
 
@@ -1052,7 +1053,7 @@ class MV3ProbeTest(unittest.TestCase):
                         "--target-folder-id",
                         "300",
                         "--target-path",
-                        "/series/Demo/Season 01",
+                        "/已整理/series/Demo/Season 01",
                         "--format",
                         "json",
                         "--output",
@@ -1352,7 +1353,7 @@ class MV3ProbeTest(unittest.TestCase):
                                 "title": "Demo",
                                 "tmdbid": 123,
                                 "season": 1,
-                                "proposed_cloud_destination": "/series/Demo",
+                                "proposed_cloud_destination": "/已整理/series/Demo",
                                 "titles": ["Demo.S01"],
                                 "source_paths": ["/media/Demo.S01"],
                                 "qb_matches": [{"hash": "abc"}],
