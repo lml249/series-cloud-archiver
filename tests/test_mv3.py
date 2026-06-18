@@ -1282,6 +1282,99 @@ class MV3ProbeTest(unittest.TestCase):
                     ]
                 )
 
+    def test_cli_parses_mp_cleanup_expected_episodes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            preview = tmp_path / "preview.json"
+            output = tmp_path / "execute.json"
+            env_file.write_text("MP_BASE_URL=http://moviepilot.example\nMP_API_TOKEN=token\n", encoding="utf-8")
+            preview.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-mp-cleanup-preview",
+                        "title": "雨霖铃",
+                        "ready_for_manual_cleanup_approval": True,
+                        "summary": {
+                            "records_matched": 3,
+                            "episode_count": 3,
+                            "episode_min": 1,
+                            "episode_max": 21,
+                            "missing_in_range": [2],
+                        },
+                        "mp_delete_plan": {"query": {"deletesrc": True, "deletedest": True}},
+                        "records": [
+                            {
+                                "id": 21,
+                                "title": "雨霖铃",
+                                "tmdbid": 254486,
+                                "episodes": "E01",
+                                "episode_number": 1,
+                                "status": True,
+                                "hash_prefix": "feedface0000",
+                            },
+                            {
+                                "id": 22,
+                                "title": "雨霖铃",
+                                "tmdbid": 254486,
+                                "episodes": "E03",
+                                "episode_number": 3,
+                                "status": True,
+                                "hash_prefix": "feedface0000",
+                            },
+                            {
+                                "id": 23,
+                                "title": "雨霖铃",
+                                "tmdbid": 254486,
+                                "episodes": "E21",
+                                "episode_number": 21,
+                                "status": True,
+                                "hash_prefix": "feedface0000",
+                            },
+                        ],
+                        "warnings": ["episode_gap_detected"],
+                        "blockers": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("series_cloud_archiver.moviepilot.MoviePilotClient.delete_transfer_history", return_value={"http_status": 200, "ok": True, "response": {"success": True}}):
+                main(
+                    [
+                        "mp-cleanup-execute",
+                        "--env-file",
+                        str(env_file),
+                        "--preview-report",
+                        str(preview),
+                        "--expected-title",
+                        "雨霖铃",
+                        "--expected-tmdbid",
+                        "254486",
+                        "--expected-hash-prefix",
+                        "feedface0000",
+                        "--expected-record-count",
+                        "3",
+                        "--expected-episode-count",
+                        "3",
+                        "--expected-episode-min",
+                        "1",
+                        "--expected-episode-max",
+                        "21",
+                        "--expected-episodes",
+                        "1,3,21",
+                        "--approve-mp-cleanup",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["expected"]["episodes"], [1, 3, 21])
+
     def test_cli_writes_offline_status_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

@@ -284,6 +284,7 @@ def execute_mp_cleanup_from_preview_report(
     expected_episode_count: int,
     expected_episode_min: int,
     expected_episode_max: int,
+    expected_episodes: Optional[Iterable[int]] = None,
     include_deletesrc: bool = True,
     include_deletedest: bool = True,
     timeout: int = 20,
@@ -300,6 +301,7 @@ def execute_mp_cleanup_from_preview_report(
         expected_episode_count=expected_episode_count,
         expected_episode_min=expected_episode_min,
         expected_episode_max=expected_episode_max,
+        expected_episodes=expected_episodes,
         include_deletesrc=include_deletesrc,
         include_deletedest=include_deletedest,
         continue_on_error=continue_on_error,
@@ -316,10 +318,12 @@ def execute_mp_cleanup_from_preview(
     expected_episode_count: int,
     expected_episode_min: int,
     expected_episode_max: int,
+    expected_episodes: Optional[Iterable[int]] = None,
     include_deletesrc: bool = True,
     include_deletedest: bool = True,
     continue_on_error: bool = False,
 ) -> Dict[str, object]:
+    expected_episode_list = _normalize_expected_episodes(expected_episodes)
     blockers = _mp_cleanup_execution_blockers(
         preview,
         expected_title=expected_title,
@@ -329,6 +333,7 @@ def execute_mp_cleanup_from_preview(
         expected_episode_count=expected_episode_count,
         expected_episode_min=expected_episode_min,
         expected_episode_max=expected_episode_max,
+        expected_episodes=expected_episode_list,
         include_deletesrc=include_deletesrc,
         include_deletedest=include_deletedest,
     )
@@ -348,6 +353,7 @@ def execute_mp_cleanup_from_preview(
             "episode_count": expected_episode_count,
             "episode_min": expected_episode_min,
             "episode_max": expected_episode_max,
+            "episodes": expected_episode_list,
         },
         "summary": {
             "planned_count": len(records),
@@ -588,17 +594,23 @@ def _mp_cleanup_execution_blockers(
     expected_episode_count: int,
     expected_episode_min: int,
     expected_episode_max: int,
+    expected_episodes: Optional[Iterable[int]],
     include_deletesrc: bool,
     include_deletedest: bool,
 ) -> List[str]:
     blockers: List[str] = []
+    expected_episode_list = _normalize_expected_episodes(expected_episodes)
+    expected_episode_set = set(expected_episode_list)
+    allowed_warnings = {"episode_gap_detected"} if expected_episode_set else set()
     if preview.get("mode") != "readonly-mp-cleanup-preview":
         blockers.append("preview_mode_not_supported")
     if not preview.get("ready_for_manual_cleanup_approval"):
         blockers.append("preview_not_ready_for_manual_cleanup_approval")
     if preview.get("blockers"):
         blockers.append("preview_has_blockers")
-    if preview.get("warnings"):
+    warnings = preview.get("warnings") if isinstance(preview.get("warnings"), list) else []
+    unexpected_warnings = [warning for warning in warnings if warning not in allowed_warnings]
+    if unexpected_warnings:
         blockers.append("preview_has_warnings")
     if expected_title and preview.get("title") != expected_title:
         blockers.append("expected_title_mismatch")
@@ -621,8 +633,15 @@ def _mp_cleanup_execution_blockers(
         blockers.append("episode_min_mismatch")
     if expected_episode_max and int(summary.get("episode_max") or 0) != expected_episode_max:
         blockers.append("episode_max_mismatch")
-    if summary.get("missing_in_range"):
+    if summary.get("missing_in_range") and not expected_episode_set:
         blockers.append("preview_episode_gap_detected")
+    if expected_episode_set:
+        if expected_episode_count and len(expected_episode_set) != expected_episode_count:
+            blockers.append("expected_episode_list_count_mismatch")
+        if expected_episode_min and min(expected_episode_set) != expected_episode_min:
+            blockers.append("expected_episode_list_min_mismatch")
+        if expected_episode_max and max(expected_episode_set) != expected_episode_max:
+            blockers.append("expected_episode_list_max_mismatch")
 
     plan = preview.get("mp_delete_plan") if isinstance(preview.get("mp_delete_plan"), dict) else {}
     query = plan.get("query") if isinstance(plan.get("query"), dict) else {}
@@ -658,7 +677,10 @@ def _mp_cleanup_execution_blockers(
             blockers.append("record_tmdbid_mismatch")
         if item.get("status") is not True:
             blockers.append("record_not_successful")
-    if expected_episode_min and expected_episode_max and episodes:
+    if expected_episode_set:
+        if episodes != expected_episode_set:
+            blockers.append("record_episode_list_mismatch")
+    elif expected_episode_min and expected_episode_max and episodes:
         expected_episodes = set(range(expected_episode_min, expected_episode_max + 1))
         if episodes != expected_episodes:
             blockers.append("record_episode_range_mismatch")
@@ -690,6 +712,12 @@ def _filter_transfer_records(
             continue
         filtered.append(record)
     return filtered
+
+
+def _normalize_expected_episodes(episodes: Optional[Iterable[int]]) -> List[int]:
+    if not episodes:
+        return []
+    return sorted({int(item) for item in episodes if int(item) > 0})
 
 
 def _cleanup_transfer_row(record: MPTransferHistoryRecord) -> Dict[str, object]:

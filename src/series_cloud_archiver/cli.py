@@ -117,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
     mp_cleanup_exec_parser.add_argument("--expected-episode-count", type=int, required=True, help="Safety check: exact episode count")
     mp_cleanup_exec_parser.add_argument("--expected-episode-min", type=int, required=True, help="Safety check: first episode number")
     mp_cleanup_exec_parser.add_argument("--expected-episode-max", type=int, required=True, help="Safety check: last episode number")
+    mp_cleanup_exec_parser.add_argument(
+        "--expected-episodes",
+        type=_parse_episode_list,
+        default=[],
+        help="Optional exact episode list for non-contiguous cleanup, e.g. 1,3,21 or 1-4,7",
+    )
     mp_cleanup_exec_parser.add_argument("--keep-source", action="store_true", help="Execute without deletesrc=true")
     mp_cleanup_exec_parser.add_argument("--keep-dest", action="store_true", help="Execute without deletedest=true")
     mp_cleanup_exec_parser.add_argument("--continue-on-error", action="store_true", help="Continue deleting remaining MP records if one record fails")
@@ -326,6 +332,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_episode_list(value: str) -> List[int]:
+    episodes = set()
+    for part in (value or "").split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if "-" in token:
+            start_text, end_text = token.split("-", 1)
+            start = int(start_text.strip())
+            end = int(end_text.strip())
+            if start > end:
+                raise argparse.ArgumentTypeError(f"invalid descending episode range: {token}")
+            episodes.update(range(start, end + 1))
+        else:
+            episodes.add(int(token))
+    return sorted(item for item in episodes if item > 0)
+
+
 def add_scan_args(scan_parser: argparse.ArgumentParser) -> None:
     scan_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
     scan_parser.add_argument("--media-root", action="append", default=[], help="Media root to scan; can be repeated")
@@ -499,6 +523,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             expected_episode_count=args.expected_episode_count,
             expected_episode_min=args.expected_episode_min,
             expected_episode_max=args.expected_episode_max,
+            expected_episodes=args.expected_episodes,
             include_deletesrc=not args.keep_source,
             include_deletedest=not args.keep_dest,
             timeout=args.timeout,

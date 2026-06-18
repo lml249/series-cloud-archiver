@@ -735,6 +735,83 @@ class MoviePilotEvidenceTest(unittest.TestCase):
         self.assertEqual(report["summary"]["success_count"], 2)
         self.assertIn("Attempted: `2`", rendered)
 
+    def test_mp_cleanup_execute_can_approve_explicit_non_contiguous_episodes(self) -> None:
+        preview = build_mp_cleanup_preview(
+            "雨霖铃",
+            [
+                MPTransferHistoryRecord(
+                    id=21,
+                    title="雨霖铃",
+                    episodes="E01",
+                    mode="link",
+                    status=True,
+                    download_hash="feedface00001234567890",
+                    tmdbid=254486,
+                ),
+                MPTransferHistoryRecord(
+                    id=22,
+                    title="雨霖铃",
+                    episodes="E03",
+                    mode="link",
+                    status=True,
+                    download_hash="feedface00001234567890",
+                    tmdbid=254486,
+                ),
+                MPTransferHistoryRecord(
+                    id=23,
+                    title="雨霖铃",
+                    episodes="E21",
+                    mode="link",
+                    status=True,
+                    download_hash="feedface00001234567890",
+                    tmdbid=254486,
+                ),
+            ],
+            expected_title="雨霖铃",
+            expected_tmdbid=254486,
+            expected_hash_prefix="feedface0000",
+        )
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def delete_transfer_history(self, history_id, deletesrc=True, deletedest=True):
+                self.calls.append((history_id, deletesrc, deletedest))
+                return {"http_status": 200, "ok": True, "response": {"success": True}}
+
+        blocked = execute_mp_cleanup_from_preview(
+            FakeClient(),
+            preview,
+            expected_title="雨霖铃",
+            expected_tmdbid=254486,
+            expected_hash_prefix="feedface0000",
+            expected_record_count=3,
+            expected_episode_count=3,
+            expected_episode_min=1,
+            expected_episode_max=21,
+        )
+        self.assertFalse(blocked["ok"])
+        self.assertIn("preview_episode_gap_detected", blocked["blockers"])
+
+        client = FakeClient()
+        report = execute_mp_cleanup_from_preview(
+            client,
+            preview,
+            expected_title="雨霖铃",
+            expected_tmdbid=254486,
+            expected_hash_prefix="feedface0000",
+            expected_record_count=3,
+            expected_episode_count=3,
+            expected_episode_min=1,
+            expected_episode_max=21,
+            expected_episodes=[1, 3, 21],
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(client.calls, [(21, True, True), (22, True, True), (23, True, True)])
+        self.assertEqual(report["expected"]["episodes"], [1, 3, 21])
+
     def test_mp_cleanup_execute_blocks_before_delete_on_mismatch(self) -> None:
         preview = build_mp_cleanup_preview(
             "楚汉传奇",
