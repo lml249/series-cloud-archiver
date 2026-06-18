@@ -322,6 +322,32 @@ PYTHONPATH=src python3 -m series_cloud_archiver mp-cleanup-verify \
 
 `mp-cleanup-verify` 是只读体检：它确认 MP 整理历史里不再有目标记录、qB 里不再有目标 hash、本地源目录和 hlink 目录已经不存在、STRM 目录仍然覆盖预期集数。它不会删除、移动、生成 STRM，也不会对 qB 发送任何操作。
 
+如果 Emby 里还残留旧本地源，继续触发 Emby 媒体库刷新并核验旧路径是否消失：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver emby-refresh-verify \
+  --env-file .env \
+  --title 楚汉传奇 \
+  --stale-path-prefix "/media/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}" \
+  --strm-path-prefix "/media/cloud-strm/series/楚汉传奇 (2012) {tmdbid=41146}" \
+  --expected-strm-records 82 \
+  --expected-episode-count 80 \
+  --expected-episode-min 1 \
+  --expected-episode-max 80 \
+  --format markdown \
+  --output reports/emby-refresh-chuhan.md
+```
+
+`emby-refresh-verify` 会调用 Emby 的 `POST /emby/Library/Refresh` 触发媒体库扫描，然后轮询 `RefreshLibrary` 任务，最后确认旧 hlink/local 路径记录为 0、STRM 版本还在且集数完整。它不会删除文件、不会操作 qB、不会调用 MP 清理，也不会直接写 Emby 数据库。
+
+为了精确识别同一部剧的新旧双版本，建议在 `.env` 里配置只读数据库路径：
+
+```bash
+EMBY_LIBRARY_DB_PATH=/path/to/emby/library.db
+```
+
+如果没有配置 `EMBY_LIBRARY_DB_PATH`，命令会退回 Emby API 搜索核验；这种方式可以用，但在多版本同名剧集上可能被 Emby 搜索结果隐藏旧版本，因此报告会给出提醒。
+
 ## MV3 原生资源搜索
 
 MV3 的原生链路不是 qB magnet 离线，而是先搜索网盘资源，再解析分享、转存到 `/未整理`，之后由整理/STRM 流程接手。第一步只做搜索：

@@ -7,6 +7,7 @@ from typing import List, Optional
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
 from .cleanup_verify import render_mp_cleanup_verification, verify_mp_cleanup_from_services
 from .config import config_from_env, db_path_from_env
+from .emby import refresh_and_verify_emby_library, render_emby_refresh_verify_report
 from .identity import render_identity_overrides, resolve_identity_overrides_from_scan_report
 from .moviepilot import (
     execute_mp_cleanup_from_preview_report,
@@ -136,6 +137,23 @@ def build_parser() -> argparse.ArgumentParser:
     mp_cleanup_verify_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
     mp_cleanup_verify_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     mp_cleanup_verify_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    emby_refresh_parser = subcommands.add_parser("emby-refresh-verify", help="Trigger Emby library refresh and verify stale local paths are gone")
+    emby_refresh_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    emby_refresh_parser.add_argument("--title", required=True, help="Series title for reporting and API fallback search")
+    emby_refresh_parser.add_argument("--stale-path-prefix", action="append", default=[], help="Old local/hlink path prefix that should disappear; can be repeated")
+    emby_refresh_parser.add_argument("--strm-path-prefix", action="append", default=[], help="STRM path prefix that should remain; can be repeated")
+    emby_refresh_parser.add_argument("--expected-strm-records", type=int, default=0, help="Expected Emby records under STRM path, including series/season/episode rows when using library DB")
+    emby_refresh_parser.add_argument("--expected-episode-count", type=int, default=0, help="Expected distinct STRM episode count")
+    emby_refresh_parser.add_argument("--expected-episode-min", type=int, default=0, help="Expected first STRM episode number")
+    emby_refresh_parser.add_argument("--expected-episode-max", type=int, default=0, help="Expected last STRM episode number")
+    emby_refresh_parser.add_argument("--library-db", default="", help="Optional Emby library.db path for exact readonly verification")
+    emby_refresh_parser.add_argument("--skip-refresh", action="store_true", help="Only verify current Emby state without triggering a new scan")
+    emby_refresh_parser.add_argument("--poll-seconds", type=float, default=10.0, help="Seconds between refresh task polls")
+    emby_refresh_parser.add_argument("--max-wait-seconds", type=int, default=900, help="Maximum seconds to wait for Emby scan completion")
+    emby_refresh_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    emby_refresh_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    emby_refresh_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     cloud_parser = subcommands.add_parser("cloud-check", help="Readonly STRM coverage check for cloud candidates")
     cloud_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -493,6 +511,33 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mp_cleanup_verification(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "emby-refresh-verify":
+        config = config_from_env(args.env_file, [])
+        if not config.emby_base_url or not config.emby_key:
+            parser.error("emby-refresh-verify requires EMBY_BASE_URL and EMBY_API_KEY")
+        report = refresh_and_verify_emby_library(
+            config.emby_base_url,
+            config.emby_key,
+            title=args.title,
+            stale_path_prefixes=args.stale_path_prefix,
+            strm_path_prefixes=args.strm_path_prefix,
+            expected_strm_records=args.expected_strm_records,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            library_db_path=args.library_db or config.emby_library_db_path,
+            skip_refresh=args.skip_refresh,
+            poll_seconds=args.poll_seconds,
+            max_wait_seconds=args.max_wait_seconds,
+            timeout=args.timeout,
+        )
+        rendered = render_emby_refresh_verify_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

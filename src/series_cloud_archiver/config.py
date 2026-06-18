@@ -54,6 +54,7 @@ class ScanConfig:
     strm_roots: List[str] = field(default_factory=list)
     emby_base_url: str = ""
     emby_key: str = ""
+    emby_library_db_path: str = ""
     mode: str = "dry-run"
     include_qb: bool = True
     include_mp: bool = True
@@ -96,6 +97,7 @@ def config_from_env(env_file: Optional[str], media_roots: Iterable[str]) -> Scan
         strm_roots=_split_csv(_get(values, "ARCHIVER_STRM_ROOTS")),
         emby_base_url=_get(values, "EMBY_BASE_URL"),
         emby_key=_get(values, "EMBY_API_KEY"),
+        emby_library_db_path=_get(values, "EMBY_LIBRARY_DB_PATH"),
         mode=_get(values, "ARCHIVER_MODE", "dry-run"),
         include_qb=_get(values, "ARCHIVER_INCLUDE_QB", "true").lower() != "false",
         include_mp=_get(values, "ARCHIVER_INCLUDE_MP", "true").lower() != "false",

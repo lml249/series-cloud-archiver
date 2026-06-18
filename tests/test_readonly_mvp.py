@@ -1,10 +1,13 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from series_cloud_archiver.cli import main
 from series_cloud_archiver.config import ScanConfig
 from series_cloud_archiver.cleanup_verify import build_mp_cleanup_verification, render_mp_cleanup_verification
+from series_cloud_archiver.emby import refresh_and_verify_emby_library, render_emby_refresh_verify_report, verify_emby_library_paths
 from series_cloud_archiver.episode import episode_signal
 from series_cloud_archiver.models import FileSystemSeries, EpisodeSignal, QBTorrentEvidence
 from series_cloud_archiver.moviepilot import (
@@ -232,6 +235,180 @@ class QBittorrentClientTest(unittest.TestCase):
 
         match = match_torrent(series, [torrent], {"/example/library-host": "/example/qb-view"})
         self.assertIs(match, torrent)
+
+
+class EmbyRefreshVerifyTest(unittest.TestCase):
+    def test_verify_emby_library_paths_blocks_stale_local_records(self) -> None:
+        class FakeEmbyClient:
+            def items_by_search(self, search_term):
+                return [
+                    {
+                        "Id": "series-local",
+                        "Name": "楚汉传奇",
+                        "Path": "/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}",
+                    },
+                    {
+                        "Id": "episode-local",
+                        "Name": "第1集",
+                        "Type": "Episode",
+                        "IndexNumber": 1,
+                        "Path": "/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E01.mkv",
+                    },
+                    {
+                        "Id": "episode-strm-1",
+                        "Name": "第1集",
+                        "Type": "Episode",
+                        "IndexNumber": 1,
+                        "Path": "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E01.strm",
+                    },
+                    {
+                        "Id": "episode-strm-2",
+                        "Name": "第2集",
+                        "Type": "Episode",
+                        "IndexNumber": 2,
+                        "Path": "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E02.strm",
+                    },
+                ]
+
+        report = verify_emby_library_paths(
+            FakeEmbyClient(),
+            title="楚汉传奇",
+            stale_path_prefixes=["/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}"],
+            strm_path_prefixes=["/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}"],
+            expected_episode_count=2,
+            expected_episode_min=1,
+            expected_episode_max=2,
+        )
+
+        self.assertFalse(not report["blockers"])
+        self.assertIn("emby_stale_path_records_present", report["blockers"])
+        self.assertEqual(report["totals"]["stale_records"], 2)
+        self.assertEqual(report["strm"]["episode_count"], 2)
+
+    def test_refresh_and_verify_emby_library_uses_refresh_task_and_renders(self) -> None:
+        class FakeClient:
+            def __init__(self, base_url, api_key, timeout=20):
+                self.base_url = base_url
+                self.api_key = api_key
+                self.timeout = timeout
+
+            def refresh_library(self):
+                return {"http_status": 204, "ok": True, "response": {}}
+
+            def wait_for_task(self, key, poll_seconds=10.0, max_wait_seconds=900):
+                return {
+                    "key": key,
+                    "timed_out": False,
+                    "final_task": {
+                        "Key": key,
+                        "Name": "Scan media library",
+                        "State": "Idle",
+                        "LastExecutionResult": {"Status": "Completed"},
+                    },
+                    "polls": [{"state": "Running"}, {"state": "Idle"}],
+                }
+
+            def items_by_search(self, search_term):
+                return [
+                    {
+                        "Id": "episode-strm-1",
+                        "Type": "Episode",
+                        "IndexNumber": 1,
+                        "Path": "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E01.strm",
+                    },
+                    {
+                        "Id": "episode-strm-2",
+                        "Type": "Episode",
+                        "IndexNumber": 2,
+                        "Path": "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E02.strm",
+                    },
+                ]
+
+        with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+            report = refresh_and_verify_emby_library(
+                "http://emby.example",
+                "token",
+                title="楚汉传奇",
+                stale_path_prefixes=["/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}"],
+                strm_path_prefixes=["/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}"],
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+                poll_seconds=0,
+                max_wait_seconds=1,
+            )
+        rendered = render_emby_refresh_verify_report(report, "markdown")
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["refresh"]["task"]["last_status"], "Completed")
+        self.assertEqual(report["verification"]["totals"]["stale_records"], 0)
+        self.assertIn("Refresh last status: `Completed`", rendered)
+
+    def test_emby_refresh_verify_cli_writes_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "emby.json"
+            env_file.write_text("EMBY_BASE_URL=http://emby.example\nEMBY_API_KEY=token\n", encoding="utf-8")
+
+            class FakeClient:
+                def __init__(self, base_url, api_key, timeout=20):
+                    pass
+
+                def refresh_library(self):
+                    return {"http_status": 204, "ok": True, "response": {}}
+
+                def wait_for_task(self, key, poll_seconds=10.0, max_wait_seconds=900):
+                    return {
+                        "key": key,
+                        "timed_out": False,
+                        "final_task": {"Key": key, "Name": "Scan media library", "State": "Idle", "LastExecutionResult": {"Status": "Completed"}},
+                        "polls": [],
+                    }
+
+                def items_by_search(self, search_term):
+                    return [
+                        {
+                            "Id": "episode-strm-1",
+                            "Type": "Episode",
+                            "IndexNumber": 1,
+                            "Path": "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E01.strm",
+                        }
+                    ]
+
+            with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+                code = main(
+                    [
+                        "emby-refresh-verify",
+                        "--env-file",
+                        str(env_file),
+                        "--title",
+                        "楚汉传奇",
+                        "--stale-path-prefix",
+                        "/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}",
+                        "--strm-path-prefix",
+                        "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}",
+                        "--expected-episode-count",
+                        "1",
+                        "--expected-episode-min",
+                        "1",
+                        "--expected-episode-max",
+                        "1",
+                        "--poll-seconds",
+                        "0",
+                        "--max-wait-seconds",
+                        "1",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["verification"]["totals"]["stale_records"], 0)
 
 
 class MoviePilotEvidenceTest(unittest.TestCase):
