@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
+from .cleanup_verify import render_mp_cleanup_verification, verify_mp_cleanup_from_services
 from .config import config_from_env, db_path_from_env
 from .identity import render_identity_overrides, resolve_identity_overrides_from_scan_report
 from .moviepilot import (
@@ -119,6 +120,22 @@ def build_parser() -> argparse.ArgumentParser:
     mp_cleanup_exec_parser.add_argument("--approve-mp-cleanup", action="store_true", help="Required: actually send MoviePilot DELETE requests")
     mp_cleanup_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     mp_cleanup_exec_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    mp_cleanup_verify_parser = subcommands.add_parser("mp-cleanup-verify", help="Readonly post-cleanup verification for MP/qB/filesystem/STRM")
+    mp_cleanup_verify_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    mp_cleanup_verify_parser.add_argument("--title", required=True, help="MoviePilot transfer history title to query")
+    mp_cleanup_verify_parser.add_argument("--expected-title", default="", help="Safety filter: exact MP title expected")
+    mp_cleanup_verify_parser.add_argument("--expected-tmdbid", type=int, default=0, help="Safety filter: expected TMDB ID when present in MP")
+    mp_cleanup_verify_parser.add_argument("--expected-hash-prefix", default="", help="Safety filter: qB hash prefix that should be gone")
+    mp_cleanup_verify_parser.add_argument("--source-root", action="append", default=[], help="Local source root that should no longer exist; can be repeated")
+    mp_cleanup_verify_parser.add_argument("--destination-root", action="append", default=[], help="hlink/destination root that should no longer exist; can be repeated")
+    mp_cleanup_verify_parser.add_argument("--strm-root", action="append", default=[], help="STRM root that should contain complete episodes; can be repeated")
+    mp_cleanup_verify_parser.add_argument("--expected-episode-count", type=int, default=0, help="Expected distinct STRM episode count")
+    mp_cleanup_verify_parser.add_argument("--expected-episode-min", type=int, default=0, help="Expected first STRM episode number")
+    mp_cleanup_verify_parser.add_argument("--expected-episode-max", type=int, default=0, help="Expected last STRM episode number")
+    mp_cleanup_verify_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    mp_cleanup_verify_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    mp_cleanup_verify_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     cloud_parser = subcommands.add_parser("cloud-check", help="Readonly STRM coverage check for cloud candidates")
     cloud_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -447,6 +464,35 @@ def main(argv: Optional[List[str]] = None) -> int:
             continue_on_error=args.continue_on_error,
         )
         rendered = render_mp_cleanup_execute_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mp-cleanup-verify":
+        config = config_from_env(args.env_file, [])
+        if not config.mp_base_url or not config.mp_token:
+            parser.error("mp-cleanup-verify requires MP_BASE_URL and MP_API_TOKEN")
+        report = verify_mp_cleanup_from_services(
+            config.mp_base_url,
+            config.mp_token,
+            title=args.title,
+            expected_title=args.expected_title,
+            expected_tmdbid=args.expected_tmdbid,
+            expected_hash_prefix=args.expected_hash_prefix,
+            source_roots=args.source_root,
+            destination_roots=args.destination_root,
+            strm_roots=args.strm_root,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            qb_base_url=config.qb_base_url,
+            qb_user=config.qb_user,
+            qb_pass=config.qb_pass,
+            timeout=args.timeout,
+        )
+        rendered = render_mp_cleanup_verification(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

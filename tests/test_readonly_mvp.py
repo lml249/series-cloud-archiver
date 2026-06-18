@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from series_cloud_archiver.config import ScanConfig
+from series_cloud_archiver.cleanup_verify import build_mp_cleanup_verification, render_mp_cleanup_verification
 from series_cloud_archiver.episode import episode_signal
 from series_cloud_archiver.models import FileSystemSeries, EpisodeSignal, QBTorrentEvidence
 from series_cloud_archiver.moviepilot import (
@@ -453,6 +454,78 @@ class MoviePilotEvidenceTest(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertEqual(report["summary"]["attempted_count"], 0)
         self.assertIn("record_count_mismatch", report["blockers"])
+
+    def test_mp_cleanup_verify_passes_after_records_paths_and_qb_are_gone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm" / "楚汉传奇 (2012) {tmdbid=41146}" / "Season 01"
+            for index in range(1, 4):
+                (strm_root / f"楚汉传奇 S01E{index:02d}.strm").parent.mkdir(parents=True, exist_ok=True)
+                (strm_root / f"楚汉传奇 S01E{index:02d}.strm").write_text("http://example.invalid/stream", encoding="utf-8")
+
+            report = build_mp_cleanup_verification(
+                "楚汉传奇",
+                mp_records=[],
+                qb_torrents=[],
+                expected_title="楚汉传奇",
+                expected_tmdbid=41146,
+                expected_hash_prefix="feedface0000",
+                source_roots=[str(Path(tmp) / "missing-source")],
+                destination_roots=[str(Path(tmp) / "missing-hlink")],
+                strm_roots=[str(strm_root)],
+                expected_episode_count=3,
+                expected_episode_min=1,
+                expected_episode_max=3,
+            )
+            rendered = render_mp_cleanup_verification(report, "markdown")
+
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["mp_transfer_history"]["records_matched"], 0)
+            self.assertEqual(report["qbittorrent"]["matched_count"], 0)
+            self.assertEqual(report["strm"]["combined"]["missing_in_range"], [])
+            self.assertIn("MP transfer records matched after cleanup: `0`", rendered)
+
+    def test_mp_cleanup_verify_blocks_when_cleanup_left_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source_root = Path(tmp) / "source"
+            source_root.mkdir()
+            strm_root = Path(tmp) / "strm"
+            strm_root.mkdir()
+            (strm_root / "Demo S01E01.strm").write_text("stream", encoding="utf-8")
+            report = build_mp_cleanup_verification(
+                "楚汉传奇",
+                mp_records=[
+                    MPTransferHistoryRecord(
+                        id=10,
+                        title="楚汉传奇",
+                        episodes="E01",
+                        status=True,
+                        download_hash="feedface00001234567890",
+                        tmdbid=41146,
+                    )
+                ],
+                qb_torrents=[
+                    {
+                        "name": "楚汉传奇",
+                        "hash": "feedface00001234567890",
+                        "state": "missingFiles",
+                    }
+                ],
+                expected_title="楚汉传奇",
+                expected_tmdbid=41146,
+                expected_hash_prefix="feedface0000",
+                source_roots=[str(source_root)],
+                destination_roots=[],
+                strm_roots=[str(strm_root)],
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+            )
+
+            self.assertFalse(report["ok"])
+            self.assertIn("mp_transfer_history_still_present", report["blockers"])
+            self.assertIn("qb_torrent_still_present", report["blockers"])
+            self.assertIn("source_root_still_exists", report["blockers"])
+            self.assertIn("strm_episode_count_mismatch", report["blockers"])
 
     def test_history_match_respects_explicit_season(self) -> None:
         evidence = build_mp_subscription_evidence(

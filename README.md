@@ -301,6 +301,27 @@ PYTHONPATH=src python3 -m series_cloud_archiver mp-cleanup-execute \
 
 `mp-cleanup-execute` 会在发送任何 DELETE 前重新校验预览报告：标题、TMDB ID、qB hash 前缀、整理历史条数、集数数量、首尾集、缺失集、每条 MP history ID 和删除范围必须全部对上。只要校验失败，就不会发送删除请求。
 
+执行后，用只读核验命令把 MP、qB、本地目录和 STRM 覆盖情况落成报告：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mp-cleanup-verify \
+  --env-file .env \
+  --title 楚汉传奇 \
+  --expected-title 楚汉传奇 \
+  --expected-tmdbid 41146 \
+  --expected-hash-prefix cb0e53779a3a \
+  --source-root "/media/local-source/King.War.S01" \
+  --destination-root "/media/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}" \
+  --strm-root "/media/cloud-strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01" \
+  --expected-episode-count 80 \
+  --expected-episode-min 1 \
+  --expected-episode-max 80 \
+  --format markdown \
+  --output reports/mp-cleanup-verify-chuhan.md
+```
+
+`mp-cleanup-verify` 是只读体检：它确认 MP 整理历史里不再有目标记录、qB 里不再有目标 hash、本地源目录和 hlink 目录已经不存在、STRM 目录仍然覆盖预期集数。它不会删除、移动、生成 STRM，也不会对 qB 发送任何操作。
+
 ## MV3 原生资源搜索
 
 MV3 的原生链路不是 qB magnet 离线，而是先搜索网盘资源，再解析分享、转存到 `/未整理`，之后由整理/STRM 流程接手。第一步只做搜索：
