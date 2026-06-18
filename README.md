@@ -169,14 +169,14 @@ PYTHONPATH=src python3 -m series_cloud_archiver plan-mv3-preview \
   --instances-report reports/mv3-instances.json \
   --capabilities-report reports/mv3-capabilities.json \
   --limit 10 \
-  --cloud-root /series \
+  --cloud-root /已整理/series \
   --format markdown \
   --output reports/mv3-preview-manifest.md
 ```
 
 `plan-mv3-preview` 仍然只是读取 JSON 报告并生成下一步清单，不调用 MV3 的 `preview`、`execute` 或 `strm/generate` 接口。它会为每条剧季写出：
 
-- 预计云端目录，例如 `/series/剧名 {tmdbid=123}/Season 01`
+- 预计云端目录，例如 `/已整理/series/剧名 {tmdbid=123}/Season 01`
 - 需要调用的预览接口：`POST /api/v1/media-transfer/preview`
 - 目前缺失的 MV3 `source_library_id`、`source_item_id`、`target_library_id`
 - 明确禁止自动调用的执行/删除类接口
@@ -193,7 +193,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver plan-mv3-offline \
   --transfer-plan reports/mv3-transfer-plan.json \
   --instances-report reports/mv3-instances.json \
   --limit 10 \
-  --cloud-root /series \
+  --cloud-root /已整理/series \
   --min-seed-days 7 \
   --format markdown \
   --output reports/mv3-offline-manifest.md
@@ -231,7 +231,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-offline-add-one \
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver mv3-ensure-115-path \
   --env-file .env \
-  --target-path "/series/楚汉传奇 {tmdbid=41146}/Season 01" \
+  --target-path "/已整理/series/楚汉传奇 {tmdbid=41146}/Season 01" \
   --storage 115-default \
   --approve-create-path \
   --format markdown \
@@ -247,7 +247,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-offline-status-one \
   --env-file .env \
   --info-hash cb0e53779a3abdefac80fb5d9737427ca64dfee6 \
   --target-folder-id 3453239095134780666 \
-  --target-path "/series/楚汉传奇 {tmdbid=41146}/Season 01" \
+  --target-path "/已整理/series/楚汉传奇 {tmdbid=41146}/Season 01" \
   --storage 115-default \
   --format markdown \
   --output reports/mv3-offline-status-chuhan.md

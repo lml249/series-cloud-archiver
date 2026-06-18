@@ -45,6 +45,7 @@ from .reporting import render_report
 from .scanner import scan
 from .storage import StoredSeries
 from .transfer_plan import (
+    DEFAULT_CLOUD_ROOT,
     load_cloud_check_report,
     load_mv3_transfer_plan,
     load_optional_json_report,
@@ -182,7 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     preview_parser.add_argument("--instances-report", default=None, help="Optional JSON report from mv3-instances")
     preview_parser.add_argument("--capabilities-report", default=None, help="Optional JSON report from mv3-capabilities")
     preview_parser.add_argument("--limit", type=int, default=10, help="Maximum manifest rows")
-    preview_parser.add_argument("--cloud-root", default="/series", help="Cloud root used for proposed destinations")
+    preview_parser.add_argument("--cloud-root", default=DEFAULT_CLOUD_ROOT, help="Cloud root used for proposed destinations")
     preview_parser.add_argument("--instance", default="", help="Override MV3 media-transfer instance slug")
     preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     preview_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
@@ -193,7 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
     offline_parser.add_argument("--instances-report", default=None, help="Optional JSON report from mv3-instances")
     offline_parser.add_argument("--qb-report", default=None, help="Optional cached qB torrents JSON; otherwise qB is queried readonly")
     offline_parser.add_argument("--limit", type=int, default=10, help="Maximum manifest rows")
-    offline_parser.add_argument("--cloud-root", default="/series", help="Cloud root used for proposed destinations")
+    offline_parser.add_argument("--cloud-root", default=DEFAULT_CLOUD_ROOT, help="Cloud root used for proposed destinations")
     offline_parser.add_argument("--min-seed-days", type=int, default=7, help="Minimum qB seed days to mark seed OK")
     offline_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     offline_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")

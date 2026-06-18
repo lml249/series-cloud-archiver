@@ -7,6 +7,7 @@ from typing import Dict, Iterable, List, Optional
 
 
 DEFAULT_TRANSFER_STATUSES = ["cloud_strm_not_found"]
+DEFAULT_CLOUD_ROOT = "/已整理/series"
 MV3_PREVIEW_ENDPOINT = {"method": "POST", "path": "/api/v1/media-transfer/preview"}
 MV3_OFFLINE_ENDPOINT = {"method": "POST", "path": "/api/v1/files/115/offline/add"}
 MV3_STRM_GENERATE_ENDPOINT = {"method": "POST", "path": "/api/v1/strm/generate"}
@@ -81,7 +82,7 @@ def plan_mv3_preview_manifest(
     instances_report: Optional[Dict[str, object]] = None,
     capabilities_report: Optional[Dict[str, object]] = None,
     limit: int = 10,
-    cloud_root: str = "/series",
+    cloud_root: str = DEFAULT_CLOUD_ROOT,
     instance: str = "",
 ) -> Dict[str, object]:
     raw_items = [item for item in transfer_plan.get("items", []) if isinstance(item, dict)]
@@ -121,7 +122,7 @@ def plan_mv3_offline_manifest(
     qb_torrents: List[Dict[str, object]],
     instances_report: Optional[Dict[str, object]] = None,
     limit: int = 10,
-    cloud_root: str = "/series",
+    cloud_root: str = DEFAULT_CLOUD_ROOT,
     min_seed_days: int = 7,
 ) -> Dict[str, object]:
     raw_items = [item for item in transfer_plan.get("items", []) if isinstance(item, dict)]
@@ -200,7 +201,7 @@ def _mv3_manifest_context(
     mount_paths = {}
     if isinstance(cloud_drive, dict) and isinstance(cloud_drive.get("mount_path"), dict):
         mount_paths = {str(key): str(value) for key, value in cloud_drive["mount_path"].items()}
-    normalized_cloud_root = (cloud_root or "/series").rstrip("/") or "/series"
+    normalized_cloud_root = (cloud_root or DEFAULT_CLOUD_ROOT).rstrip("/") or DEFAULT_CLOUD_ROOT
     if mount_paths and normalized_cloud_root not in mount_paths and normalized_cloud_root not in mount_paths.values():
         warnings.append(f"cloud_root_not_in_mv3_mount_paths:{normalized_cloud_root}")
     if not media_instance:
@@ -266,7 +267,7 @@ def _preview_schema(capabilities_report: Optional[Dict[str, object]]) -> Dict[st
 
 
 def _preview_manifest_item(index: int, item: Dict[str, object], context: Dict[str, object]) -> Dict[str, object]:
-    destination = _proposed_cloud_destination(context.get("cloud_root", "/series"), item)
+    destination = _proposed_cloud_destination(context.get("cloud_root", DEFAULT_CLOUD_ROOT), item)
     blockers = [
         "missing_mv3_source_library_id",
         "missing_mv3_source_item_id",
@@ -306,7 +307,7 @@ def _preview_manifest_item(index: int, item: Dict[str, object], context: Dict[st
 
 
 def _proposed_cloud_destination(cloud_root: object, item: Dict[str, object]) -> str:
-    root = str(cloud_root or "/series").rstrip("/") or "/series"
+    root = str(cloud_root or DEFAULT_CLOUD_ROOT).rstrip("/") or DEFAULT_CLOUD_ROOT
     title = _safe_cloud_segment(str(item.get("title") or "unknown"))
     tmdbid = int(item.get("tmdbid") or 0)
     season = int(item.get("season") or 0)
@@ -325,7 +326,7 @@ def _mv3_offline_context(instances_report: Optional[Dict[str, object]], cloud_ro
     mount_paths = {}
     if isinstance(cloud_drive, dict) and isinstance(cloud_drive.get("mount_path"), dict):
         mount_paths = {str(key): str(value) for key, value in cloud_drive["mount_path"].items()}
-    normalized_cloud_root = (cloud_root or "/series").rstrip("/") or "/series"
+    normalized_cloud_root = (cloud_root or DEFAULT_CLOUD_ROOT).rstrip("/") or DEFAULT_CLOUD_ROOT
     if mount_paths and normalized_cloud_root not in mount_paths and normalized_cloud_root not in mount_paths.values():
         warnings.append(f"cloud_root_not_in_mv3_mount_paths:{normalized_cloud_root}")
     if not cloud_drive:
@@ -352,7 +353,7 @@ def _offline_manifest_item(
     matches = _match_qb_torrents_for_transfer_item(item, qb_torrents)
     magnet_count = sum(1 for torrent in matches if str(torrent.get("magnet_uri") or ""))
     seed_ok_count = sum(1 for torrent in matches if int(torrent.get("seeding_time") or 0) >= min_seed_days * 86400)
-    destination = _proposed_cloud_destination(context.get("cloud_root", "/series"), item)
+    destination = _proposed_cloud_destination(context.get("cloud_root", DEFAULT_CLOUD_ROOT), item)
     blockers = [
         "requires_manual_approval_before_offline_add",
         "requires_mv3_offline_preview_or_single_item_probe",

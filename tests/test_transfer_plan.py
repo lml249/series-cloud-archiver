@@ -135,7 +135,7 @@ class TransferPlanTest(unittest.TestCase):
                             {
                                 "slug": "115-default",
                                 "name": "115",
-                                "mount_path": {"/series": "/series"},
+                                "mount_path": {"/已整理/series": "/已整理/series"},
                                 "share_transfer_default_path": "/未整理",
                             }
                         ]
@@ -161,9 +161,9 @@ class TransferPlanTest(unittest.TestCase):
         self.assertEqual(manifest["mode"], "readonly-mv3-preview-manifest")
         self.assertEqual(manifest["planned_items"], 1)
         self.assertEqual(manifest["mv3_context"]["media_transfer_instance"], "emby-default")
-        self.assertEqual(manifest["mv3_context"]["cloud_root"], "/series")
+        self.assertEqual(manifest["mv3_context"]["cloud_root"], "/已整理/series")
         item = manifest["items"][0]
-        self.assertEqual(item["proposed_cloud_destination"], "/series/Demo Show {tmdbid=123}/Season 01")
+        self.assertEqual(item["proposed_cloud_destination"], "/已整理/series/Demo Show {tmdbid=123}/Season 01")
         self.assertEqual(item["mv3_preview_call"]["body_template"]["instance"], "emby-default")
         self.assertIn("mv3_libraries_probe_unavailable", item["execution_blockers"])
         self.assertIn("POST /api/v1/media-transfer/execute", manifest["forbidden_endpoints"])
@@ -175,7 +175,7 @@ class TransferPlanTest(unittest.TestCase):
             "available_items": 1,
             "planned_items": 1,
             "total_size_bytes": 100,
-            "mv3_context": {"media_transfer_instance": "emby-default", "cloud_root": "/series"},
+            "mv3_context": {"media_transfer_instance": "emby-default", "cloud_root": "/已整理/series"},
             "forbidden_endpoints": ["POST /api/v1/media-transfer/execute"],
             "warnings": [],
             "items": [
@@ -186,7 +186,7 @@ class TransferPlanTest(unittest.TestCase):
                     "tmdbid": 123,
                     "season": 1,
                     "expected_count": 2,
-                    "proposed_cloud_destination": "/series/Demo {tmdbid=123}/Season 01",
+                    "proposed_cloud_destination": "/已整理/series/Demo {tmdbid=123}/Season 01",
                     "mv3_preview_call": {"method": "POST", "path": "/api/v1/media-transfer/preview"},
                     "execution_blockers": ["requires_manual_approval_before_execute"],
                     "source_paths": ["/example/media/Demo"],
@@ -198,7 +198,7 @@ class TransferPlanTest(unittest.TestCase):
 
         self.assertIn("MV3 Preview Manifest", markdown)
         self.assertIn("readonly manifest only", markdown)
-        self.assertIn("/series/Demo", markdown)
+        self.assertIn("/已整理/series/Demo", markdown)
 
     def test_cli_writes_preview_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -276,7 +276,7 @@ class TransferPlanTest(unittest.TestCase):
             "probes": [
                 {
                     "path": "/api/v1/cloud-drive/instances",
-                    "sample": {"instances": [{"slug": "115-default", "name": "115", "mount_path": {"/series": "/series"}}]},
+                    "sample": {"instances": [{"slug": "115-default", "name": "115", "mount_path": {"/已整理/series": "/已整理/series"}}]},
                 }
             ]
         }
@@ -299,7 +299,7 @@ class TransferPlanTest(unittest.TestCase):
             "available_items": 1,
             "planned_items": 1,
             "total_size_bytes": 100,
-            "mv3_context": {"cloud_drive_slug": "115-default", "cloud_root": "/series"},
+            "mv3_context": {"cloud_drive_slug": "115-default", "cloud_root": "/已整理/series"},
             "min_seed_days": 7,
             "forbidden_endpoints": ["POST /api/v1/files/115/offline/add"],
             "warnings": [],
@@ -314,7 +314,7 @@ class TransferPlanTest(unittest.TestCase):
                     "qb_match_count": 1,
                     "qb_magnet_available_count": 1,
                     "qb_seed_age_ok_count": 1,
-                    "proposed_cloud_destination": "/series/Demo {tmdbid=123}/Season 01",
+                    "proposed_cloud_destination": "/已整理/series/Demo {tmdbid=123}/Season 01",
                     "execution_blockers": ["requires_manual_approval_before_offline_add"],
                 }
             ],
