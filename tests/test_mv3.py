@@ -20,6 +20,7 @@ from series_cloud_archiver.mv3 import (
     render_mv3_instances_report,
     render_mv3_offline_add_report,
     render_mv3_offline_status_report,
+    render_mv3_organize_transfer_report,
     render_mv3_organize_scan_report,
     render_mv3_probe_report,
     render_mv3_resource_search_report,
@@ -29,6 +30,7 @@ from series_cloud_archiver.mv3 import (
     search_mv3_resources,
     preview_mv3_share,
     receive_mv3_share,
+    execute_mv3_organize_transfer_from_browse_report,
 )
 
 
@@ -787,6 +789,85 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("all_scan_items_marked_in_library", report["warnings"])
         self.assertIn("Demo.S01E01.mp4", rendered)
 
+    def test_organize_transfer_from_browse_report_blocks_incomplete_episode_set(self) -> None:
+        browse_report = {
+            "path": "/未整理/Demo",
+            "items": [
+                {"name": "Demo.S01E01.mp4", "kind": "file", "episode": 1, "file_id": "file-1"},
+                {"name": "Demo.S01E03.mp4", "kind": "file", "episode": 3, "file_id": "file-3"},
+            ],
+        }
+
+        report = execute_mv3_organize_transfer_from_browse_report(
+            "http://mv3.example",
+            "token",
+            browse_report,
+            target_dir="/已整理/series",
+            strm_dir="/strm/series",
+            tmdb_id=123,
+            expected_episode_count=3,
+            expected_episode_min=1,
+            expected_episode_max=3,
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("episode_range_incomplete", report["blockers"])
+        self.assertEqual(report["transfer"], {"skipped": True})
+
+    def test_organize_transfer_from_browse_report_posts_complete_file_list(self) -> None:
+        seen = {}
+        browse_report = {
+            "path": "/未整理/Demo",
+            "items": [
+                {"name": "Demo.S01E01.mp4", "kind": "file", "episode": 1, "file_id": "file-1"},
+                {"name": "Demo.S01E02.mp4", "kind": "file", "episode": 2, "file_id": "file-2"},
+            ],
+        }
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return b'{"success":true,"data":{"task_id":"task-1"}}'
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = execute_mv3_organize_transfer_from_browse_report(
+                "http://mv3.example",
+                "token",
+                browse_report,
+                target_dir="/已整理/series",
+                strm_dir="/strm/series",
+                tmdb_id=123,
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+            )
+
+        rendered = render_mv3_organize_transfer_report(report, "json")
+        self.assertTrue(report["ok"])
+        self.assertEqual(seen["url"], "http://mv3.example/api/v1/organize/transfer")
+        self.assertEqual(seen["body"]["target_dir"], "/已整理/series")
+        self.assertEqual(seen["body"]["strm_dir"], "/strm/series")
+        self.assertEqual(seen["body"]["tmdb_id"], 123)
+        self.assertEqual(seen["body"]["mode"], "move")
+        self.assertEqual([item["source_file_id"] for item in seen["body"]["files"]], ["file-1", "file-2"])
+        self.assertNotIn("token", rendered)
+
     def test_reports_missing_configuration_without_network(self) -> None:
         report = probe_mv3("", "")
 
@@ -1499,6 +1580,107 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertEqual(code, 0)
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["summary"]["total"], 1)
+
+    def test_cli_refuses_organize_transfer_without_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            browse_report = tmp_path / "browse.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+            browse_report.write_text(json.dumps({"path": "/未整理/Demo", "items": []}), encoding="utf-8")
+
+            with self.assertRaises(SystemExit) as caught:
+                main(
+                    [
+                        "mv3-organize-transfer-from-browse",
+                        "--env-file",
+                        str(env_file),
+                        "--browse-report",
+                        str(browse_report),
+                        "--target-dir",
+                        "/已整理/series",
+                        "--strm-dir",
+                        "/strm/series",
+                        "--tmdb-id",
+                        "123",
+                        "--expected-episode-count",
+                        "1",
+                        "--expected-episode-min",
+                        "1",
+                        "--expected-episode-max",
+                        "1",
+                    ]
+                )
+
+            self.assertNotEqual(caught.exception.code, 0)
+
+    def test_cli_writes_organize_transfer_report_with_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            browse_report = tmp_path / "browse.json"
+            output = tmp_path / "transfer.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+            browse_report.write_text(
+                json.dumps(
+                    {
+                        "path": "/未整理/Demo",
+                        "items": [
+                            {"name": "Demo.S01E01.mp4", "kind": "file", "episode": 1, "file_id": "file-1"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return b'{"success":true,"data":{"task_id":"task-1"}}'
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                code = main(
+                    [
+                        "mv3-organize-transfer-from-browse",
+                        "--env-file",
+                        str(env_file),
+                        "--browse-report",
+                        str(browse_report),
+                        "--target-dir",
+                        "/已整理/series",
+                        "--strm-dir",
+                        "/strm/series",
+                        "--tmdb-id",
+                        "123",
+                        "--expected-episode-count",
+                        "1",
+                        "--expected-episode-min",
+                        "1",
+                        "--expected-episode-max",
+                        "1",
+                        "--approve-transfer",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["target_dir"], "/已整理/series")
 
     def test_cli_writes_cloud_browse_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -20,6 +20,7 @@ from .mv3 import (
     browse_mv3_cloud_folder,
     ensure_mv3_115_path,
     check_mv3_offline_task,
+    execute_mv3_organize_transfer_from_browse_report,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
     probe_mv3,
@@ -29,6 +30,7 @@ from .mv3 import (
     render_mv3_instances_report,
     render_mv3_offline_add_report,
     render_mv3_offline_status_report,
+    render_mv3_organize_transfer_report,
     render_mv3_organize_scan_report,
     render_mv3_probe_report,
     render_mv3_resource_search_report,
@@ -273,6 +275,23 @@ def build_parser() -> argparse.ArgumentParser:
     organize_scan_parser.add_argument("--timeout", type=int, default=120, help="Per-request timeout in seconds")
     organize_scan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     organize_scan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    organize_transfer_parser = subcommands.add_parser("mv3-organize-transfer-from-browse", help="Execute one approved MV3 organize transfer from a complete cloud-browse JSON report")
+    organize_transfer_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    organize_transfer_parser.add_argument("--browse-report", required=True, help="JSON report from mv3-cloud-browse")
+    organize_transfer_parser.add_argument("--target-dir", required=True, help="MV3 cloud target dir, e.g. /已整理/series")
+    organize_transfer_parser.add_argument("--strm-dir", required=True, help="MV3 STRM output dir")
+    organize_transfer_parser.add_argument("--tmdb-id", type=int, required=True, help="Expected TMDB ID")
+    organize_transfer_parser.add_argument("--expected-episode-count", type=int, required=True, help="Expected distinct episode count")
+    organize_transfer_parser.add_argument("--expected-episode-min", type=int, required=True, help="Expected first episode number")
+    organize_transfer_parser.add_argument("--expected-episode-max", type=int, required=True, help="Expected last episode number")
+    organize_transfer_parser.add_argument("--mode", choices=["move", "copy"], default="move", help="MV3 transfer mode")
+    organize_transfer_parser.add_argument("--local-target", action="store_true", help="Treat target as local instead of cloud")
+    organize_transfer_parser.add_argument("--background", action="store_true", help="Ask MV3 to run transfer in background")
+    organize_transfer_parser.add_argument("--timeout", type=int, default=180, help="Per-request timeout in seconds")
+    organize_transfer_parser.add_argument("--approve-transfer", action="store_true", help="Required: actually send one MV3 organize transfer request")
+    organize_transfer_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    organize_transfer_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     cloud_browse_parser = subcommands.add_parser("mv3-cloud-browse", help="Readonly MV3 cloud folder browse")
     cloud_browse_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -782,6 +801,37 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_organize_scan_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mv3-organize-transfer-from-browse":
+        if not args.approve_transfer:
+            parser.error("mv3-organize-transfer-from-browse requires --approve-transfer")
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-organize-transfer-from-browse requires MV3_BASE_URL and MV3_API_TOKEN")
+        browse_report = load_optional_json_report(args.browse_report)
+        if not isinstance(browse_report, dict):
+            parser.error("browse report must be a JSON object")
+        report = execute_mv3_organize_transfer_from_browse_report(
+            config.mv3_base_url,
+            config.mv3_token,
+            browse_report,
+            target_dir=args.target_dir,
+            strm_dir=args.strm_dir,
+            tmdb_id=args.tmdb_id,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            mode=args.mode,
+            is_cloud_target=not args.local_target,
+            background=args.background,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_organize_transfer_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

@@ -574,6 +574,145 @@ def scan_mv3_organize_source(
     }
 
 
+def execute_mv3_organize_transfer_from_browse_report(
+    base_url: str,
+    token: str,
+    browse_report: Dict[str, object],
+    target_dir: str,
+    strm_dir: str,
+    tmdb_id: int,
+    expected_episode_count: int,
+    expected_episode_min: int,
+    expected_episode_max: int,
+    mode: str = "move",
+    is_cloud_target: bool = True,
+    background: bool = False,
+    timeout: int = 180,
+) -> Dict[str, object]:
+    warnings: List[str] = []
+    blockers: List[str] = []
+    source_path = str(browse_report.get("path") or "")
+    normalized_target_dir = _normalize_cloud_path(target_dir)
+    normalized_strm_dir = _normalize_cloud_path(strm_dir)
+    if not source_path:
+        blockers.append("browse_report_missing_source_path")
+    if not normalized_target_dir:
+        blockers.append("target_dir_required")
+    if not normalized_strm_dir:
+        blockers.append("strm_dir_required")
+    if not tmdb_id:
+        blockers.append("tmdb_id_required")
+    if expected_episode_count <= 0:
+        blockers.append("expected_episode_count_required")
+    if expected_episode_min <= 0 or expected_episode_max <= 0:
+        blockers.append("expected_episode_range_required")
+
+    items = [item for item in browse_report.get("items", []) if isinstance(item, dict)]
+    file_items = [item for item in items if str(item.get("kind") or "") == "file"]
+    files = _transfer_files_from_cloud_browse_items(file_items, source_path)
+    episode_numbers = _episode_numbers_from_scan_items(files)
+    missing_expected = [
+        episode
+        for episode in range(expected_episode_min, expected_episode_max + 1)
+        if episode not in set(episode_numbers)
+    ]
+    if len(episode_numbers) != expected_episode_count:
+        blockers.append("episode_count_mismatch")
+    if missing_expected:
+        blockers.append("episode_range_incomplete")
+    if len(files) != expected_episode_count:
+        blockers.append("file_count_mismatch")
+    if not files:
+        blockers.append("no_transfer_files")
+    if any(not str(file.get("source_file_id") or "") for file in files):
+        blockers.append("missing_source_file_id")
+    if mode not in ("move", "copy"):
+        blockers.append("unsupported_transfer_mode")
+
+    request_body: Dict[str, object] = {
+        "files": files,
+        "target_dir": normalized_target_dir,
+        "is_cloud_target": is_cloud_target,
+        "mode": mode,
+        "strm_dir": normalized_strm_dir,
+        "tmdb_id": tmdb_id,
+        "enable_primary_category": True,
+        "enable_secondary_category": True,
+        "copy_subtitles": False,
+        "copy_non_media": False,
+        "background": background,
+    }
+    transfer_report: Dict[str, object] = {"skipped": True}
+    if not blockers:
+        client = MV3Client(base_url, token, timeout=timeout)
+        status, headers, response_body = client.post_json("/api/v1/organize/transfer", request_body)
+        parsed = _parse_json(response_body.decode("utf-8", "replace"))
+        payload = _unwrap_api_payload(parsed)
+        api_success = _api_success(parsed)
+        transfer_report = _mv3_api_call_summary(
+            "POST",
+            "/api/v1/organize/transfer",
+            status,
+            headers,
+            request_body,
+            payload,
+            api_success,
+            response_body,
+        )
+
+    return {
+        "mode": "mv3-organize-transfer-result",
+        "ok": bool(transfer_report.get("ok")) and not blockers,
+        "source_path": source_path,
+        "target_dir": normalized_target_dir,
+        "strm_dir": normalized_strm_dir,
+        "tmdb_id": tmdb_id,
+        "transfer_mode": mode,
+        "is_cloud_target": is_cloud_target,
+        "background": background,
+        "expected_episode_count": expected_episode_count,
+        "expected_episode_min": expected_episode_min,
+        "expected_episode_max": expected_episode_max,
+        "episode_count": len(episode_numbers),
+        "episode_min": min(episode_numbers) if episode_numbers else None,
+        "episode_max": max(episode_numbers) if episode_numbers else None,
+        "missing_expected": missing_expected,
+        "file_count": len(files),
+        "request_summary": _organize_transfer_request_summary(request_body),
+        "transfer": transfer_report,
+        "warnings": warnings,
+        "blockers": sorted(set(blockers)),
+        "safety": "approved MV3 organize transfer; request is built only from a complete readonly cloud browse report and sends one /api/v1/organize/transfer call; no qBittorrent action, hlink deletion, local filesystem deletion, or MP cleanup is performed",
+    }
+
+
+def render_mv3_organize_transfer_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    transfer = report.get("transfer") if isinstance(report.get("transfer"), dict) else {}
+    lines = [
+        "# MV3 Organize Transfer Result",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Source path: `{report.get('source_path', '')}`",
+        f"- Target dir: `{report.get('target_dir', '')}`",
+        f"- STRM dir: `{report.get('strm_dir', '')}`",
+        f"- TMDB ID: `{report.get('tmdb_id', '')}`",
+        f"- Files: `{report.get('file_count', 0)}`",
+        f"- Episode count: `{report.get('episode_count', 0)}`",
+        f"- Episode range: `{report.get('episode_min', '')}-{report.get('episode_max', '')}`",
+        f"- Missing expected: `{report.get('missing_expected', [])}`",
+        f"- Transfer OK: `{bool(transfer.get('ok'))}`",
+        f"- Transfer HTTP status: `{transfer.get('status', '')}`",
+        "- Safety: one approved MV3 organize transfer only; no qB, hlink, local filesystem, or MP cleanup was performed.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    return "\n".join(lines)
+
+
 def render_mv3_organize_scan_report(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -1513,6 +1652,49 @@ def _organize_scan_item_summary(item: Dict[str, object], index: int) -> Dict[str
         "skip_reason": _first_present(item, ["skip_reason", "skipReason"]),
         "in_library": bool(item.get("in_library")),
         "raw": _sanitize_json(_sample_json(item, max_keys=30)),
+    }
+
+
+def _transfer_files_from_cloud_browse_items(items: List[Dict[str, object]], source_path: str) -> List[Dict[str, object]]:
+    files: List[Dict[str, object]] = []
+    normalized_source = source_path.rstrip("/")
+    for item in items:
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        source_file_id = str(item.get("file_id") or "")
+        item_path = f"{normalized_source}/{name}" if normalized_source else name
+        files.append(
+            {
+                "source_path": item_path,
+                "source_file_id": source_file_id,
+                "is_cloud_source": True,
+                "name": name,
+            }
+        )
+    return files
+
+
+def _organize_transfer_request_summary(request_body: Dict[str, object]) -> Dict[str, object]:
+    files = request_body.get("files") if isinstance(request_body.get("files"), list) else []
+    return {
+        "endpoint": {"method": "POST", "path": "/api/v1/organize/transfer"},
+        "target_dir": request_body.get("target_dir") or "",
+        "strm_dir": request_body.get("strm_dir") or "",
+        "tmdb_id": request_body.get("tmdb_id") or 0,
+        "is_cloud_target": bool(request_body.get("is_cloud_target")),
+        "mode": request_body.get("mode") or "",
+        "background": bool(request_body.get("background")),
+        "file_count": len(files),
+        "files": [
+            {
+                "source_path": str(file.get("source_path") or ""),
+                "source_file_id": str(file.get("source_file_id") or ""),
+                "is_cloud_source": bool(file.get("is_cloud_source")),
+            }
+            for file in files[:100]
+            if isinstance(file, dict)
+        ],
     }
 
 
