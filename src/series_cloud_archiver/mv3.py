@@ -599,6 +599,8 @@ def execute_mv3_organize_transfer_from_browse_report(
         blockers.append("browse_report_missing_source_path")
     if not normalized_target_dir:
         blockers.append("target_dir_required")
+    if _looks_like_mv3_category_dir(normalized_target_dir):
+        blockers.append("target_dir_should_be_organize_root_not_media_category")
     if not normalized_strm_dir:
         blockers.append("strm_dir_required")
     if not tmdb_id:
@@ -1803,6 +1805,11 @@ def _share_item_file_id(item: Dict[str, object]) -> str:
 def _normalize_cloud_path(path: str) -> str:
     segments = [segment for segment in str(path or "").strip().strip("/").split("/") if segment]
     return "/" + "/".join(segments) if segments else ""
+
+
+def _looks_like_mv3_category_dir(path: str) -> bool:
+    tail = (path or "").rstrip("/").rsplit("/", 1)[-1].lower()
+    return tail in {"series", "movie", "movies", "anime", "tv", "电视剧", "电影", "动漫"}
 
 
 def _first_present(item: Dict[str, object], keys: List[str]) -> str:

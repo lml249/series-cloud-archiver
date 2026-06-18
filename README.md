@@ -422,6 +422,27 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-scan-source \
 
 `mv3-organize-scan-source` 只调用 `/api/v1/organize/scan-source`。MV3 的接口说明把它描述为“扫描 + 过滤，返回候选媒体文件清单（不做识别、不写盘）”，所以它不会调用 `/api/v1/organize/transfer`、不会移动文件、不会生成 STRM，也不会操作 qB。
 
+确认 `mv3-cloud-browse` 里的集数完整后，才允许调用 MV3 整理转存。这里的 `--target-dir` 必须传 MV3 整理根目录，例如 `/已整理`，不要传 `/已整理/series`；MV3 在 `enable_primary_category=true` 时会自己补 `series`，否则会生成 `/已整理/series/series/...`。
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-browse \
+  --env-file .env \
+  --browse-report reports/mv3-cloud-browse-chuhan.json \
+  --target-dir "/已整理" \
+  --strm-dir "/volume4/volume4/mv3/strm" \
+  --tmdb-id 41146 \
+  --expected-episode-count 80 \
+  --expected-episode-min 1 \
+  --expected-episode-max 80 \
+  --mode copy \
+  --background \
+  --approve-transfer \
+  --format json \
+  --output reports/mv3-organize-transfer-chuhan.json
+```
+
+`mv3-organize-transfer-from-browse` 只负责把媒体文件交给 MV3 整理并生成 STRM。云盘媒体文件目录不需要额外刮削、也不应生成旁挂 NFO/JPG；后续只让 MoviePilot/Emby 对 STRM 目录刮削入库。
+
 ## MV3 只读探针
 
 正式接入 MV3 转存前，先确认 MV3 的地址、鉴权方式和可用接口：

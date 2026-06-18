@@ -285,7 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
     organize_transfer_parser = subcommands.add_parser("mv3-organize-transfer-from-browse", help="Execute one approved MV3 organize transfer from a complete cloud-browse JSON report")
     organize_transfer_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
     organize_transfer_parser.add_argument("--browse-report", required=True, help="JSON report from mv3-cloud-browse")
-    organize_transfer_parser.add_argument("--target-dir", required=True, help="MV3 cloud target dir, e.g. /已整理/series")
+    organize_transfer_parser.add_argument("--target-dir", required=True, help="MV3 organize root, e.g. /已整理; MV3 adds media categories such as series")
     organize_transfer_parser.add_argument("--strm-dir", required=True, help="MV3 STRM output dir")
     organize_transfer_parser.add_argument("--source-path-override", default="", help="Optional source path when the browse report was created from a folder id")
     organize_transfer_parser.add_argument("--tmdb-id", type=int, required=True, help="Expected TMDB ID")
@@ -863,7 +863,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:
             print(rendered)
-        return 0
+        return 0 if report.get("ok") else 1
 
     if args.command == "mv3-cloud-browse":
         config = config_from_env(args.env_file, [])

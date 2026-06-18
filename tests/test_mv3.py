@@ -802,7 +802,7 @@ class MV3ProbeTest(unittest.TestCase):
             "http://mv3.example",
             "token",
             browse_report,
-            target_dir="/已整理/series",
+            target_dir="/已整理",
             strm_dir="/strm/series",
             tmdb_id=123,
             expected_episode_count=3,
@@ -850,7 +850,7 @@ class MV3ProbeTest(unittest.TestCase):
                 "http://mv3.example",
                 "token",
                 browse_report,
-                target_dir="/已整理/series",
+                target_dir="/已整理",
                 strm_dir="/strm/series",
                 tmdb_id=123,
                 expected_episode_count=2,
@@ -861,12 +861,36 @@ class MV3ProbeTest(unittest.TestCase):
         rendered = render_mv3_organize_transfer_report(report, "json")
         self.assertTrue(report["ok"])
         self.assertEqual(seen["url"], "http://mv3.example/api/v1/organize/transfer")
-        self.assertEqual(seen["body"]["target_dir"], "/已整理/series")
+        self.assertEqual(seen["body"]["target_dir"], "/已整理")
         self.assertEqual(seen["body"]["strm_dir"], "/strm/series")
         self.assertEqual(seen["body"]["tmdb_id"], 123)
         self.assertEqual(seen["body"]["mode"], "move")
         self.assertEqual([item["source_file_id"] for item in seen["body"]["files"]], ["file-1", "file-2"])
         self.assertNotIn("token", rendered)
+
+    def test_organize_transfer_blocks_media_category_target_dir(self) -> None:
+        browse_report = {
+            "path": "/未整理/Demo",
+            "items": [
+                {"name": "Demo.S01E01.mp4", "kind": "file", "episode": 1, "file_id": "file-1"},
+            ],
+        }
+
+        report = execute_mv3_organize_transfer_from_browse_report(
+            "http://mv3.example",
+            "token",
+            browse_report,
+            target_dir="/已整理/series",
+            strm_dir="/strm/series",
+            tmdb_id=123,
+            expected_episode_count=1,
+            expected_episode_min=1,
+            expected_episode_max=1,
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("target_dir_should_be_organize_root_not_media_category", report["blockers"])
+        self.assertEqual(report["transfer"], {"skipped": True})
 
     def test_organize_transfer_allows_source_path_override_for_folder_id_browse_report(self) -> None:
         seen = {}
@@ -902,7 +926,7 @@ class MV3ProbeTest(unittest.TestCase):
                 "http://mv3.example",
                 "token",
                 browse_report,
-                target_dir="/已整理/series",
+                target_dir="/已整理",
                 strm_dir="/strm/series",
                 tmdb_id=123,
                 expected_episode_count=1,
@@ -1738,7 +1762,7 @@ class MV3ProbeTest(unittest.TestCase):
                         "--browse-report",
                         str(browse_report),
                         "--target-dir",
-                        "/已整理/series",
+                        "/已整理",
                         "--strm-dir",
                         "/strm/series",
                         "--source-path-override",
@@ -1800,7 +1824,7 @@ class MV3ProbeTest(unittest.TestCase):
                         "--browse-report",
                         str(browse_report),
                         "--target-dir",
-                        "/已整理/series",
+                        "/已整理",
                         "--strm-dir",
                         "/strm/series",
                         "--tmdb-id",
@@ -1822,7 +1846,60 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertEqual(code, 0)
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertTrue(payload["ok"])
-            self.assertEqual(payload["target_dir"], "/已整理/series")
+            self.assertEqual(payload["target_dir"], "/已整理")
+
+    def test_cli_blocks_organize_transfer_to_media_category_target_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            browse_report = tmp_path / "browse.json"
+            output = tmp_path / "transfer.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+            browse_report.write_text(
+                json.dumps(
+                    {
+                        "path": "/未整理/Demo",
+                        "items": [
+                            {"name": "Demo.S01E01.mp4", "kind": "file", "episode": 1, "file_id": "file-1"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("urllib.request.urlopen") as fake_urlopen:
+                code = main(
+                    [
+                        "mv3-organize-transfer-from-browse",
+                        "--env-file",
+                        str(env_file),
+                        "--browse-report",
+                        str(browse_report),
+                        "--target-dir",
+                        "/已整理/series",
+                        "--strm-dir",
+                        "/strm/series",
+                        "--tmdb-id",
+                        "123",
+                        "--expected-episode-count",
+                        "1",
+                        "--expected-episode-min",
+                        "1",
+                        "--expected-episode-max",
+                        "1",
+                        "--approve-transfer",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            fake_urlopen.assert_not_called()
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertFalse(payload["ok"])
+            self.assertIn("target_dir_should_be_organize_root_not_media_category", payload["blockers"])
 
     def test_cli_writes_cloud_browse_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
