@@ -281,6 +281,7 @@ def build_parser() -> argparse.ArgumentParser:
     organize_transfer_parser.add_argument("--browse-report", required=True, help="JSON report from mv3-cloud-browse")
     organize_transfer_parser.add_argument("--target-dir", required=True, help="MV3 cloud target dir, e.g. /已整理/series")
     organize_transfer_parser.add_argument("--strm-dir", required=True, help="MV3 STRM output dir")
+    organize_transfer_parser.add_argument("--source-path-override", default="", help="Optional source path when the browse report was created from a folder id")
     organize_transfer_parser.add_argument("--tmdb-id", type=int, required=True, help="Expected TMDB ID")
     organize_transfer_parser.add_argument("--expected-episode-count", type=int, required=True, help="Expected distinct episode count")
     organize_transfer_parser.add_argument("--expected-episode-min", type=int, required=True, help="Expected first episode number")
@@ -829,6 +830,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             mode=args.mode,
             is_cloud_target=not args.local_target,
             background=args.background,
+            source_path_override=args.source_path_override,
             timeout=args.timeout,
         )
         rendered = render_mv3_organize_transfer_report(report, args.format)

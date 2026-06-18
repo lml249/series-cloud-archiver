@@ -587,11 +587,12 @@ def execute_mv3_organize_transfer_from_browse_report(
     mode: str = "move",
     is_cloud_target: bool = True,
     background: bool = False,
+    source_path_override: str = "",
     timeout: int = 180,
 ) -> Dict[str, object]:
     warnings: List[str] = []
     blockers: List[str] = []
-    source_path = str(browse_report.get("path") or "")
+    source_path = str(source_path_override or browse_report.get("path") or "")
     normalized_target_dir = _normalize_cloud_path(target_dir)
     normalized_strm_dir = _normalize_cloud_path(strm_dir)
     if not source_path:

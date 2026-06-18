@@ -868,6 +868,53 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual([item["source_file_id"] for item in seen["body"]["files"]], ["file-1", "file-2"])
         self.assertNotIn("token", rendered)
 
+    def test_organize_transfer_allows_source_path_override_for_folder_id_browse_report(self) -> None:
+        seen = {}
+        browse_report = {
+            "folder_id": "folder-1",
+            "items": [
+                {"name": "Demo.S01E01.mp4", "kind": "file", "episode": 1, "file_id": "file-1"},
+            ],
+        }
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return b'{"success":true}'
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = execute_mv3_organize_transfer_from_browse_report(
+                "http://mv3.example",
+                "token",
+                browse_report,
+                target_dir="/已整理/series",
+                strm_dir="/strm/series",
+                tmdb_id=123,
+                expected_episode_count=1,
+                expected_episode_min=1,
+                expected_episode_max=1,
+                source_path_override="/未整理/Demo/Season 1",
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["source_path"], "/未整理/Demo/Season 1")
+        self.assertEqual(seen["body"]["files"][0]["source_path"], "/未整理/Demo/Season 1/Demo.S01E01.mp4")
+
     def test_reports_missing_configuration_without_network(self) -> None:
         report = probe_mv3("", "")
 
@@ -1601,6 +1648,8 @@ class MV3ProbeTest(unittest.TestCase):
                         "/已整理/series",
                         "--strm-dir",
                         "/strm/series",
+                        "--source-path-override",
+                        "/未整理/Demo/Season 1",
                         "--tmdb-id",
                         "123",
                         "--expected-episode-count",
