@@ -36,8 +36,10 @@ from .mv3 import (
     render_mv3_resource_search_report,
     render_mv3_share_receive_report,
     render_mv3_share_preview_report,
+    render_mv3_wrong_root_repair_report,
     preview_mv3_share,
     receive_mv3_share,
+    repair_mv3_wrong_root,
     scan_mv3_organize_source,
     search_mv3_resources,
 )
@@ -309,6 +311,21 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_browse_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     cloud_browse_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     cloud_browse_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    wrong_root_parser = subcommands.add_parser("mv3-repair-wrong-root", help="Dry-run or repair MV3 cloud files placed under a duplicated wrong root")
+    wrong_root_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    wrong_root_parser.add_argument("--wrong-root", default="/已整理/series/series", help="Wrong duplicated cloud root")
+    wrong_root_parser.add_argument("--correct-root", default="/已整理/series", help="Correct cloud series root")
+    wrong_root_parser.add_argument("--strm-root", required=True, help="Local/DSM STRM series root used for target verification")
+    wrong_root_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    wrong_root_parser.add_argument("--title-filter", default="", help="Optional substring filter for one title")
+    wrong_root_parser.add_argument("--limit", type=int, default=1000, help="Maximum cloud folder items to request")
+    wrong_root_parser.add_argument("--timeout", type=int, default=120, help="Per-request timeout in seconds")
+    wrong_root_parser.add_argument("--approve-move", action="store_true", help="Allow moving media from wrong root to correct root when checks pass")
+    wrong_root_parser.add_argument("--approve-delete-duplicates", action="store_true", help="Allow deleting duplicate wrong-root season folders when checks pass")
+    wrong_root_parser.add_argument("--approve-delete-empty", action="store_true", help="Allow deleting empty wrong-root folders after checks pass")
+    wrong_root_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    wrong_root_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mv3_parser = subcommands.add_parser("mv3-check", help="Readonly MV3 connectivity and capability probe")
     mv3_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -884,6 +901,31 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(rendered)
         return 0
+
+    if args.command == "mv3-repair-wrong-root":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-repair-wrong-root requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = repair_mv3_wrong_root(
+            config.mv3_base_url,
+            config.mv3_token,
+            wrong_root=args.wrong_root,
+            correct_root=args.correct_root,
+            strm_root=args.strm_root,
+            storage=args.storage,
+            title_filter=args.title_filter,
+            approve_move=args.approve_move,
+            approve_delete_duplicates=args.approve_delete_duplicates,
+            approve_delete_empty=args.approve_delete_empty,
+            limit=args.limit,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_wrong_root_repair_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
 
     if args.command == "mv3-check":
         config = config_from_env(args.env_file, [])

@@ -443,6 +443,37 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-brows
 
 `mv3-organize-transfer-from-browse` 只负责把媒体文件交给 MV3 整理并生成 STRM。云盘媒体文件目录不需要额外刮削、也不应生成旁挂 NFO/JPG；后续只让 MoviePilot/Emby 对 STRM 目录刮削入库。
 
+如果之前误把 `--target-dir` 传成 `/已整理/series`，云盘可能出现 `/已整理/series/series/剧名...` 这种重复 `series` 根目录。可以先用错根目录修复命令 dry-run：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-repair-wrong-root \
+  --env-file .env \
+  --wrong-root "/已整理/series/series" \
+  --correct-root "/已整理/series" \
+  --strm-root "/volume4/volume4/mv3/strm/series" \
+  --storage 115-default \
+  --format json \
+  --output reports/mv3-repair-wrong-root-dry-run.json
+```
+
+这个命令会同时检查错根云盘目录、正确云盘目录和 STRM 文件目标。默认只出报告，不移动、不删除。只有报告确认无 blocker 后，才可以显式加审批参数：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-repair-wrong-root \
+  --env-file .env \
+  --wrong-root "/已整理/series/series" \
+  --correct-root "/已整理/series" \
+  --strm-root "/volume4/volume4/mv3/strm/series" \
+  --storage 115-default \
+  --approve-move \
+  --approve-delete-duplicates \
+  --approve-delete-empty \
+  --format json \
+  --output reports/mv3-repair-wrong-root-execute.json
+```
+
+修复规则很保守：重复副本只有在错根和正确根集数一致、且 STRM 没有指向错根时才删；错根媒体只有在正确根缺失或不完整、STRM 指向正确根、并且所有待移动文件都有 115 file id 时才移。它不会调用 MV3 整理转存、不会重新生成 STRM、不会刮削云盘文件、不会操作 qB、MP 或 Emby。
+
 ## MV3 只读探针
 
 正式接入 MV3 转存前，先确认 MV3 的地址、鉴权方式和可用接口：

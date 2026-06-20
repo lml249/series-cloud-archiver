@@ -1,5 +1,6 @@
 import json
 import tempfile
+import urllib.parse
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -26,12 +27,250 @@ from series_cloud_archiver.mv3 import (
     render_mv3_resource_search_report,
     render_mv3_share_receive_report,
     render_mv3_share_preview_report,
+    render_mv3_wrong_root_repair_report,
+    repair_mv3_wrong_root,
     scan_mv3_organize_source,
     search_mv3_resources,
     preview_mv3_share,
     receive_mv3_share,
     execute_mv3_organize_transfer_from_browse_report,
 )
+
+
+class MV3WrongRootRepairTest(unittest.TestCase):
+    def test_wrong_root_repair_dry_run_plans_duplicate_delete_without_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm" / "series"
+            title = "好好的时光 (2026) {tmdbid=283682}"
+            season_dir = strm_root / title / "Season 01"
+            season_dir.mkdir(parents=True)
+            (season_dir / "好好的时光 - S01E01.strm").write_text("/已整理/series/好好的时光 (2026) {tmdbid=283682}/Season 1/E01.mkv", encoding="utf-8")
+            (season_dir / "好好的时光 - S01E02.strm").write_text("/已整理/series/好好的时光 (2026) {tmdbid=283682}/Season 1/E02.mkv", encoding="utf-8")
+            calls = []
+
+            def fake_urlopen(request, timeout):
+                calls.append((request.get_method(), request.full_url, getattr(request, "data", None)))
+                return _fake_mv3_wrong_root_response(request, deleted=False, moved=False)
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                report = repair_mv3_wrong_root(
+                    "http://mv3.example",
+                    "token",
+                    "/已整理/series/series",
+                    "/已整理/series",
+                    str(strm_root),
+                    storage="115-default",
+                )
+
+            rendered = render_mv3_wrong_root_repair_report(report, "json")
+            self.assertTrue(report["ok"])
+            self.assertTrue(report["dry_run"])
+            self.assertEqual(report["items"][0]["decision"], "delete_duplicate_wrong_season")
+            self.assertEqual(report["items"][0]["action"], "dry_run_delete_duplicate_wrong_season")
+            self.assertFalse(any("/api/v1/files/115/delete" in url or "/api/v1/files/115/move" in url for _method, url, _body in calls))
+            self.assertNotIn("token", rendered)
+
+    def test_wrong_root_repair_deletes_duplicate_with_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm" / "series"
+            title = "好好的时光 (2026) {tmdbid=283682}"
+            season_dir = strm_root / title / "Season 01"
+            season_dir.mkdir(parents=True)
+            for episode in (1, 2):
+                (season_dir / f"好好的时光 - S01E{episode:02d}.strm").write_text(
+                    f"/已整理/series/好好的时光 (2026) {{tmdbid=283682}}/Season 1/E{episode:02d}.mkv",
+                    encoding="utf-8",
+                )
+            posted = []
+            state = {"deleted": False}
+
+            def fake_urlopen(request, timeout):
+                if getattr(request, "data", None):
+                    posted.append((request.full_url, json.loads(request.data.decode("utf-8"))))
+                    if request.full_url.endswith("/api/v1/files/115/delete"):
+                        state["deleted"] = True
+                return _fake_mv3_wrong_root_response(request, deleted=state["deleted"], moved=False)
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                report = repair_mv3_wrong_root(
+                    "http://mv3.example",
+                    "token",
+                    "/已整理/series/series",
+                    "/已整理/series",
+                    str(strm_root),
+                    storage="115-default",
+                    approve_delete_duplicates=True,
+                    approve_delete_empty=True,
+                )
+
+            self.assertTrue(report["ok"])
+            delete_bodies = [body for url, body in posted if url.endswith("/api/v1/files/115/delete")]
+            self.assertTrue(delete_bodies)
+            self.assertIn("wrong-season-1", delete_bodies[0]["file_ids"])
+            self.assertIn("115-default", delete_bodies[0]["storage"])
+            self.assertEqual(report["post_verify"]["wrong_root_child_count"], 0)
+
+    def test_wrong_root_repair_moves_wrong_media_with_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm" / "series"
+            title = "一笑随歌 (2025) {tmdbid=272484}"
+            season_dir = strm_root / title / "Season 01"
+            season_dir.mkdir(parents=True)
+            for episode in (1, 2):
+                (season_dir / f"一笑随歌 - S01E{episode:02d}.strm").write_text(
+                    f"/已整理/series/一笑随歌 (2025) {{tmdbid=272484}}/Season 1/E{episode:02d}.mkv",
+                    encoding="utf-8",
+                )
+            posted = []
+            state = {"moved": False, "deleted": False}
+
+            def fake_urlopen(request, timeout):
+                if getattr(request, "data", None):
+                    posted.append((request.full_url, json.loads(request.data.decode("utf-8"))))
+                    if request.full_url.endswith("/api/v1/files/115/move"):
+                        state["moved"] = True
+                    if request.full_url.endswith("/api/v1/files/115/delete"):
+                        state["deleted"] = True
+                return _fake_mv3_wrong_root_response(request, move_case=True, deleted=state["deleted"], moved=state["moved"])
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                report = repair_mv3_wrong_root(
+                    "http://mv3.example",
+                    "token",
+                    "/已整理/series/series",
+                    "/已整理/series",
+                    str(strm_root),
+                    storage="115-default",
+                    approve_move=True,
+                    approve_delete_empty=True,
+                )
+
+            self.assertTrue(report["ok"])
+            move_bodies = [body for url, body in posted if url.endswith("/api/v1/files/115/move")]
+            self.assertEqual(move_bodies[0]["file_ids"], ["wrong-file-1", "wrong-file-2"])
+            self.assertEqual(move_bodies[0]["target_cid"], "correct-season-1")
+            self.assertEqual(report["items"][0]["decision"], "move_wrong_media_to_correct_season")
+
+    def test_cli_writes_wrong_root_repair_dry_run_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "repair.json"
+            strm_root = tmp_path / "strm" / "series"
+            title = "好好的时光 (2026) {tmdbid=283682}"
+            season_dir = strm_root / title / "Season 01"
+            season_dir.mkdir(parents=True)
+            (season_dir / "好好的时光 - S01E01.strm").write_text("/已整理/series/好好的时光 (2026) {tmdbid=283682}/Season 1/E01.mkv", encoding="utf-8")
+            (season_dir / "好好的时光 - S01E02.strm").write_text("/已整理/series/好好的时光 (2026) {tmdbid=283682}/Season 1/E02.mkv", encoding="utf-8")
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            with patch("urllib.request.urlopen", lambda request, timeout: _fake_mv3_wrong_root_response(request, deleted=False, moved=False)):
+                code = main(
+                    [
+                        "mv3-repair-wrong-root",
+                        "--env-file",
+                        str(env_file),
+                        "--wrong-root",
+                        "/已整理/series/series",
+                        "--correct-root",
+                        "/已整理/series",
+                        "--strm-root",
+                        str(strm_root),
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["dry_run"])
+            self.assertEqual(payload["items"][0]["action"], "dry_run_delete_duplicate_wrong_season")
+
+
+def _fake_mv3_wrong_root_response(request, move_case=False, deleted=False, moved=False):
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            return False
+
+        def read(self, _limit=-1):
+            return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+
+        @property
+        def headers(self):
+            return {"Content-Type": "application/json"}
+
+    parsed = urllib.parse.urlparse(request.full_url)
+    query = urllib.parse.parse_qs(parsed.query)
+    path = query.get("path", [""])[0]
+    cid = query.get("cid", [""])[0]
+    if parsed.path.endswith("/api/v1/files/115/delete") or parsed.path.endswith("/api/v1/files/115/move"):
+        return FakeResponse({"success": True, "message": "ok", "data": None})
+
+    if move_case:
+        title = "一笑随歌 (2025) {tmdbid=272484}"
+        wrong_title = "wrong-title-move"
+        wrong_season = "wrong-season-move"
+        correct_title = "correct-title-move"
+        correct_season = "correct-season-1"
+        wrong_files_before = [
+            {"name": "一笑随歌 - S01E01.mkv", "fid": "wrong-file-1", "is_dir": False},
+            {"name": "一笑随歌 - S01E02.mkv", "fid": "wrong-file-2", "is_dir": False},
+        ]
+        wrong_files_after = []
+        correct_files_after = [
+            {"name": "一笑随歌 - S01E01.mkv", "fid": "wrong-file-1", "is_dir": False},
+            {"name": "一笑随歌 - S01E02.mkv", "fid": "wrong-file-2", "is_dir": False},
+        ]
+        info = {
+            "/已整理/series/series": {"name": "series", "cid": "wrong-root", "is_dir": True},
+            f"/已整理/series/series/{title}": {"name": title, "cid": wrong_title, "is_dir": True},
+            f"/已整理/series/series/{title}/Season 1": {"name": "Season 1", "cid": wrong_season, "is_dir": True},
+            f"/已整理/series/{title}": {"name": title, "cid": correct_title, "is_dir": True},
+            f"/已整理/series/{title}/Season 1": {"name": "Season 1", "cid": correct_season, "is_dir": True},
+        }
+        browse = {
+            "wrong-root": [] if deleted else [{"name": title, "cid": wrong_title, "is_dir": True}],
+            wrong_title: [] if deleted else [{"name": "Season 1", "cid": wrong_season, "is_dir": True}],
+            wrong_season: wrong_files_after if moved else wrong_files_before,
+            correct_title: [{"name": "Season 1", "cid": correct_season, "is_dir": True}],
+            correct_season: correct_files_after if moved else [],
+        }
+    else:
+        title = "好好的时光 (2026) {tmdbid=283682}"
+        info = {
+            "/已整理/series/series": {"name": "series", "cid": "wrong-root", "is_dir": True},
+            f"/已整理/series/series/{title}": {"name": title, "cid": "wrong-title-1", "is_dir": True},
+            f"/已整理/series/series/{title}/Season 1": {"name": "Season 1", "cid": "wrong-season-1", "is_dir": True},
+            f"/已整理/series/{title}": {"name": title, "cid": "correct-title-1", "is_dir": True},
+            f"/已整理/series/{title}/Season 1": {"name": "Season 1", "cid": "correct-season-1", "is_dir": True},
+        }
+        duplicate_files = [
+            {"name": "好好的时光 - S01E01.mkv", "fid": "file-1", "is_dir": False},
+            {"name": "好好的时光 - S01E02.mkv", "fid": "file-2", "is_dir": False},
+        ]
+        browse = {
+            "wrong-root": [] if deleted else [{"name": title, "cid": "wrong-title-1", "is_dir": True}],
+            "wrong-title-1": [] if deleted else [{"name": "Season 1", "cid": "wrong-season-1", "is_dir": True}],
+            "wrong-season-1": [] if deleted else duplicate_files,
+            "correct-title-1": [{"name": "Season 1", "cid": "correct-season-1", "is_dir": True}],
+            "correct-season-1": duplicate_files,
+        }
+
+    if parsed.path.endswith("/api/v1/files/cloud/info"):
+        return FakeResponse({"success": True, "data": info.get(path, {})})
+    if parsed.path.endswith("/api/v1/files/cloud/browse") or parsed.path.endswith("/api/v1/files/115/browse"):
+        return FakeResponse({"success": True, "data": {"items": browse.get(cid, [])}})
+    return FakeResponse({"success": True, "data": {}})
 
 
 class MV3ProbeTest(unittest.TestCase):

@@ -5,6 +5,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
@@ -71,6 +72,22 @@ MV3_WRITE_HINTS = (
     "reorganize",
 )
 MV3_DESTRUCTIVE_HINTS = ("delete", "remove", "clear", "cleanup", "move", "rename", "cancel", "revert", "reset")
+MEDIA_EXTENSIONS = {
+    ".avi",
+    ".flv",
+    ".m2ts",
+    ".m4v",
+    ".mkv",
+    ".mov",
+    ".mp4",
+    ".mpeg",
+    ".mpg",
+    ".mts",
+    ".rmvb",
+    ".ts",
+    ".webm",
+    ".wmv",
+}
 
 
 class MV3Client:
@@ -374,6 +391,175 @@ def render_mv3_cloud_browse_report(report: Dict[str, object], output_format: str
                 kind=_escape(str(item.get("kind") or "")),
                 episode=item.get("episode") or "",
                 size=_escape(str(item.get("size") or "")),
+            )
+        )
+    return "\n".join(lines)
+
+
+def repair_mv3_wrong_root(
+    base_url: str,
+    token: str,
+    wrong_root: str,
+    correct_root: str,
+    strm_root: str,
+    storage: str = "115-default",
+    title_filter: str = "",
+    approve_move: bool = False,
+    approve_delete_duplicates: bool = False,
+    approve_delete_empty: bool = False,
+    limit: int = 1000,
+    timeout: int = 120,
+) -> Dict[str, object]:
+    client = MV3Client(base_url, token, timeout=timeout)
+    normalized_wrong_root = _normalize_cloud_path(wrong_root)
+    normalized_correct_root = _normalize_cloud_path(correct_root)
+    normalized_strm_root = str(strm_root or "").rstrip("/")
+    warnings: List[str] = []
+    blockers: List[str] = []
+
+    if not normalized_wrong_root:
+        blockers.append("wrong_root_required")
+    if not normalized_correct_root:
+        blockers.append("correct_root_required")
+    if normalized_wrong_root == normalized_correct_root:
+        blockers.append("wrong_root_must_differ_from_correct_root")
+    if not normalized_strm_root:
+        warnings.append("strm_root_not_configured")
+
+    wrong_root_folder = _cloud_folder_summary_by_path(client, normalized_wrong_root, storage, limit)
+    title_rows = [
+        row
+        for row in wrong_root_folder.get("rows", [])
+        if isinstance(row, dict) and _cloud_item_kind(row) == "folder"
+    ]
+    if title_filter:
+        title_rows = [
+            row
+            for row in title_rows
+            if title_filter in str(_first_raw_present(row, ["name", "file_name", "filename", "n", "title"]))
+        ]
+    if not wrong_root_folder.get("exists") and normalized_wrong_root:
+        warnings.append("wrong_root_not_found")
+    if not title_rows and wrong_root_folder.get("exists"):
+        warnings.append("wrong_root_has_no_title_folders")
+
+    items: List[Dict[str, object]] = []
+    if not blockers:
+        for row in title_rows:
+            items.append(
+                _plan_mv3_wrong_root_title(
+                    client,
+                    row,
+                    normalized_wrong_root,
+                    normalized_correct_root,
+                    normalized_strm_root,
+                    storage,
+                    limit,
+                    approve_move=approve_move,
+                    approve_delete_duplicates=approve_delete_duplicates,
+                    approve_delete_empty=approve_delete_empty,
+                )
+            )
+
+    root_cleanup: Dict[str, object] = {"skipped": True}
+    if not blockers and approve_delete_empty and wrong_root_folder.get("exists"):
+        refreshed_wrong_root = _cloud_folder_summary_by_path(client, normalized_wrong_root, storage, limit)
+        refreshed_rows = [row for row in refreshed_wrong_root.get("rows", []) if isinstance(row, dict)]
+        if not refreshed_rows:
+            root_id = str(refreshed_wrong_root.get("folder_id") or "")
+            if root_id:
+                root_cleanup = _mv3_delete_115(client, [root_id], storage)
+            else:
+                root_cleanup = {"skipped": True, "reason": "wrong_root_folder_id_not_found"}
+
+    verify_wrong_root = _cloud_folder_summary_by_path(client, normalized_wrong_root, storage, limit) if normalized_wrong_root else {}
+    report_blockers = list(blockers)
+    for item in items:
+        item_blockers = item.get("blockers") if isinstance(item.get("blockers"), list) else []
+        report_blockers.extend(str(blocker) for blocker in item_blockers)
+
+    write_requested = approve_move or approve_delete_duplicates or approve_delete_empty
+    item_ok = all(bool(item.get("ok")) for item in items) if items else not bool(title_rows)
+    no_wrong_children_after_write = True
+    if write_requested and verify_wrong_root.get("exists"):
+        no_wrong_children_after_write = len(verify_wrong_root.get("rows", [])) == 0
+
+    return {
+        "mode": "mv3-repair-wrong-root-result",
+        "ok": not report_blockers and item_ok and no_wrong_children_after_write,
+        "dry_run": not write_requested,
+        "write_approvals": {
+            "approve_move": approve_move,
+            "approve_delete_duplicates": approve_delete_duplicates,
+            "approve_delete_empty": approve_delete_empty,
+        },
+        "wrong_root": normalized_wrong_root,
+        "correct_root": normalized_correct_root,
+        "strm_root": normalized_strm_root,
+        "storage": storage,
+        "title_filter": title_filter,
+        "wrong_root_found": bool(wrong_root_folder.get("exists")),
+        "wrong_root_title_count": len(title_rows),
+        "items": items,
+        "root_cleanup": root_cleanup,
+        "post_verify": {
+            "wrong_root_exists": bool(verify_wrong_root.get("exists")),
+            "wrong_root_child_count": len(verify_wrong_root.get("rows", [])) if isinstance(verify_wrong_root.get("rows"), list) else 0,
+        },
+        "warnings": warnings,
+        "blockers": sorted(set(report_blockers)),
+        "safety": (
+            "default dry-run; write requests are allowed only through explicit approve flags. "
+            "The command compares wrong cloud root, correct cloud root, and STRM targets before moving or deleting 115 items. "
+            "It does not call MV3 organize transfer, STRM generation, qBittorrent, MoviePilot cleanup, or Emby refresh."
+        ),
+    }
+
+
+def render_mv3_wrong_root_repair_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# MV3 Wrong Root Repair",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Dry run: `{bool(report.get('dry_run'))}`",
+        f"- Wrong root: `{report.get('wrong_root', '')}`",
+        f"- Correct root: `{report.get('correct_root', '')}`",
+        f"- STRM root: `{report.get('strm_root', '')}`",
+        f"- Titles found: `{report.get('wrong_root_title_count', 0)}`",
+        "- Safety: compares cloud + STRM evidence before any approved move/delete.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    lines.extend(
+        [
+            "",
+            "| Title | Decision | Action | Wrong media | Correct media | STRM wrong targets | OK |",
+            "| --- | --- | --- | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        wrong = item.get("wrong") if isinstance(item.get("wrong"), dict) else {}
+        correct = item.get("correct") if isinstance(item.get("correct"), dict) else {}
+        strm = item.get("strm") if isinstance(item.get("strm"), dict) else {}
+        lines.append(
+            "| {title} | {decision} | {action} | {wrong_media} | {correct_media} | {strm_wrong} | {ok} |".format(
+                title=_escape(str(item.get("title") or "")),
+                decision=_escape(str(item.get("decision") or "")),
+                action=_escape(str(item.get("action") or "")),
+                wrong_media=wrong.get("media_count", 0),
+                correct_media=correct.get("media_count", 0),
+                strm_wrong=strm.get("wrong_target_count", 0),
+                ok=str(bool(item.get("ok"))),
             )
         )
     return "\n".join(lines)
@@ -1248,6 +1434,439 @@ def _redacted_offline_add_request(body: Dict[str, object], magnet_count: int) ->
             redacted[key] = _sanitize_json(value, key)
     redacted["magnet_count"] = magnet_count
     return redacted
+
+
+def _plan_mv3_wrong_root_title(
+    client: MV3Client,
+    title_row: Dict[str, object],
+    wrong_root: str,
+    correct_root: str,
+    strm_root: str,
+    storage: str,
+    limit: int,
+    approve_move: bool,
+    approve_delete_duplicates: bool,
+    approve_delete_empty: bool,
+) -> Dict[str, object]:
+    title = str(_first_raw_present(title_row, ["name", "file_name", "filename", "n", "title"]))
+    title_folder_id = _cloud_file_id(title_row)
+    wrong_title_path = f"{wrong_root}/{title}"
+    correct_title_path = f"{correct_root}/{title}"
+    wrong_season = _best_season_summary(client, wrong_title_path, title_folder_id, storage, limit)
+    correct_title = _cloud_folder_summary_by_path(client, correct_title_path, storage, limit)
+    correct_season = _best_season_summary(client, correct_title_path, str(correct_title.get("folder_id") or ""), storage, limit)
+    strm_summary = _strm_title_summary(strm_root, title, wrong_root, correct_root)
+
+    wrong_episodes = set(wrong_season.get("episodes", []))
+    correct_episodes = set(correct_season.get("episodes", []))
+    wrong_media_count = int(wrong_season.get("media_count") or 0)
+    correct_media_count = int(correct_season.get("media_count") or 0)
+    wrong_file_ids = [
+        str(item.get("file_id") or "")
+        for item in wrong_season.get("media_items", [])
+        if isinstance(item, dict) and str(item.get("file_id") or "")
+    ]
+    blockers: List[str] = []
+    warnings: List[str] = []
+    decision = "blocked"
+    action = "none"
+    operations: List[Dict[str, object]] = []
+    expected_count = max(wrong_media_count, correct_media_count, int(strm_summary.get("episode_count") or 0))
+
+    strm_wrong_targets = int(strm_summary.get("wrong_target_count") or 0)
+    strm_correct_targets = int(strm_summary.get("correct_target_count") or 0)
+    strm_total = int(strm_summary.get("total_strm") or 0)
+
+    if not title:
+        blockers.append("title_name_not_found")
+    if not wrong_season.get("exists"):
+        blockers.append("wrong_season_not_found")
+    if wrong_media_count <= 0 and not wrong_season.get("folders"):
+        decision = "empty_wrong_folder"
+        if approve_delete_empty and str(wrong_season.get("folder_id") or ""):
+            action = "delete_empty_wrong_season"
+            operations.append(_mv3_delete_115(client, [str(wrong_season.get("folder_id"))], storage))
+        else:
+            action = "dry_run_delete_empty_wrong_season"
+    elif wrong_media_count > 0 and wrong_media_count == correct_media_count and wrong_episodes and wrong_episodes == correct_episodes and strm_wrong_targets == 0:
+        decision = "delete_duplicate_wrong_season"
+        wrong_season_id = str(wrong_season.get("folder_id") or "")
+        if not wrong_season_id:
+            blockers.append("wrong_season_folder_id_not_found")
+        elif approve_delete_duplicates:
+            action = "delete_duplicate_wrong_season"
+            operations.append(_mv3_delete_115(client, [wrong_season_id], storage))
+            _append_empty_wrong_parent_delete(
+                client,
+                operations,
+                wrong_title_path,
+                title_folder_id,
+                storage,
+                limit,
+                approve_delete_empty,
+            )
+        else:
+            action = "dry_run_delete_duplicate_wrong_season"
+    elif wrong_media_count > 0 and correct_media_count < wrong_media_count and strm_wrong_targets == 0 and len(wrong_file_ids) == wrong_media_count:
+        decision = "move_wrong_media_to_correct_season"
+        correct_target_id = str(correct_season.get("folder_id") or "")
+        if not correct_target_id:
+            blockers.append("correct_season_folder_id_not_found")
+        if correct_media_count > 0 and correct_episodes - wrong_episodes:
+            blockers.append("correct_season_has_unmatched_extra_episodes")
+        if strm_total and strm_correct_targets == 0:
+            blockers.append("strm_does_not_point_to_correct_root")
+        if not blockers:
+            if approve_move:
+                action = "move_wrong_media_to_correct_season"
+                operations.append(_mv3_move_115(client, wrong_file_ids, correct_target_id, storage))
+                if approve_delete_empty and str(wrong_season.get("folder_id") or ""):
+                    refreshed_wrong_season = _cloud_folder_summary_by_path(client, str(wrong_season.get("path") or ""), storage, limit)
+                    if int(refreshed_wrong_season.get("media_count") or 0) == 0 and int(refreshed_wrong_season.get("folder_count") or 0) == 0:
+                        operations.append(_mv3_delete_115(client, [str(wrong_season.get("folder_id"))], storage))
+                _append_empty_wrong_parent_delete(
+                    client,
+                    operations,
+                    wrong_title_path,
+                    title_folder_id,
+                    storage,
+                    limit,
+                    approve_delete_empty,
+                )
+            else:
+                action = "dry_run_move_wrong_media_to_correct_season"
+    else:
+        blockers.append("ambiguous_wrong_root_state")
+        if strm_wrong_targets > 0:
+            blockers.append("strm_points_to_wrong_root")
+        if wrong_media_count > 0 and correct_media_count > 0 and wrong_episodes != correct_episodes:
+            blockers.append("wrong_and_correct_episode_sets_differ")
+        if wrong_media_count > 0 and len(wrong_file_ids) != wrong_media_count:
+            blockers.append("wrong_media_file_ids_incomplete")
+
+    post_wrong = _cloud_folder_summary_by_path(client, str(wrong_season.get("path") or ""), storage, limit) if operations else wrong_season
+    post_correct = _cloud_folder_summary_by_path(client, str(correct_season.get("path") or ""), storage, limit) if operations else correct_season
+    post_strm = _strm_title_summary(strm_root, title, wrong_root, correct_root)
+    operation_ok = all(bool(operation.get("ok")) for operation in operations) if operations else True
+    post_ok = _mv3_wrong_root_item_verified(decision, post_wrong, post_correct, post_strm, expected_count, write_executed=bool(operations))
+    ok = not blockers and operation_ok and (post_ok if operations else True)
+
+    if strm_total == 0:
+        warnings.append("strm_files_not_found_for_title")
+
+    return {
+        "title": title,
+        "wrong_title_path": wrong_title_path,
+        "correct_title_path": correct_title_path,
+        "decision": decision,
+        "action": action,
+        "ok": ok,
+        "expected_episode_count": expected_count,
+        "wrong": _public_cloud_folder_summary(wrong_season),
+        "correct": _public_cloud_folder_summary(correct_season),
+        "strm": post_strm if operations else strm_summary,
+        "operations": operations,
+        "post_verify": {
+            "wrong": _public_cloud_folder_summary(post_wrong),
+            "correct": _public_cloud_folder_summary(post_correct),
+            "strm": post_strm,
+        },
+        "warnings": warnings,
+        "blockers": sorted(set(blockers)),
+    }
+
+
+def _best_season_summary(
+    client: MV3Client,
+    title_path: str,
+    title_folder_id: str,
+    storage: str,
+    limit: int,
+) -> Dict[str, object]:
+    title_summary = _cloud_folder_summary_by_path(client, title_path, storage, limit)
+    if not title_folder_id:
+        title_folder_id = str(title_summary.get("folder_id") or "")
+    title_rows = title_summary.get("rows") if isinstance(title_summary.get("rows"), list) else []
+    season_rows = [
+        row
+        for row in title_rows
+        if isinstance(row, dict) and _cloud_item_kind(row) == "folder" and _looks_like_season_folder(_cloud_name(row))
+    ]
+    if season_rows:
+        def rank(row: Dict[str, object]) -> Tuple[int, str]:
+            name = _cloud_name(row)
+            match = re.search(r"(\d{1,3})", name)
+            number = int(match.group(1)) if match else 999
+            return (number, name)
+
+        selected = sorted(season_rows, key=rank)[0]
+        season_name = _cloud_name(selected)
+        return _cloud_folder_summary_by_id(
+            client,
+            _cloud_file_id(selected),
+            f"{_normalize_cloud_path(title_path)}/{season_name}",
+            storage,
+            limit,
+        )
+    media_count = int(title_summary.get("media_count") or 0)
+    if media_count > 0 or title_summary.get("exists"):
+        return title_summary
+    if title_folder_id:
+        return _cloud_folder_summary_by_id(client, title_folder_id, _normalize_cloud_path(title_path), storage, limit)
+    return title_summary
+
+
+def _append_empty_wrong_parent_delete(
+    client: MV3Client,
+    operations: List[Dict[str, object]],
+    wrong_title_path: str,
+    title_folder_id: str,
+    storage: str,
+    limit: int,
+    approve_delete_empty: bool,
+) -> None:
+    if not approve_delete_empty or not title_folder_id:
+        return
+    if operations and not all(bool(operation.get("ok")) for operation in operations):
+        return
+    refreshed_title = _cloud_folder_summary_by_path(client, wrong_title_path, storage, limit)
+    if not refreshed_title.get("exists") and title_folder_id:
+        refreshed_title = _cloud_folder_summary_by_id(client, title_folder_id, wrong_title_path, storage, limit)
+    if int(refreshed_title.get("media_count") or 0) == 0 and int(refreshed_title.get("folder_count") or 0) == 0:
+        operations.append(_mv3_delete_115(client, [title_folder_id], storage))
+
+
+def _cloud_folder_summary_by_path(client: MV3Client, path: str, storage: str, limit: int) -> Dict[str, object]:
+    normalized = _normalize_cloud_path(path)
+    info, status, content_type = _read_cloud_info_status(client, "", normalized, storage)
+    folder_id = _extract_folder_id(info)
+    summary = _empty_cloud_folder_summary(normalized, exists=bool(folder_id), status=status, content_type=content_type)
+    if not folder_id:
+        return summary
+    return _cloud_folder_summary_by_id(client, folder_id, normalized, storage, limit, info=info, info_status=status, info_content_type=content_type)
+
+
+def _cloud_folder_summary_by_id(
+    client: MV3Client,
+    folder_id: str,
+    path: str,
+    storage: str,
+    limit: int,
+    info: Optional[Dict[str, object]] = None,
+    info_status: int = 0,
+    info_content_type: str = "",
+) -> Dict[str, object]:
+    payload, browse_status, browse_content_type = _read_cloud_folder_status(client, folder_id, storage, limit)
+    rows = _cloud_rows(payload)
+    media_items = [_cloud_media_item_summary(row) for row in rows if _cloud_item_kind(row) == "file" and _is_media_name(_cloud_name(row))]
+    folders = [_cloud_name(row) for row in rows if _cloud_item_kind(row) == "folder"]
+    episodes = sorted({item["episode"] for item in media_items if isinstance(item.get("episode"), int)})
+    summary = {
+        "exists": bool(folder_id),
+        "path": _normalize_cloud_path(path),
+        "folder_id": folder_id,
+        "info_status": info_status,
+        "info_content_type": info_content_type,
+        "browse_status": browse_status,
+        "browse_content_type": browse_content_type,
+        "browse_ok": 200 <= browse_status < 300,
+        "item_count": len(rows),
+        "folder_count": len(folders),
+        "folders": folders[:20],
+        "media_count": len(media_items),
+        "episodes": episodes,
+        "missing_in_range": _missing_episode_numbers(episodes),
+        "media_items": media_items,
+        "rows": rows,
+    }
+    if info is not None:
+        summary["info"] = _cloud_info_summary(info) if info else {}
+    return summary
+
+
+def _empty_cloud_folder_summary(path: str, exists: bool = False, status: int = 0, content_type: str = "") -> Dict[str, object]:
+    return {
+        "exists": exists,
+        "path": _normalize_cloud_path(path),
+        "folder_id": "",
+        "info_status": status,
+        "info_content_type": content_type,
+        "browse_status": 0,
+        "browse_content_type": "",
+        "browse_ok": False,
+        "item_count": 0,
+        "folder_count": 0,
+        "folders": [],
+        "media_count": 0,
+        "episodes": [],
+        "missing_in_range": [],
+        "media_items": [],
+        "rows": [],
+    }
+
+
+def _public_cloud_folder_summary(summary: Dict[str, object]) -> Dict[str, object]:
+    media_items = summary.get("media_items") if isinstance(summary.get("media_items"), list) else []
+    return {
+        "exists": bool(summary.get("exists")),
+        "path": str(summary.get("path") or ""),
+        "folder_id": str(summary.get("folder_id") or ""),
+        "browse_ok": bool(summary.get("browse_ok")),
+        "item_count": int(summary.get("item_count") or 0),
+        "folder_count": int(summary.get("folder_count") or 0),
+        "folders": list(summary.get("folders", []))[:20] if isinstance(summary.get("folders"), list) else [],
+        "media_count": int(summary.get("media_count") or 0),
+        "episodes": list(summary.get("episodes", [])) if isinstance(summary.get("episodes"), list) else [],
+        "missing_in_range": list(summary.get("missing_in_range", [])) if isinstance(summary.get("missing_in_range"), list) else [],
+        "sample_media": [str(item.get("name") or "") for item in media_items[:10] if isinstance(item, dict)],
+    }
+
+
+def _cloud_media_item_summary(row: Dict[str, object]) -> Dict[str, object]:
+    name = _cloud_name(row)
+    return {
+        "name": name,
+        "episode": _episode_number_from_text(name),
+        "file_id": _cloud_file_id(row),
+        "size": _format_size_value(_first_raw_present(row, ["size", "size_text", "file_size", "file_size_text", "s"])),
+    }
+
+
+def _strm_title_summary(strm_root: str, title: str, wrong_root: str, correct_root: str) -> Dict[str, object]:
+    title_dir = Path(strm_root) / title if strm_root and title else Path("__missing__")
+    strm_files = sorted(title_dir.rglob("*.strm")) if title_dir.exists() else []
+    episodes: List[int] = []
+    wrong_target_count = 0
+    correct_target_count = 0
+    plain_series_root_count = 0
+    samples = []
+    normalized_wrong = _normalize_cloud_path(wrong_root)
+    normalized_correct = _normalize_cloud_path(correct_root)
+    for path in strm_files:
+        name_episode = _episode_number_from_text(path.name)
+        if name_episode is not None:
+            episodes.append(name_episode)
+        target = ""
+        try:
+            target = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            target = ""
+        decoded_target = urllib.parse.unquote(target)
+        if normalized_wrong and (normalized_wrong in target or normalized_wrong in decoded_target):
+            wrong_target_count += 1
+        wrong_target_present = bool(normalized_wrong and (normalized_wrong in target or normalized_wrong in decoded_target))
+        correct_target_present = bool(normalized_correct and (normalized_correct in target or normalized_correct in decoded_target))
+        if correct_target_present and not wrong_target_present:
+            correct_target_count += 1
+        if "/series/" in decoded_target and "/已整理/series/" not in decoded_target:
+            plain_series_root_count += 1
+        if len(samples) < 5:
+            samples.append({"file": str(path), "episode": name_episode, "target_class": _classify_strm_target(decoded_target, normalized_wrong, normalized_correct)})
+    distinct_episodes = sorted(set(episodes))
+    return {
+        "exists": title_dir.exists(),
+        "title_dir": str(title_dir) if strm_root and title else "",
+        "total_strm": len(strm_files),
+        "episode_count": len(distinct_episodes),
+        "episodes": distinct_episodes,
+        "missing_in_range": _missing_episode_numbers(distinct_episodes),
+        "wrong_target_count": wrong_target_count,
+        "correct_target_count": correct_target_count,
+        "plain_series_root_count": plain_series_root_count,
+        "samples": samples,
+    }
+
+
+def _mv3_move_115(client: MV3Client, file_ids: List[str], target_cid: str, storage: str) -> Dict[str, object]:
+    body: Dict[str, object] = {"file_ids": file_ids, "target_cid": target_cid}
+    if storage:
+        body["storage"] = storage
+    status, headers, response_body = client.post_json("/api/v1/files/115/move", body)
+    parsed = _parse_json(response_body.decode("utf-8", "replace"))
+    payload = _unwrap_api_payload(parsed)
+    api_success = _api_success(parsed)
+    return {
+        "endpoint": {"method": "POST", "path": "/api/v1/files/115/move"},
+        "ok": 200 <= status < 300 and api_success,
+        "http_ok": 200 <= status < 300,
+        "api_success": api_success,
+        "status": status,
+        "response_content_type": _header(headers, "content-type"),
+        "request_summary": {"file_id_count": len(file_ids), "target_cid": target_cid, "storage": storage},
+        "response": _sanitize_json(payload if isinstance(payload, (dict, list)) else parsed),
+    }
+
+
+def _mv3_delete_115(client: MV3Client, file_ids: List[str], storage: str) -> Dict[str, object]:
+    body: Dict[str, object] = {"file_ids": file_ids}
+    if storage:
+        body["storage"] = storage
+    status, headers, response_body = client.post_json("/api/v1/files/115/delete", body)
+    parsed = _parse_json(response_body.decode("utf-8", "replace"))
+    payload = _unwrap_api_payload(parsed)
+    api_success = _api_success(parsed)
+    return {
+        "endpoint": {"method": "POST", "path": "/api/v1/files/115/delete"},
+        "ok": 200 <= status < 300 and api_success,
+        "http_ok": 200 <= status < 300,
+        "api_success": api_success,
+        "status": status,
+        "response_content_type": _header(headers, "content-type"),
+        "request_summary": {"file_ids": file_ids, "storage": storage, "count": len(file_ids)},
+        "response": _sanitize_json(payload if isinstance(payload, (dict, list)) else parsed),
+    }
+
+
+def _mv3_wrong_root_item_verified(
+    decision: str,
+    wrong: Dict[str, object],
+    correct: Dict[str, object],
+    strm: Dict[str, object],
+    expected_count: int,
+    write_executed: bool,
+) -> bool:
+    if not write_executed:
+        return True
+    correct_media_count = int(correct.get("media_count") or 0)
+    strm_wrong_targets = int(strm.get("wrong_target_count") or 0)
+    if decision in {"delete_duplicate_wrong_season", "move_wrong_media_to_correct_season"}:
+        wrong_media_count = int(wrong.get("media_count") or 0)
+        return wrong_media_count == 0 and correct_media_count >= expected_count and strm_wrong_targets == 0
+    if decision == "empty_wrong_folder":
+        return int(wrong.get("media_count") or 0) == 0
+    return False
+
+
+def _cloud_name(item: Dict[str, object]) -> str:
+    return str(_first_raw_present(item, ["name", "file_name", "filename", "n", "title"]))
+
+
+def _cloud_file_id(item: Dict[str, object]) -> str:
+    for key in ("fid", "file_id", "id", "cid", "folder_id"):
+        value = item.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _looks_like_season_folder(name: str) -> bool:
+    return bool(re.search(r"(?i)(^season\s*0*\d+$|^s0*\d+$|第\s*\d+\s*季)", name or ""))
+
+
+def _is_media_name(name: str) -> bool:
+    return Path(name).suffix.lower() in MEDIA_EXTENSIONS
+
+
+def _classify_strm_target(target: str, wrong_root: str, correct_root: str) -> str:
+    if wrong_root and wrong_root in target:
+        return "wrong_root"
+    if correct_root and correct_root in target:
+        return "correct_root"
+    if "/series/" in target:
+        return "plain_series_root"
+    if not target:
+        return "empty"
+    return "other"
 
 
 def _api_success(parsed: object) -> bool:
