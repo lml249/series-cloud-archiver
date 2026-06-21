@@ -277,6 +277,7 @@ class QBittorrentClientTest(unittest.TestCase):
             self.assertEqual(report["dot_qb_categories"]["complete_task_with_dotqb"], 1)
             self.assertEqual(report["dot_qb_categories"]["qb_missing_with_dotqb"], 1)
             self.assertEqual(report["dot_qb_categories"]["orphan_not_in_qb"], 1)
+            self.assertEqual(report["scan_roots"], [str(host_root)])
 
     def test_match_torrent_uses_path_alias(self) -> None:
         series = FileSystemSeries(

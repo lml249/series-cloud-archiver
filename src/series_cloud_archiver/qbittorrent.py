@@ -293,7 +293,8 @@ def _dotqb_scan_roots(
     roots = set()
     for root in scan_roots or []:
         if root:
-            roots.add(_map_path(root.rstrip("/"), aliases))
+            explicit_root = root.rstrip("/")
+            roots.add(explicit_root if Path(explicit_root).exists() else _map_path(explicit_root, aliases))
     if not roots:
         for key in ("save_path", "temp_path"):
             value = preferences.get(key)
