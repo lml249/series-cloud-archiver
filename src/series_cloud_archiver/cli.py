@@ -44,7 +44,7 @@ from .mv3 import (
     search_mv3_resources,
 )
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
-from .qbittorrent import fetch_qb_torrents
+from .qbittorrent import audit_dotqb_files, fetch_qb_torrents, render_dotqb_audit_report
 from .reporting import render_report
 from .scanner import scan
 from .storage import StoredSeries
@@ -96,6 +96,14 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup_parser.add_argument("--env-file", default=None)
     cleanup_parser.add_argument("--db", default=None)
     cleanup_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+
+    dotqb_parser = subcommands.add_parser("qb-dotqb-audit", help="Readonly audit of qB .!qB temporary files and missingFiles state")
+    dotqb_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    dotqb_parser.add_argument("--scan-root", action="append", default=[], help="Host filesystem root to scan; can be repeated")
+    dotqb_parser.add_argument("--path-alias", action="append", default=[], help="Map qB/container path to host path, e.g. /volume3=/volume3/volume3")
+    dotqb_parser.add_argument("--timeout", type=int, default=30, help="Per-request timeout in seconds")
+    dotqb_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    dotqb_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mp_cleanup_parser = subcommands.add_parser("mp-cleanup-preview", help="Readonly MoviePilot cleanup preview from transfer history")
     mp_cleanup_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -367,6 +375,19 @@ def _parse_episode_list(value: str) -> List[int]:
     return sorted(item for item in episodes if item > 0)
 
 
+def _parse_path_alias_args(values: List[str]) -> dict:
+    aliases = {}
+    for value in values:
+        if "=" not in value:
+            raise argparse.ArgumentTypeError(f"invalid path alias: {value}")
+        left, right = value.split("=", 1)
+        left = left.strip().rstrip("/")
+        right = right.strip().rstrip("/")
+        if left and right:
+            aliases[left] = right
+    return aliases
+
+
 def add_scan_args(scan_parser: argparse.ArgumentParser) -> None:
     scan_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
     scan_parser.add_argument("--media-root", action="append", default=[], help="Media root to scan; can be repeated")
@@ -496,6 +517,25 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"- Blockers: `{plan['blockers']}`")
                 print("")
                 print("No deletion was performed.")
+        return 0
+
+    if args.command == "qb-dotqb-audit":
+        config = config_from_env(args.env_file, [])
+        if not config.qb_base_url:
+            parser.error("qb-dotqb-audit requires QB_BASE_URL")
+        report = audit_dotqb_files(
+            config.qb_base_url,
+            config.qb_user,
+            config.qb_pass,
+            scan_roots=args.scan_root,
+            path_aliases=_parse_path_alias_args(args.path_alias) or config.path_aliases,
+            timeout=args.timeout,
+        )
+        rendered = render_dotqb_audit_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
         return 0
 
     if args.command == "mp-cleanup-preview":

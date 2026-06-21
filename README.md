@@ -255,6 +255,28 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-offline-status-one \
 
 只有当报告里的 `Ready for STRM` 为 `true` 时，才进入单条 STRM 生成。否则继续等待，不要生成空 STRM。
 
+## qB 临时文件只读审计
+
+qBittorrent 如果开启了“给未完成文件追加扩展名”，未完成文件会显示为 `.!qB`。这不一定代表文件丢失；真正需要区分的是：它是否还被 qB 当前任务引用、任务是否未完成、qB 是否已经报 `missingFiles`。
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver qb-dotqb-audit \
+  --env-file .env \
+  --path-alias /volume3=/volume3/volume3 \
+  --path-alias /volume4=/volume4/volume4 \
+  --scan-root /volume3/volume3/TV \
+  --scan-root /volume4/volume4/Comic \
+  --format json \
+  --output reports/qb-dotqb-audit.json
+```
+
+`qb-dotqb-audit` 只读取 qB Web API 和宿主机文件列表，不暂停、不校验、不删除任务，也不移动/删除文件。报告会把 `.!qB` 分成：
+
+- `incomplete_task_temp_file`：qB 仍引用该文件，且任务未完成，通常只是正常未完成临时文件。
+- `qb_missing_with_dotqb`：qB 已报 missing/error，但对应 `.!qB` 还在，需要人工复核。
+- `complete_task_with_dotqb`：qB 认为任务完成，却还有 `.!qB` 后缀文件，通常要先做 qB 重校验或人工确认。
+- `orphan_not_in_qb`：当前 qB 文件列表完全匹配不到，才是后续清理候选。
+
 ## MoviePilot 内部清理预览
 
 当某部剧已经确认云端 STRM、Emby、本地源文件、hlink 和 qB 做种门禁都通过后，可以先用 MoviePilot 的整理历史生成只读清理预览：

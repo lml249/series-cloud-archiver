@@ -21,7 +21,7 @@ from series_cloud_archiver.moviepilot import (
     render_mp_cleanup_execute_report,
     render_mp_cleanup_preview,
 )
-from series_cloud_archiver.qbittorrent import QBClient, match_torrent
+from series_cloud_archiver.qbittorrent import QBClient, audit_dotqb_files, match_torrent
 from series_cloud_archiver.scanner import scan
 
 
@@ -211,6 +211,72 @@ class QBittorrentClientTest(unittest.TestCase):
 
         client.opener = Opener()
         client.login()
+
+    def test_dotqb_audit_classifies_temp_complete_missing_and_orphan_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            host_root = Path(tmp) / "host" / "volume3" / "TV"
+            host_root.mkdir(parents=True)
+            (host_root / "Incomplete" / "E01.mkv.!qB").parent.mkdir(parents=True)
+            (host_root / "Incomplete" / "E01.mkv.!qB").write_bytes(b"incomplete")
+            (host_root / "Complete" / "E02.mkv.!qB").parent.mkdir(parents=True)
+            (host_root / "Complete" / "E02.mkv.!qB").write_bytes(b"complete")
+            (host_root / "Missing" / "E03.mkv.!qB").parent.mkdir(parents=True)
+            (host_root / "Missing" / "E03.mkv.!qB").write_bytes(b"missing")
+            (host_root / "Orphan" / "E04.mkv.!qB").parent.mkdir(parents=True)
+            (host_root / "Orphan" / "E04.mkv.!qB").write_bytes(b"orphan")
+
+            class Response:
+                status = 200
+
+                def __init__(self, payload):
+                    self.payload = payload
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def read(self):
+                    return json.dumps(self.payload).encode("utf-8")
+
+            class Opener:
+                def open(self, request, timeout):
+                    url = request.full_url
+                    if url.endswith("/api/v2/auth/login"):
+                        return Response("Ok.")
+                    if url.endswith("/api/v2/torrents/info"):
+                        return Response(
+                            [
+                                {"hash": "aaa111", "name": "Incomplete", "state": "pausedDL", "progress": 0.5, "save_path": "/volume3/TV"},
+                                {"hash": "bbb222", "name": "Complete", "state": "stalledUP", "progress": 1.0, "save_path": "/volume3/TV"},
+                                {"hash": "ccc333", "name": "Missing", "state": "missingFiles", "progress": 0.0, "save_path": "/volume3/TV"},
+                            ]
+                        )
+                    if url.endswith("/api/v2/app/preferences"):
+                        return Response({"save_path": "/volume3/TV", "temp_path_enabled": False, "incomplete_files_ext": True})
+                    if "/api/v2/torrents/files?" in url:
+                        if "aaa111" in url:
+                            return Response([{"name": "Incomplete/E01.mkv", "size": 10, "progress": 0.5, "priority": 1}])
+                        if "bbb222" in url:
+                            return Response([{"name": "Complete/E02.mkv", "size": 10, "progress": 1.0, "priority": 1}])
+                        if "ccc333" in url:
+                            return Response([{"name": "Missing/E03.mkv", "size": 10, "progress": 0.0, "priority": 1}])
+                    return Response({})
+
+            with patch("series_cloud_archiver.qbittorrent.QBClient.login", lambda self: None):
+                with patch("series_cloud_archiver.qbittorrent.QBClient.__init__", lambda self, base_url, user="", qb_pass="", timeout=15: setattr(self, "base_url", base_url.rstrip("/")) or setattr(self, "opener", Opener()) or setattr(self, "timeout", timeout)):
+                    report = audit_dotqb_files(
+                        "http://qb.example",
+                        scan_roots=[str(host_root)],
+                        path_aliases={"/volume3/TV": str(host_root)},
+                    )
+
+            self.assertEqual(report["dot_qb_total_count"], 4)
+            self.assertEqual(report["dot_qb_categories"]["incomplete_task_temp_file"], 1)
+            self.assertEqual(report["dot_qb_categories"]["complete_task_with_dotqb"], 1)
+            self.assertEqual(report["dot_qb_categories"]["qb_missing_with_dotqb"], 1)
+            self.assertEqual(report["dot_qb_categories"]["orphan_not_in_qb"], 1)
 
     def test_match_torrent_uses_path_alias(self) -> None:
         series = FileSystemSeries(
