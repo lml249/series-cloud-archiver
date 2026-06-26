@@ -62,7 +62,8 @@ def preview_cloud_hlink_cleanup(
             best = match_torrent(fs_series, torrents, aliases)
             if best:
                 qb_matches.append(_qb_evidence_row(best, hlink_root, aliases))
-            qb_matches.extend(_inode_qb_matches(torrents, hlink_check, aliases, {row["hash"] for row in qb_matches}))
+            candidates = _candidate_torrents_for_inode_check(torrents, fs_series)
+            qb_matches.extend(_inode_qb_matches(candidates, hlink_check, aliases, {row["hash"] for row in qb_matches}))
         except Exception as exc:  # pragma: no cover - exercised by integration
             qb_error = f"{type(exc).__name__}:{exc}"
             blockers.append("qb_torrent_check_failed")
@@ -77,6 +78,9 @@ def preview_cloud_hlink_cleanup(
     source_checks = [_source_match_check(row, hlink_check) for row in qb_matches]
     if any(check.get("blocked") for check in source_checks):
         blockers.append("source_root_check_failed")
+    hlink_coverage = _hlink_source_coverage(source_checks, hlink_check)
+    if qb_matches and hlink_check.get("exists") and not hlink_coverage.get("complete"):
+        blockers.append("source_hlink_coverage_incomplete")
 
     return {
         "mode": "cloud-hlink-cleanup-preview",
@@ -103,6 +107,7 @@ def preview_cloud_hlink_cleanup(
         },
         "filesystem": {
             "source_roots": source_checks,
+            "hlink_coverage": hlink_coverage,
         },
         "blockers": sorted(set(blockers)),
         "warnings": sorted(set(warnings)),
@@ -326,6 +331,35 @@ def _inode_qb_matches(
     return rows
 
 
+def _candidate_torrents_for_inode_check(torrents: Iterable[object], series: FileSystemSeries) -> List[object]:
+    wanted = _title_token_set(series.title)
+    if not wanted:
+        return []
+    candidates = []
+    for torrent in torrents:
+        text = " ".join(
+            [
+                str(getattr(torrent, "name", "") or ""),
+                str(getattr(torrent, "content_path", "") or ""),
+                str(getattr(torrent, "save_path", "") or ""),
+            ]
+        )
+        tokens = _title_token_set(text)
+        if wanted.intersection(tokens):
+            candidates.append(torrent)
+    return candidates
+
+
+def _title_token_set(value: str) -> Set[str]:
+    import re
+
+    tokens = set()
+    for token in re.findall(r"[a-z]+|[0-9]+|[\u4e00-\u9fff]+", str(value).casefold()):
+        if len(token) > 1 or re.search(r"[\u4e00-\u9fff]", token):
+            tokens.add(token)
+    return tokens
+
+
 def _qb_evidence_row(torrent: object, hlink_root: str, aliases: Dict[str, str]) -> Dict[str, object]:
     content_path = str(getattr(torrent, "content_path", "") or "")
     host_content_path = _map_path(content_path, aliases) if content_path else ""
@@ -355,15 +389,16 @@ def _source_match_check(match: Dict[str, object], hlink_check: Dict[str, object]
     }
     path = Path(content_path)
     if not content_path:
-        return {"path": content_path, "hash_prefix": match.get("hash_prefix", ""), "exists": False, "blocked": True, "reason": "source_content_path_empty"}
+        return {"path": content_path, "hash_prefix": match.get("hash_prefix", ""), "exists": False, "blocked": True, "reason": "source_content_path_empty", "linked_hlink_inodes": []}
     if not path.exists():
-        return {"path": content_path, "hash_prefix": match.get("hash_prefix", ""), "exists": False, "blocked": True, "reason": "source_content_path_missing"}
+        return {"path": content_path, "hash_prefix": match.get("hash_prefix", ""), "exists": False, "blocked": True, "reason": "source_content_path_missing", "linked_hlink_inodes": []}
     if path.is_file():
         try:
             stat = path.stat()
         except OSError:
-            return {"path": content_path, "hash_prefix": match.get("hash_prefix", ""), "exists": True, "blocked": True, "reason": "source_content_stat_failed"}
+            return {"path": content_path, "hash_prefix": match.get("hash_prefix", ""), "exists": True, "blocked": True, "reason": "source_content_stat_failed", "linked_hlink_inodes": []}
         linked = (stat.st_dev, stat.st_ino) in wanted
+        linked_inode = _inode_key(stat.st_dev, stat.st_ino) if linked else ""
         return {
             "path": content_path,
             "hash_prefix": match.get("hash_prefix", ""),
@@ -372,10 +407,12 @@ def _source_match_check(match: Dict[str, object], hlink_check: Dict[str, object]
             "blocked": not (is_video_file(path) and linked),
             "video_count": 1 if is_video_file(path) else 0,
             "linked_hlink_video_count": 1 if linked else 0,
+            "linked_hlink_inodes": [linked_inode] if linked_inode else [],
             "unlinked_video_sample": [] if linked else [content_path],
         }
     files = [item for item in path.rglob("*") if item.is_file() and is_video_file(item)]
     linked = 0
+    linked_inodes: Set[str] = set()
     unlinked_sample: List[str] = []
     for item in files:
         try:
@@ -384,6 +421,7 @@ def _source_match_check(match: Dict[str, object], hlink_check: Dict[str, object]
             continue
         if (stat.st_dev, stat.st_ino) in wanted:
             linked += 1
+            linked_inodes.add(_inode_key(stat.st_dev, stat.st_ino))
         elif len(unlinked_sample) < 10:
             unlinked_sample.append(str(item))
     blocked = not files or bool(unlinked_sample) or linked != len(files)
@@ -395,8 +433,38 @@ def _source_match_check(match: Dict[str, object], hlink_check: Dict[str, object]
         "blocked": blocked,
         "video_count": len(files),
         "linked_hlink_video_count": linked,
+        "linked_hlink_inodes": sorted(linked_inodes),
         "unlinked_video_sample": unlinked_sample,
     }
+
+
+def _hlink_source_coverage(source_checks: Sequence[Dict[str, object]], hlink_check: Dict[str, object]) -> Dict[str, object]:
+    wanted_rows = {}
+    for row in hlink_check.get("inodes", []):
+        if not isinstance(row, dict):
+            continue
+        key = _inode_key(int(row.get("device") or 0), int(row.get("inode") or 0))
+        if key:
+            wanted_rows[key] = row
+    linked = {
+        str(inode)
+        for check in source_checks
+        for inode in (check.get("linked_hlink_inodes", []) if isinstance(check.get("linked_hlink_inodes"), list) else [])
+        if str(inode)
+    }
+    missing = sorted(set(wanted_rows) - linked)
+    return {
+        "complete": bool(wanted_rows) and not missing,
+        "hlink_video_count": int(hlink_check.get("video_count") or 0),
+        "hlink_inode_count": len(wanted_rows),
+        "linked_hlink_inode_count": len(set(wanted_rows).intersection(linked)),
+        "missing_hlink_inode_count": len(missing),
+        "missing_hlink_video_sample": [str(wanted_rows[key].get("path") or "") for key in missing[:10]],
+    }
+
+
+def _inode_key(device: int, inode: int) -> str:
+    return f"{int(device)}:{int(inode)}" if device and inode else ""
 
 
 def _host_content_root(torrent: object, aliases: Dict[str, str]) -> str:

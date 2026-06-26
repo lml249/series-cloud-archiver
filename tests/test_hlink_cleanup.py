@@ -135,6 +135,95 @@ class CloudHlinkCleanupTest(unittest.TestCase):
         self.assertIn("source_root_check_failed", report["blockers"])
         self.assertEqual(report["filesystem"]["source_roots"][0]["linked_hlink_video_count"], 1)
 
+    def test_preview_does_not_inode_scan_unrelated_qb_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hlink_root = tmp_path / "hlink" / "TV" / "Show"
+            write(hlink_root / "Show S01E01.mkv")
+            strm_root = tmp_path / "strm" / "Show" / "Season 01"
+            write(strm_root / "Show S01E01.strm")
+            unrelated = tmp_path / "qb" / "TV" / "Other"
+            unrelated.mkdir(parents=True)
+            torrent = QBTorrentEvidence(
+                name="Other.S01",
+                hash="feedface00001234567890",
+                state="stalledUP",
+                save_path=str(tmp_path / "qb" / "TV"),
+                content_path=str(unrelated),
+                progress=1.0,
+                seeding_time_seconds=86400 * 8,
+                seed_days=8.0,
+                size_bytes=1,
+            )
+
+            original_rglob = Path.rglob
+
+            def guarded_rglob(path: Path, pattern: str):
+                if path == unrelated:
+                    raise AssertionError("unrelated torrent should not be scanned")
+                return original_rglob(path, pattern)
+
+            with patch("series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[torrent]), patch(
+                "series_cloud_archiver.hlink_cleanup.Path.rglob", new=guarded_rglob
+            ):
+                report = preview_cloud_hlink_cleanup(
+                    "Show",
+                    str(hlink_root),
+                    str(strm_root),
+                    expected_tmdbid=1,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                    min_seed_days=7,
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("qb_match_required", report["blockers"])
+
+    def test_preview_blocks_when_qb_matches_only_part_of_hlink_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "qb" / "TV" / "Show.E01"
+            source_file = source / "Show.S01E01.mkv"
+            write(source_file)
+            hlink_root = tmp_path / "hlink" / "TV" / "Show"
+            hlink_file = hlink_root / "Season 01" / "Show S01E01.mkv"
+            hlink_file.parent.mkdir(parents=True)
+            os.link(source_file, hlink_file)
+            write(hlink_root / "Season 01" / "Show S01E02.mkv")
+            strm_root = tmp_path / "strm" / "Show" / "Season 01"
+            write(strm_root / "Show S01E01.strm")
+            write(strm_root / "Show S01E02.strm")
+            torrent = QBTorrentEvidence(
+                name="Show.S01E01",
+                hash="feedface00001234567890",
+                state="stalledUP",
+                save_path=str(tmp_path / "qb" / "TV"),
+                content_path=str(source),
+                progress=1.0,
+                seeding_time_seconds=86400 * 8,
+                seed_days=8.0,
+                size_bytes=source_file.stat().st_size,
+            )
+
+            with patch("series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[torrent]):
+                report = preview_cloud_hlink_cleanup(
+                    "Show",
+                    str(hlink_root),
+                    str(strm_root),
+                    expected_tmdbid=1,
+                    expected_episode_count=2,
+                    expected_episode_min=1,
+                    expected_episode_max=2,
+                    qb_base_url="http://qb.example",
+                    min_seed_days=7,
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("source_hlink_coverage_incomplete", report["blockers"])
+        self.assertEqual(report["filesystem"]["hlink_coverage"]["missing_hlink_inode_count"], 1)
+
     def test_execute_deletes_approved_qb_hash_and_explicit_hlink_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
