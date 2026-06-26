@@ -18,6 +18,7 @@ from .cleanup_verify import (
     verify_strm_paths,
 )
 from .config import config_from_env, db_path_from_env
+from .dotqb_cleanup import cleanup_orphan_dotqb_roots, render_dotqb_orphan_cleanup
 from .emby import (
     delete_stale_emby_paths,
     refresh_and_verify_emby_library,
@@ -130,6 +131,23 @@ def build_parser() -> argparse.ArgumentParser:
     dotqb_parser.add_argument("--timeout", type=int, default=30, help="Per-request timeout in seconds")
     dotqb_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     dotqb_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    dotqb_cleanup_parser = subcommands.add_parser("dotqb-orphan-cleanup", help="Delete approved orphan .!qB files after MP/qB/STRM/hlink gates pass")
+    dotqb_cleanup_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    dotqb_cleanup_parser.add_argument("--title", required=True, help="MoviePilot transfer history title to confirm is gone")
+    dotqb_cleanup_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Expected TMDB ID")
+    dotqb_cleanup_parser.add_argument("--expected-hash-prefix", action="append", required=True, help="Expected qB hash prefix that must be absent; can be repeated or comma-separated")
+    dotqb_cleanup_parser.add_argument("--source-root", action="append", required=True, help="Explicit source root containing only orphan .!qB files; can be repeated")
+    dotqb_cleanup_parser.add_argument("--destination-root", action="append", required=True, help="hlink/destination root that must already be gone; can be repeated")
+    dotqb_cleanup_parser.add_argument("--strm-root", action="append", required=True, help="STRM root that must remain complete; can be repeated")
+    dotqb_cleanup_parser.add_argument("--expected-episode-count", type=int, required=True, help="Expected distinct STRM episode count")
+    dotqb_cleanup_parser.add_argument("--expected-episode-min", type=int, required=True, help="Expected first STRM episode number")
+    dotqb_cleanup_parser.add_argument("--expected-episode-max", type=int, required=True, help="Expected last STRM episode number")
+    dotqb_cleanup_parser.add_argument("--dotqb-suffix", default=".!qB", help="qB temporary suffix")
+    dotqb_cleanup_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    dotqb_cleanup_parser.add_argument("--approve-delete", action="store_true", help="Required: actually delete orphan .!qB files")
+    dotqb_cleanup_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    dotqb_cleanup_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mp_cleanup_parser = subcommands.add_parser("mp-cleanup-preview", help="Readonly MoviePilot cleanup preview from transfer history")
     mp_cleanup_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -696,6 +714,40 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(rendered)
         return 0
+
+    if args.command == "dotqb-orphan-cleanup":
+        if not args.approve_delete:
+            parser.error("dotqb-orphan-cleanup requires --approve-delete")
+        config = config_from_env(args.env_file, [])
+        if not config.mp_base_url or not config.mp_token:
+            parser.error("dotqb-orphan-cleanup requires MP_BASE_URL and MP_API_TOKEN")
+        if not config.qb_base_url:
+            parser.error("dotqb-orphan-cleanup requires QB_BASE_URL")
+        report = cleanup_orphan_dotqb_roots(
+            config.mp_base_url,
+            config.mp_token,
+            title=args.title,
+            source_roots=args.source_root,
+            destination_roots=args.destination_root,
+            strm_roots=args.strm_root,
+            expected_tmdbid=args.expected_tmdbid,
+            expected_hash_prefixes=args.expected_hash_prefix,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            qb_base_url=config.qb_base_url,
+            qb_user=config.qb_user,
+            qb_pass=config.qb_pass,
+            path_aliases=config.path_aliases,
+            dotqb_suffix=args.dotqb_suffix,
+            timeout=args.timeout,
+        )
+        rendered = render_dotqb_orphan_cleanup(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
 
     if args.command == "mp-cleanup-preview":
         config = config_from_env(args.env_file, [])
