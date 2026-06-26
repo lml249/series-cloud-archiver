@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
+import urllib.parse
 
 from .episode import episode_signal
 from .moviepilot import MPTransferHistoryRecord, MoviePilotClient
@@ -467,7 +468,8 @@ def _strm_root_row(
 
 def _strm_target_row(path: Path, required_target_prefix: str, forbidden_target_prefixes: Sequence[str]) -> Dict[str, object]:
     target = path.read_text(encoding="utf-8", errors="replace").strip()
-    normalized_target = _normalize_target(target)
+    resolved_target = _strm_target_path(target)
+    normalized_target = _normalize_target(resolved_target)
     normalized_required = _normalize_target(required_target_prefix)
     normalized_forbidden = [_normalize_target(item) for item in forbidden_target_prefixes if item]
     target_prefix_mismatch = bool(normalized_required and not normalized_target.startswith(normalized_required))
@@ -475,9 +477,20 @@ def _strm_target_row(path: Path, required_target_prefix: str, forbidden_target_p
     return {
         "file": str(path),
         "target": target,
+        "resolved_target": resolved_target,
         "target_prefix_mismatch": target_prefix_mismatch,
         "forbidden_target": forbidden_target,
     }
+
+
+def _strm_target_path(target: str) -> str:
+    parsed = urllib.parse.urlparse(target)
+    if parsed.query:
+        query = urllib.parse.parse_qs(parsed.query)
+        path_values = query.get("path") or query.get("file") or query.get("target")
+        if path_values:
+            return urllib.parse.unquote(path_values[0])
+    return target
 
 
 def _normalize_target(value: str) -> str:

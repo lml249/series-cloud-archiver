@@ -1015,6 +1015,29 @@ class MoviePilotEvidenceTest(unittest.TestCase):
             self.assertEqual(report["strm"]["combined"]["episodes"], [1, 2])
             self.assertIn("Required target prefix", rendered)
 
+    def test_strm_verify_checks_redirect_url_path_parameter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm" / "series" / "校园之外 (2026) {tmdbid=273240}" / "Season 01"
+            strm_root.mkdir(parents=True)
+            (strm_root / "校园之外 S01E01.strm").write_text(
+                "https://mv3.example/redirect?path=/已整理/series/校园之外%20(2026)%20%7Btmdbid%3D273240%7D/Season%201/E01.mkv&pickcode=secret",
+                encoding="utf-8",
+            )
+
+            report = verify_strm_paths(
+                "校园之外",
+                [str(strm_root)],
+                expected_episode_count=1,
+                expected_episode_min=1,
+                expected_episode_max=1,
+                required_target_prefix="/已整理/series/校园之外 (2026) {tmdbid=273240}",
+                forbidden_target_prefixes=["/series"],
+            )
+
+            self.assertTrue(report["ok"])
+            sample = report["strm"]["roots"][0]["sample_files"][0]
+            self.assertIn("校园之外", sample)
+
     def test_strm_verify_blocks_wrong_target_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             strm_root = Path(tmp) / "strm" / "series" / "校园之外 (2026) {tmdbid=273240}" / "Season 01"
