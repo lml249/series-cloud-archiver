@@ -1348,6 +1348,86 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("strm_dir_should_be_strm_root_not_media_category", report["blockers"])
         self.assertEqual(report["transfer"], {"skipped": True})
 
+    def test_organize_transfer_allows_explicit_non_contiguous_episodes(self) -> None:
+        seen = {}
+        browse_report = {
+            "path": "/未整理/Demo",
+            "items": [
+                {"name": "Demo.S01E02.mp4", "kind": "file", "episode": 2, "file_id": "file-2"},
+                {"name": "Demo.S01E04.mp4", "kind": "file", "episode": 4, "file_id": "file-4"},
+            ],
+        }
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return b'{"success":true}'
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = execute_mv3_organize_transfer_from_browse_report(
+                "http://mv3.example",
+                "token",
+                browse_report,
+                target_dir="/已整理",
+                strm_dir="/strm",
+                tmdb_id=123,
+                expected_episode_count=2,
+                expected_episode_min=2,
+                expected_episode_max=4,
+                expected_episodes=[2, 4],
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["episodes"], [2, 4])
+        self.assertEqual(report["expected_episodes"], [2, 4])
+        self.assertEqual(report["missing_expected"], [])
+        self.assertEqual(report["unexpected_episodes"], [])
+        self.assertEqual([item["source_file_id"] for item in seen["body"]["files"]], ["file-2", "file-4"])
+
+    def test_organize_transfer_blocks_unexpected_episode_with_explicit_list(self) -> None:
+        browse_report = {
+            "path": "/未整理/Demo",
+            "items": [
+                {"name": "Demo.S01E02.mp4", "kind": "file", "episode": 2, "file_id": "file-2"},
+                {"name": "Demo.S01E03.mp4", "kind": "file", "episode": 3, "file_id": "file-3"},
+            ],
+        }
+
+        report = execute_mv3_organize_transfer_from_browse_report(
+            "http://mv3.example",
+            "token",
+            browse_report,
+            target_dir="/已整理",
+            strm_dir="/strm",
+            tmdb_id=123,
+            expected_episode_count=2,
+            expected_episode_min=2,
+            expected_episode_max=4,
+            expected_episodes=[2, 4],
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("episode_range_incomplete", report["blockers"])
+        self.assertIn("unexpected_episodes_present", report["blockers"])
+        self.assertEqual(report["missing_expected"], [4])
+        self.assertEqual(report["unexpected_episodes"], [3])
+        self.assertEqual(report["transfer"], {"skipped": True})
+
     def test_organize_transfer_allows_source_path_override_for_folder_id_browse_report(self) -> None:
         seen = {}
         browse_report = {
@@ -2563,6 +2643,77 @@ class MV3ProbeTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["target_dir"], "/已整理")
+
+    def test_cli_parses_organize_transfer_expected_episodes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            browse_report = tmp_path / "browse.json"
+            output = tmp_path / "transfer.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+            browse_report.write_text(
+                json.dumps(
+                    {
+                        "path": "/未整理/Demo",
+                        "items": [
+                            {"name": "Demo.S01E02.mp4", "kind": "file", "episode": 2, "file_id": "file-2"},
+                            {"name": "Demo.S01E04.mp4", "kind": "file", "episode": 4, "file_id": "file-4"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return b'{"success":true,"data":{"task_id":"task-1"}}'
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                code = main(
+                    [
+                        "mv3-organize-transfer-from-browse",
+                        "--env-file",
+                        str(env_file),
+                        "--browse-report",
+                        str(browse_report),
+                        "--target-dir",
+                        "/已整理",
+                        "--strm-dir",
+                        "/strm",
+                        "--tmdb-id",
+                        "123",
+                        "--expected-episode-count",
+                        "2",
+                        "--expected-episode-min",
+                        "2",
+                        "--expected-episode-max",
+                        "4",
+                        "--expected-episode",
+                        "2,4",
+                        "--approve-transfer",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["expected_episodes"], [2, 4])
+            self.assertEqual(payload["episodes"], [2, 4])
 
     def test_cli_blocks_organize_transfer_to_media_category_target_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -841,6 +841,7 @@ def execute_mv3_organize_transfer_from_browse_report(
     expected_episode_count: int,
     expected_episode_min: int,
     expected_episode_max: int,
+    expected_episodes: Optional[List[int]] = None,
     mode: str = "move",
     is_cloud_target: bool = True,
     background: bool = False,
@@ -873,15 +874,25 @@ def execute_mv3_organize_transfer_from_browse_report(
     file_items = [item for item in items if str(item.get("kind") or "") == "file"]
     files = _transfer_files_from_cloud_browse_items(file_items, source_path)
     episode_numbers = _episode_numbers_from_scan_items(files)
-    missing_expected = [
-        episode
-        for episode in range(expected_episode_min, expected_episode_max + 1)
-        if episode not in set(episode_numbers)
-    ]
+    expected_episode_list = sorted({int(item) for item in (expected_episodes or []) if int(item) > 0})
+    expected_episode_set = set(expected_episode_list)
+    if not expected_episode_set and expected_episode_min and expected_episode_max:
+        expected_episode_set = set(range(expected_episode_min, expected_episode_max + 1))
+    missing_expected = [episode for episode in sorted(expected_episode_set) if episode not in set(episode_numbers)]
+    extra_episodes = [episode for episode in episode_numbers if expected_episode_set and episode not in expected_episode_set]
+    if expected_episode_list:
+        if expected_episode_count and len(expected_episode_list) != expected_episode_count:
+            blockers.append("expected_episode_list_count_mismatch")
+        if expected_episode_min and min(expected_episode_list) != expected_episode_min:
+            blockers.append("expected_episode_list_min_mismatch")
+        if expected_episode_max and max(expected_episode_list) != expected_episode_max:
+            blockers.append("expected_episode_list_max_mismatch")
     if len(episode_numbers) != expected_episode_count:
         blockers.append("episode_count_mismatch")
     if missing_expected:
         blockers.append("episode_range_incomplete")
+    if extra_episodes:
+        blockers.append("unexpected_episodes_present")
     if len(files) != expected_episode_count:
         blockers.append("file_count_mismatch")
     if not files:
@@ -945,10 +956,13 @@ def execute_mv3_organize_transfer_from_browse_report(
         "expected_episode_count": expected_episode_count,
         "expected_episode_min": expected_episode_min,
         "expected_episode_max": expected_episode_max,
+        "expected_episodes": expected_episode_list,
         "episode_count": len(episode_numbers),
         "episode_min": min(episode_numbers) if episode_numbers else None,
         "episode_max": max(episode_numbers) if episode_numbers else None,
+        "episodes": episode_numbers,
         "missing_expected": missing_expected,
+        "unexpected_episodes": extra_episodes,
         "file_count": len(files),
         "request_summary": _organize_transfer_request_summary(request_body),
         "transfer": transfer_report,

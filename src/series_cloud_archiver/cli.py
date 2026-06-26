@@ -446,6 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
     organize_transfer_parser.add_argument("--expected-episode-count", type=int, required=True, help="Expected distinct episode count")
     organize_transfer_parser.add_argument("--expected-episode-min", type=int, required=True, help="Expected first episode number")
     organize_transfer_parser.add_argument("--expected-episode-max", type=int, required=True, help="Expected last episode number")
+    organize_transfer_parser.add_argument("--expected-episode", action="append", default=[], help="Optional explicit expected episode list, comma-separated; can be repeated")
     organize_transfer_parser.add_argument("--mode", choices=["move", "copy"], default="move", help="MV3 transfer mode")
     organize_transfer_parser.add_argument("--local-target", action="store_true", help="Treat target as local instead of cloud")
     organize_transfer_parser.add_argument("--background", action="store_true", help="Ask MV3 to run transfer in background")
@@ -1354,6 +1355,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             expected_episode_count=args.expected_episode_count,
             expected_episode_min=args.expected_episode_min,
             expected_episode_max=args.expected_episode_max,
+            expected_episodes=_parse_int_list_args(args.expected_episode),
             mode=args.mode,
             is_cloud_target=not args.local_target,
             background=args.background,
