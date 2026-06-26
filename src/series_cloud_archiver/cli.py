@@ -648,7 +648,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:
             print(rendered)
-        return 0
+        return 0 if report.get("ok") else 1
 
     if args.command == "strm-verify":
         report = verify_strm_paths(
@@ -692,7 +692,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:
             print(rendered)
-        return 0
+        return 0 if report.get("ok") else 1
 
     if args.command == "cloud-check":
         config = config_from_env(args.env_file, [])

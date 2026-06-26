@@ -516,6 +516,59 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["verification"]["totals"]["stale_records"], 0)
 
+    def test_emby_refresh_verify_cli_returns_nonzero_when_verification_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "emby.json"
+            env_file.write_text("EMBY_BASE_URL=http://emby.example\nEMBY_API_KEY=token\n", encoding="utf-8")
+
+            class FakeClient:
+                def __init__(self, base_url, api_key, timeout=20):
+                    pass
+
+                def refresh_library(self):
+                    return {"http_status": 204, "ok": True, "response": {}}
+
+                def wait_for_task(self, key, poll_seconds=10.0, max_wait_seconds=900):
+                    return {
+                        "key": key,
+                        "timed_out": False,
+                        "final_task": {"Key": key, "Name": "Scan media library", "State": "Idle", "LastExecutionResult": {"Status": "Completed"}},
+                        "polls": [],
+                    }
+
+                def items_by_search(self, search_term):
+                    return []
+
+            with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+                code = main(
+                    [
+                        "emby-refresh-verify",
+                        "--env-file",
+                        str(env_file),
+                        "--title",
+                        "楚汉传奇",
+                        "--strm-path-prefix",
+                        "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}",
+                        "--expected-episode-count",
+                        "1",
+                        "--expected-episode-min",
+                        "1",
+                        "--expected-episode-max",
+                        "1",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertFalse(payload["ok"])
+            self.assertIn("emby_strm_records_missing", payload["blockers"])
+
     def test_emby_client_uses_token_header_without_query_api_key(self) -> None:
         seen = {}
 
@@ -989,6 +1042,50 @@ class MoviePilotEvidenceTest(unittest.TestCase):
             self.assertIn("qb_torrent_still_present", report["blockers"])
             self.assertIn("source_root_still_exists", report["blockers"])
             self.assertIn("strm_episode_count_mismatch", report["blockers"])
+
+    def test_mp_cleanup_verify_cli_returns_nonzero_when_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "verify.json"
+            env_file.write_text("MP_BASE_URL=http://mp.example\nMP_API_TOKEN=token\n", encoding="utf-8")
+
+            with patch("series_cloud_archiver.cleanup_verify.MoviePilotClient") as fake_client_class:
+                fake_client = fake_client_class.return_value
+                fake_client.transfer_history.return_value = [
+                    MPTransferHistoryRecord(
+                        id=10,
+                        title="楚汉传奇",
+                        episodes="E01",
+                        status=True,
+                        download_hash="feedface00001234567890",
+                        tmdbid=41146,
+                    )
+                ]
+                code = main(
+                    [
+                        "mp-cleanup-verify",
+                        "--env-file",
+                        str(env_file),
+                        "--title",
+                        "楚汉传奇",
+                        "--expected-title",
+                        "楚汉传奇",
+                        "--expected-tmdbid",
+                        "41146",
+                        "--expected-hash-prefix",
+                        "feedface0000",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertFalse(payload["ok"])
+            self.assertIn("mp_transfer_history_still_present", payload["blockers"])
 
     def test_strm_verify_checks_episode_coverage_and_target_prefixes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
