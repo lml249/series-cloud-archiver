@@ -15,6 +15,7 @@ from series_cloud_archiver.mv3 import (
     ensure_mv3_115_path,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
+    list_mv3_strm_records,
     probe_mv3,
     render_mv3_capabilities_report,
     render_mv3_cloud_browse_report,
@@ -29,6 +30,7 @@ from series_cloud_archiver.mv3 import (
     render_mv3_share_receive_report,
     render_mv3_share_preview_report,
     render_mv3_strm_generate_report,
+    render_mv3_strm_records_report,
     render_mv3_strm_records_regenerate_report,
     render_mv3_wrong_root_repair_report,
     repair_mv3_wrong_root,
@@ -1306,6 +1308,72 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["record_count"], 1)
         self.assertNotIn("token", rendered)
 
+    def test_strm_records_lists_and_filters_record_ids(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                payload = {
+                    "success": True,
+                    "data": {
+                        "items": [
+                            {
+                                "id": 16868,
+                                "source": "organize",
+                                "strm_path": "/volume4/mv3/strm/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.strm",
+                                "source_path": "/已整理/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.mkv",
+                            },
+                            {
+                                "id": 16962,
+                                "source": "generate",
+                                "strm_path": "/volume4/mv3/strm/八千里路云和月 - S01E37.strm",
+                                "source_path": "/已整理/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.mkv",
+                            },
+                        ],
+                        "total": 2,
+                    },
+                }
+                return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["api_key"] = request.headers.get("X-api-key")
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = list_mv3_strm_records(
+                "http://mv3.example",
+                "token",
+                keyword="八千里路云和月",
+                record_ids=[16868],
+                page_size=20,
+                timeout=42,
+            )
+
+        rendered = render_mv3_strm_records_report(report, "json")
+        self.assertTrue(report["ok"])
+        self.assertIn("/api/v1/strm/records?", seen["url"])
+        self.assertIn("keyword=%E5%85%AB%E5%8D%83%E9%87%8C%E8%B7%AF%E4%BA%91%E5%92%8C%E6%9C%88", seen["url"])
+        self.assertEqual(seen["api_key"], "token")
+        self.assertEqual(seen["timeout"], 42)
+        self.assertEqual(report["matched_record_count"], 1)
+        self.assertEqual(report["records"][0]["id"], 16868)
+        self.assertEqual(report["records"][0]["episode"], 37)
+        self.assertNotIn("token", rendered)
+
     def test_reports_missing_configuration_without_network(self) -> None:
         report = probe_mv3("", "")
 
@@ -2401,6 +2469,65 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["record_ids"], [16868])
             self.assertEqual(payload["request_summary"]["endpoint"]["path"], "/api/v1/strm/records/regenerate")
+
+    def test_cli_writes_strm_records_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "strm-records.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    payload = {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {
+                                    "id": 16868,
+                                    "source": "organize",
+                                    "strm_path": "/volume4/mv3/strm/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.strm",
+                                    "source_path": "/已整理/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.mkv",
+                                }
+                            ]
+                        },
+                    }
+                    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                code = main(
+                    [
+                        "mv3-strm-records",
+                        "--env-file",
+                        str(env_file),
+                        "--keyword",
+                        "八千里路云和月",
+                        "--record-id",
+                        "16868",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["matched_record_count"], 1)
+            self.assertEqual(payload["records"][0]["id"], 16868)
 
     def test_cli_writes_cloud_browse_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

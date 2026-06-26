@@ -1006,6 +1006,127 @@ def render_mv3_strm_generate_report(report: Dict[str, object], output_format: st
     return "\n".join(lines)
 
 
+def list_mv3_strm_records(
+    base_url: str,
+    token: str,
+    keyword: str = "",
+    record_ids: Optional[List[int]] = None,
+    source: str = "",
+    path_dir: str = "",
+    missing_pickcode: Optional[bool] = None,
+    use_regex: Optional[bool] = None,
+    page: int = 1,
+    page_size: int = 100,
+    timeout: int = 60,
+) -> Dict[str, object]:
+    query: Dict[str, object] = {
+        "page": max(1, int(page or 1)),
+        "page_size": max(1, int(page_size or 100)),
+    }
+    if keyword:
+        query["keyword"] = keyword
+    if source:
+        query["source"] = source
+    if path_dir:
+        query["path_dir"] = path_dir
+    if missing_pickcode is not None:
+        query["missing_pickcode"] = "true" if missing_pickcode else "false"
+    if use_regex is not None:
+        query["use_regex"] = "true" if use_regex else "false"
+    path = "/api/v1/strm/records?" + urllib.parse.urlencode(query)
+    client = MV3Client(base_url, token, timeout=timeout)
+    warnings: List[str] = []
+    status, headers, response_body = client.get(path)
+    parsed = _parse_json(response_body.decode("utf-8", "replace"))
+    payload = _unwrap_api_payload(parsed)
+    api_success = _api_success(parsed)
+    rows = _strm_record_rows(payload)
+    clean_record_ids = sorted({int(record_id) for record_id in (record_ids or []) if int(record_id) > 0})
+    filtered_rows = rows
+    if clean_record_ids:
+        wanted = set(clean_record_ids)
+        filtered_rows = [row for row in rows if _strm_record_id(row) in wanted]
+        missing_ids = sorted(wanted - {_strm_record_id(row) for row in filtered_rows})
+        if missing_ids:
+            warnings.append(f"record_ids_not_found:{missing_ids}")
+    summaries = [_strm_record_summary(row) for row in filtered_rows[:200]]
+    episodes = sorted(
+        {
+            episode
+            for episode in (
+                _episode_number_from_text(str(item.get("strm_path") or "") + " " + str(item.get("source_path") or ""))
+                for item in summaries
+            )
+            if episode is not None
+        }
+    )
+    return {
+        "mode": "readonly-mv3-strm-records",
+        "endpoint": {"method": "GET", "path": "/api/v1/strm/records"},
+        "ok": 200 <= status < 300 and api_success,
+        "http_ok": 200 <= status < 300,
+        "api_success": api_success,
+        "status": status,
+        "response_content_type": _header(headers, "content-type"),
+        "query": {
+            "keyword": keyword,
+            "record_ids": clean_record_ids,
+            "source": source,
+            "path_dir": path_dir,
+            "missing_pickcode": missing_pickcode,
+            "use_regex": use_regex,
+            "page": query["page"],
+            "page_size": query["page_size"],
+        },
+        "pagination": _strm_record_pagination(payload),
+        "raw_record_count": len(rows),
+        "matched_record_count": len(filtered_rows),
+        "reported_record_count": len(summaries),
+        "episode_count": len(episodes),
+        "episodes": episodes,
+        "missing_in_range": _missing_episode_numbers(episodes),
+        "records": summaries,
+        "warnings": warnings,
+        "safety": "readonly MV3 STRM record listing only; no STRM generation, record mutation, cloud media move/delete, qBittorrent action, hlink deletion, local filesystem deletion, or MP cleanup is performed",
+    }
+
+
+def render_mv3_strm_records_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# MV3 STRM Records",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Matched records: `{report.get('matched_record_count', 0)}`",
+        f"- Reported records: `{report.get('reported_record_count', 0)}`",
+        f"- Episodes: `{report.get('episodes', [])}`",
+        f"- Missing in range: `{report.get('missing_in_range', [])}`",
+        "- Safety: readonly MV3 STRM records listing only; no writes were performed.",
+        "",
+        "| ID | Episode | Source | STRM path | Source path | Exists hint |",
+        "| ---: | ---: | --- | --- | --- | --- |",
+    ]
+    for record in report.get("records", []) if isinstance(report.get("records"), list) else []:
+        if not isinstance(record, dict):
+            continue
+        lines.append(
+            "| {id} | {episode} | {source} | {strm_path} | {source_path} | {exists} |".format(
+                id=record.get("id", ""),
+                episode=record.get("episode", ""),
+                source=record.get("source", ""),
+                strm_path=record.get("strm_path", ""),
+                source_path=record.get("source_path", ""),
+                exists=record.get("exists_hint", ""),
+            )
+        )
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    return "\n".join(lines)
+
+
 def regenerate_mv3_strm_records(
     base_url: str,
     token: str,
@@ -2567,6 +2688,62 @@ def _strm_records_regenerate_request_summary(request_body: Dict[str, object]) ->
         "endpoint": {"method": "POST", "path": "/api/v1/strm/records/regenerate"},
         "record_ids": [int(record_id) for record_id in record_ids if isinstance(record_id, int)],
         "record_count": len(record_ids),
+    }
+
+
+def _strm_record_rows(payload: object) -> List[Dict[str, object]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("items", "records", "list", "data", "results", "rows"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    nested = payload.get("data")
+    if isinstance(nested, dict):
+        return _strm_record_rows(nested)
+    return []
+
+
+def _strm_record_pagination(payload: object) -> Dict[str, object]:
+    if not isinstance(payload, dict):
+        return {}
+    summary: Dict[str, object] = {}
+    for key in ("page", "page_size", "total", "total_count", "pages", "count"):
+        if key in payload:
+            summary[key] = payload.get(key)
+    nested = payload.get("pagination")
+    if isinstance(nested, dict):
+        for key in ("page", "page_size", "total", "total_count", "pages", "count"):
+            if key in nested and key not in summary:
+                summary[key] = nested.get(key)
+    return summary
+
+
+def _strm_record_id(row: Dict[str, object]) -> int:
+    value = _first_raw_present(row, ["id", "record_id", "recordId"])
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _strm_record_summary(row: Dict[str, object]) -> Dict[str, object]:
+    strm_path = str(_first_present(row, ["strm_path", "strmPath", "path", "file_path", "filePath"]))
+    source_path = str(_first_present(row, ["source_path", "sourcePath", "target_path", "targetPath", "src_path", "srcPath"]))
+    title = str(_first_present(row, ["title", "name", "media_title", "mediaTitle"]))
+    episode = _episode_number_from_text(" ".join([strm_path, source_path, title]))
+    return {
+        "id": _strm_record_id(row),
+        "title": title,
+        "episode": episode,
+        "source": str(_first_present(row, ["source", "source_type", "sourceType", "record_source", "recordSource"])),
+        "strm_path": strm_path,
+        "source_path": source_path,
+        "pickcode_present": bool(_first_present(row, ["pickcode", "pick_code", "pickCode"])),
+        "exists_hint": _first_present(row, ["exists", "file_exists", "fileExists", "is_exists", "isExists", "status"]),
+        "raw": _sanitize_json(_sample_json(row, max_keys=30)),
     }
 
 

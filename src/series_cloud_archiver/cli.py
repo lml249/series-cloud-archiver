@@ -29,6 +29,7 @@ from .mv3 import (
     generate_mv3_strm,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
+    list_mv3_strm_records,
     probe_mv3,
     regenerate_mv3_strm_records,
     render_mv3_capabilities_report,
@@ -44,6 +45,7 @@ from .mv3 import (
     render_mv3_share_receive_report,
     render_mv3_share_preview_report,
     render_mv3_strm_generate_report,
+    render_mv3_strm_records_report,
     render_mv3_strm_records_regenerate_report,
     render_mv3_wrong_root_repair_report,
     preview_mv3_share,
@@ -359,6 +361,20 @@ def build_parser() -> argparse.ArgumentParser:
     strm_generate_parser.add_argument("--approve-generate", action="store_true", help="Required: actually send one MV3 STRM generate request")
     strm_generate_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     strm_generate_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    strm_records_parser = subcommands.add_parser("mv3-strm-records", help="Readonly MV3 STRM record listing")
+    strm_records_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    strm_records_parser.add_argument("--keyword", default="", help="Optional MV3 keyword filter")
+    strm_records_parser.add_argument("--record-id", action="append", default=[], help="Optional MV3 STRM record id; can be repeated or comma-separated")
+    strm_records_parser.add_argument("--source", default="", help="Optional MV3 source filter")
+    strm_records_parser.add_argument("--path-dir", default="", help="Optional MV3 path_dir filter")
+    strm_records_parser.add_argument("--missing-pickcode", choices=["true", "false"], default=None, help="Optional missing_pickcode filter")
+    strm_records_parser.add_argument("--use-regex", choices=["true", "false"], default=None, help="Optional use_regex filter")
+    strm_records_parser.add_argument("--page", type=int, default=1, help="Records page")
+    strm_records_parser.add_argument("--page-size", type=int, default=100, help="Records per page")
+    strm_records_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    strm_records_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    strm_records_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     strm_regenerate_parser = subcommands.add_parser("mv3-strm-records-regenerate", help="Execute one approved MV3 STRM records regenerate request")
     strm_regenerate_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -1064,6 +1080,30 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_strm_generate_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "mv3-strm-records":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-strm-records requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = list_mv3_strm_records(
+            config.mv3_base_url,
+            config.mv3_token,
+            keyword=args.keyword,
+            record_ids=_parse_int_list_args(args.record_id),
+            source=args.source,
+            path_dir=args.path_dir,
+            missing_pickcode=None if args.missing_pickcode is None else args.missing_pickcode == "true",
+            use_regex=None if args.use_regex is None else args.use_regex == "true",
+            page=args.page,
+            page_size=args.page_size,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_strm_records_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:
