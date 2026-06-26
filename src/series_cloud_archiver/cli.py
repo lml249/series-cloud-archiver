@@ -55,9 +55,11 @@ from .transfer_plan import (
     load_optional_json_report,
     plan_mv3_offline_manifest,
     plan_mv3_preview_manifest,
+    plan_mv3_share_search_from_transfer_plan,
     plan_mv3_transfers_from_cloud_report,
     render_mv3_offline_manifest,
     render_mv3_preview_manifest,
+    render_mv3_share_search_plan,
     render_mv3_transfer_plan,
 )
 
@@ -254,6 +256,16 @@ def build_parser() -> argparse.ArgumentParser:
     resource_search_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     resource_search_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     resource_search_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    share_search_plan_parser = subcommands.add_parser("plan-mv3-share-search", help="Search MV3 shares for transfer-plan rows and rank readonly candidates")
+    share_search_plan_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    share_search_plan_parser.add_argument("--transfer-plan", required=True, help="JSON report from plan-mv3-transfer")
+    share_search_plan_parser.add_argument("--limit", type=int, default=10, help="Maximum transfer rows to search")
+    share_search_plan_parser.add_argument("--max-candidates", type=int, default=5, help="Maximum ranked search candidates per row")
+    share_search_plan_parser.add_argument("--channel", action="append", default=[], help="Optional channel filter; can be repeated")
+    share_search_plan_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    share_search_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    share_search_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     share_preview_parser = subcommands.add_parser("mv3-share-preview", help="Preview one MV3 resource share without receiving it")
     share_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -816,6 +828,38 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_resource_search_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "plan-mv3-share-search":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("plan-mv3-share-search requires MV3_BASE_URL and MV3_API_TOKEN")
+        transfer_plan = load_mv3_transfer_plan(args.transfer_plan)
+        raw_items = [item for item in transfer_plan.get("items", []) if isinstance(item, dict)]
+        selected_items = raw_items[: args.limit if args.limit > 0 else len(raw_items)]
+        search_reports = {}
+        for item in selected_items:
+            title = str(item.get("title") or "")
+            if not title:
+                continue
+            search_reports[title] = search_mv3_resources(
+                config.mv3_base_url,
+                config.mv3_token,
+                title,
+                channels=args.channel,
+                timeout=args.timeout,
+            )
+        plan = plan_mv3_share_search_from_transfer_plan(
+            transfer_plan,
+            search_reports,
+            limit=args.limit,
+            max_candidates=args.max_candidates,
+        )
+        rendered = render_mv3_share_search_plan(plan, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

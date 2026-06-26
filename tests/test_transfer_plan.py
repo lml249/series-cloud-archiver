@@ -7,9 +7,11 @@ from series_cloud_archiver.cli import main
 from series_cloud_archiver.transfer_plan import (
     plan_mv3_offline_manifest,
     plan_mv3_preview_manifest,
+    plan_mv3_share_search_from_transfer_plan,
     plan_mv3_transfers_from_cloud_report,
     render_mv3_offline_manifest,
     render_mv3_preview_manifest,
+    render_mv3_share_search_plan,
     render_mv3_transfer_plan,
 )
 
@@ -377,6 +379,87 @@ class TransferPlanTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["planned_items"], 1)
             self.assertNotIn("magnet:?", output.read_text(encoding="utf-8"))
+
+    def test_builds_share_search_plan_by_size_and_episode_fit(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "八千里路云和月",
+                    "tmdbid": 289624,
+                    "season": 1,
+                    "size_bytes": 40 * 1024**3,
+                    "expected_count": 40,
+                    "source_paths": ["/volume3/hlink/TV/八千里路云和月"],
+                }
+            ],
+        }
+        search_reports = {
+            "八千里路云和月": {
+                "ok": True,
+                "result_count": 2,
+                "items": [
+                    {
+                        "index": 1,
+                        "title": "八千里路云和月 S01E01-E40 完结",
+                        "size": "41.7 GiB",
+                        "share_code_available": True,
+                    },
+                    {
+                        "index": 2,
+                        "title": "八千里路云和月 S01E01-E10",
+                        "size": "8 GiB",
+                        "share_code_available": True,
+                    },
+                ],
+            }
+        }
+
+        plan = plan_mv3_share_search_from_transfer_plan(transfer_plan, search_reports, limit=1)
+
+        self.assertEqual(plan["mode"], "readonly-mv3-share-search-plan")
+        self.assertEqual(plan["ready_items"], 1)
+        recommended = plan["items"][0]["recommended_candidate"]
+        self.assertEqual(recommended["search_index"], 1)
+        self.assertIn("size_similar", recommended["reasons"])
+        self.assertIn("episode_count_covers_expected", recommended["reasons"])
+
+    def test_renders_share_search_plan_markdown(self) -> None:
+        plan = {
+            "mode": "readonly-mv3-share-search-plan",
+            "source_mode": "readonly-mv3-transfer-plan",
+            "available_items": 1,
+            "planned_items": 1,
+            "ready_items": 1,
+            "total_size_bytes": 100,
+            "items": [
+                {
+                    "priority": 1,
+                    "title": "Demo",
+                    "tmdbid": 123,
+                    "season": 1,
+                    "expected_count": 2,
+                    "size_bytes": 100,
+                    "search_ok": True,
+                    "search_result_count": 1,
+                    "recommended_candidate": {
+                        "title": "Demo S01E01-E02",
+                        "size_bytes": 110,
+                        "score": 90,
+                        "reasons": ["title_contains"],
+                        "blockers": [],
+                    },
+                    "source_paths": ["/example/Demo"],
+                    "warnings": [],
+                }
+            ],
+        }
+
+        markdown = render_mv3_share_search_plan(plan, "markdown")
+
+        self.assertIn("MV3 Share Search Plan", markdown)
+        self.assertIn("readonly MV3 resource-search", markdown)
+        self.assertIn("Demo S01E01-E02", markdown)
 
 
 if __name__ == "__main__":

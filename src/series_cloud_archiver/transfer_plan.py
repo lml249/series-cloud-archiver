@@ -165,6 +165,40 @@ def render_mv3_offline_manifest(manifest: Dict[str, object], output_format: str)
     return _render_offline_manifest_markdown(manifest)
 
 
+def plan_mv3_share_search_from_transfer_plan(
+    transfer_plan: Dict[str, object],
+    search_reports: Dict[str, Dict[str, object]],
+    limit: int = 10,
+    max_candidates: int = 5,
+) -> Dict[str, object]:
+    raw_items = [item for item in transfer_plan.get("items", []) if isinstance(item, dict)]
+    selected_items = raw_items[: limit if limit > 0 else len(raw_items)]
+    items = [
+        _share_search_plan_item(index, item, search_reports.get(str(item.get("title") or ""), {}), max_candidates)
+        for index, item in enumerate(selected_items, start=1)
+    ]
+    ready_count = sum(1 for item in items if item.get("recommended_candidate"))
+    return {
+        "mode": "readonly-mv3-share-search-plan",
+        "source_mode": transfer_plan.get("mode", ""),
+        "available_items": len(raw_items),
+        "planned_items": len(items),
+        "ready_items": ready_count,
+        "limit": limit,
+        "max_candidates": max_candidates,
+        "total_size_bytes": sum(int(item.get("size_bytes") or 0) for item in items),
+        "items": items,
+        "warnings": list(transfer_plan.get("warnings", [])) if isinstance(transfer_plan.get("warnings"), list) else [],
+        "safety": "readonly MV3 resource-search planning only; no share receive, organize transfer, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
+    }
+
+
+def render_mv3_share_search_plan(plan: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(plan, ensure_ascii=False, indent=2)
+    return _render_share_search_plan_markdown(plan)
+
+
 def _transfer_item(item: Dict[str, object]) -> Dict[str, object]:
     return {
         "source_status": str(item.get("status") or ""),
@@ -304,6 +338,186 @@ def _preview_manifest_item(index: int, item: Dict[str, object], context: Dict[st
         "execution_blockers": blockers,
         "source_blockers": _string_list(item.get("blockers")),
     }
+
+
+def _share_search_plan_item(index: int, item: Dict[str, object], search_report: Dict[str, object], max_candidates: int) -> Dict[str, object]:
+    candidates = [
+        _share_search_candidate(row, item)
+        for row in search_report.get("items", [])
+        if isinstance(row, dict)
+    ]
+    candidates.sort(key=lambda row: (-int(row.get("score") or 0), float(row.get("size_delta_ratio") or 999), int(row.get("search_index") or 0)))
+    selected = candidates[: max_candidates if max_candidates > 0 else len(candidates)]
+    recommended = selected[0] if selected and int(selected[0].get("score") or 0) >= 60 and not selected[0].get("blockers") else {}
+    warnings = []
+    if not search_report:
+        warnings.append("search_report_missing")
+    elif not bool(search_report.get("ok")):
+        warnings.append("search_report_not_ok")
+    if candidates and not recommended:
+        warnings.append("no_candidate_passed_recommendation_gate")
+    if not candidates:
+        warnings.append("no_search_candidates_found")
+    return {
+        "priority": index,
+        "title": str(item.get("title") or ""),
+        "tmdbid": int(item.get("tmdbid") or 0),
+        "season": int(item.get("season") or 0),
+        "expected_count": int(item.get("expected_count") or 0),
+        "size_bytes": int(item.get("size_bytes") or 0),
+        "source_paths": _string_list(item.get("source_paths")),
+        "search_ok": bool(search_report.get("ok")),
+        "search_result_count": int(search_report.get("result_count") or len(search_report.get("items", [])) if isinstance(search_report.get("items"), list) else 0),
+        "recommended_candidate": recommended,
+        "candidates": selected,
+        "warnings": warnings,
+    }
+
+
+def _share_search_candidate(row: Dict[str, object], transfer_item: Dict[str, object]) -> Dict[str, object]:
+    title = str(row.get("title") or "")
+    expected_count = int(transfer_item.get("expected_count") or 0)
+    local_size = int(transfer_item.get("size_bytes") or 0)
+    remote_size = _parse_size_bytes(row.get("size"))
+    score = 0
+    reasons: List[str] = []
+    blockers: List[str] = []
+    normalized_title = _compact(str(transfer_item.get("title") or ""))
+    normalized_remote = _compact(title)
+    if normalized_title and normalized_title in normalized_remote:
+        score += 35
+        reasons.append("title_contains")
+    elif normalized_title and _title_token_overlap(str(transfer_item.get("title") or ""), title) >= 0.6:
+        score += 25
+        reasons.append("title_token_overlap")
+    else:
+        blockers.append("title_not_matched")
+
+    episodes = _episode_numbers_from_text(title)
+    if expected_count and len(episodes) >= expected_count:
+        score += 25
+        reasons.append("episode_count_covers_expected")
+    elif expected_count and any(marker in title.lower() for marker in ["全", "完结", "complete"]):
+        score += 15
+        reasons.append("complete_marker")
+    elif expected_count:
+        blockers.append("episode_coverage_unclear")
+
+    season = int(transfer_item.get("season") or 0)
+    if season and _season_matches(title, season):
+        score += 10
+        reasons.append("season_matches")
+
+    size_delta = _size_delta_ratio(local_size, remote_size)
+    if size_delta is not None:
+        if size_delta <= 0.35:
+            score += 20
+            reasons.append("size_similar")
+        elif size_delta <= 0.75:
+            score += 10
+            reasons.append("size_somewhat_similar")
+        else:
+            blockers.append("size_far_from_local")
+    else:
+        reasons.append("remote_size_unknown")
+
+    if bool(row.get("share_code_available")):
+        score += 10
+        reasons.append("share_code_available")
+
+    return {
+        "search_index": int(row.get("index") or 0),
+        "title": title,
+        "channel": str(row.get("channel") or ""),
+        "media_type": str(row.get("media_type") or ""),
+        "size": str(row.get("size") or ""),
+        "size_bytes": remote_size or 0,
+        "size_delta_ratio": round(size_delta, 4) if size_delta is not None else None,
+        "score": score,
+        "reasons": reasons,
+        "blockers": blockers,
+        "share_code_available": bool(row.get("share_code_available")),
+    }
+
+
+def _parse_size_bytes(value: object) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    compact = text.replace(",", "").replace(" ", "")
+    match = __import__("re").search(r"(?i)(\d+(?:\.\d+)?)(b|kb|kib|mb|mib|gb|gib|tb|tib)", compact)
+    if not match:
+        return int(float(compact)) if compact.isdigit() else 0
+    number = float(match.group(1))
+    unit = match.group(2).lower()
+    factor = {
+        "b": 1,
+        "kb": 1000,
+        "mb": 1000**2,
+        "gb": 1000**3,
+        "tb": 1000**4,
+        "kib": 1024,
+        "mib": 1024**2,
+        "gib": 1024**3,
+        "tib": 1024**4,
+    }[unit]
+    return int(number * factor)
+
+
+def _size_delta_ratio(local_size: int, remote_size: int) -> Optional[float]:
+    if local_size <= 0 or remote_size <= 0:
+        return None
+    return abs(local_size - remote_size) / max(local_size, remote_size)
+
+
+def _episode_numbers_from_text(text: str) -> List[int]:
+    import re
+
+    episodes = set()
+    for start, end in re.findall(r"(?i)E?(\d{1,3})\s*[-~到至]\s*E?(\d{1,3})", text):
+        a, b = int(start), int(end)
+        if 0 < a <= b <= 300:
+            episodes.update(range(a, b + 1))
+    for episode in re.findall(r"(?i)S\d{1,2}E(\d{1,3})|第\s*(\d{1,3})\s*[集话話]", text):
+        value = next((part for part in episode if part), "")
+        if value and 0 < int(value) <= 300:
+            episodes.add(int(value))
+    return sorted(episodes)
+
+
+def _season_matches(text: str, season: int) -> bool:
+    import re
+
+    if season <= 0:
+        return False
+    patterns = [
+        rf"(?i)\bS0?{season}\b",
+        rf"第\s*0?{season}\s*季",
+        rf"Season\s*0?{season}\b",
+    ]
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
+def _compact(value: str) -> str:
+    import re
+
+    return re.sub(r"[\W_]+", "", value, flags=re.UNICODE).lower()
+
+
+def _title_token_overlap(left: str, right: str) -> float:
+    left_tokens = set(_title_tokens(left))
+    right_tokens = set(_title_tokens(right))
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / len(left_tokens)
+
+
+def _title_tokens(value: str) -> List[str]:
+    import re
+
+    tokens = re.findall(r"[\u4e00-\u9fff]+|[A-Za-z0-9]+", value.lower())
+    ignored = {"s01", "s02", "s03", "season", "web", "dl", "h264", "h265", "2160p", "1080p"}
+    return [token for token in tokens if token not in ignored]
 
 
 def _proposed_cloud_destination(cloud_root: object, item: Dict[str, object]) -> str:
@@ -621,6 +835,68 @@ def _render_offline_manifest_markdown(manifest: Dict[str, object]) -> str:
     lines.append(
         "Next gate: choose one approved row with qB magnet coverage, run a single MV3 offline-add probe only after explicit approval, then wait for cloud completion before generating STRM."
     )
+    return "\n".join(lines)
+
+
+def _render_share_search_plan_markdown(plan: Dict[str, object]) -> str:
+    lines = [
+        "# Series Cloud Archiver MV3 Share Search Plan",
+        "",
+        f"- Mode: `{plan.get('mode', '')}`",
+        f"- Source mode: `{plan.get('source_mode', '')}`",
+        f"- Available transfer items: `{plan.get('available_items', 0)}`",
+        f"- Planned items in this report: `{plan.get('planned_items', 0)}`",
+        f"- Items with recommended candidate: `{plan.get('ready_items', 0)}`",
+        f"- Planned size in this report: `{_human_size(int(plan.get('total_size_bytes') or 0))}`",
+        "- Safety: readonly MV3 resource-search planning only; no share receive, organize transfer, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed.",
+        "",
+        "## Recommended Candidates",
+        "",
+        "| Priority | Size | TMDB ID | Season | Expected | Title | Candidate | Candidate size | Score | Reasons | Blockers |",
+        "| ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | --- | --- |",
+    ]
+    for item in plan.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        candidate = item.get("recommended_candidate") if isinstance(item.get("recommended_candidate"), dict) else {}
+        lines.append(
+            "| {priority} | {size} | {tmdbid} | {season} | {expected} | {title} | {candidate} | {candidate_size} | {score} | {reasons} | {blockers} |".format(
+                priority=item.get("priority") or "",
+                size=_human_size(int(item.get("size_bytes") or 0)),
+                tmdbid=item.get("tmdbid") or "",
+                season=item.get("season") or "",
+                expected=item.get("expected_count") or "",
+                title=_escape_cell(str(item.get("title") or "")),
+                candidate=_escape_cell(str(candidate.get("title") or "")),
+                candidate_size=_human_size(int(candidate.get("size_bytes") or 0)) if candidate else "",
+                score=candidate.get("score", "") if candidate else "",
+                reasons=_escape_cell(", ".join(_string_list(candidate.get("reasons"))) if candidate else ""),
+                blockers=_escape_cell(", ".join(_string_list(candidate.get("blockers"))) if candidate else ""),
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "## Search Details",
+            "",
+            "| Priority | Search OK | Results | Warnings | Source path sample |",
+            "| ---: | --- | ---: | --- | --- |",
+        ]
+    )
+    for item in plan.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {priority} | {ok} | {count} | {warnings} | {source_path} |".format(
+                priority=item.get("priority") or "",
+                ok=str(bool(item.get("search_ok"))),
+                count=item.get("search_result_count") or 0,
+                warnings=_escape_cell(", ".join(_string_list(item.get("warnings")))),
+                source_path=_escape_cell(_first(item.get("source_paths"))),
+            )
+        )
+    lines.append("")
+    lines.append("Next gate: preview the recommended share, browse the exact folder, verify episode coverage and size before any receive/organize action.")
     return "\n".join(lines)
 
 
