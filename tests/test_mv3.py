@@ -18,6 +18,7 @@ from series_cloud_archiver.mv3 import (
     list_mv3_strm_records,
     materialize_mv3_strm_records,
     probe_mv3,
+    redirect_mv3_strm_records,
     render_mv3_capabilities_report,
     render_mv3_cloud_browse_report,
     render_mv3_ensure_path_report,
@@ -32,6 +33,7 @@ from series_cloud_archiver.mv3 import (
     render_mv3_share_preview_report,
     render_mv3_strm_generate_report,
     render_mv3_strm_records_materialize_report,
+    render_mv3_strm_records_redirect_report,
     render_mv3_strm_records_report,
     render_mv3_strm_records_regenerate_report,
     render_mv3_wrong_root_repair_report,
@@ -1567,6 +1569,119 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["record_count"], 1)
         self.assertNotIn("token", rendered)
 
+    def test_strm_records_redirect_validates_before_and_after(self) -> None:
+        calls = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def record(strm_path):
+            return {
+                "id": 17058,
+                "strm_path": strm_path,
+                "source_path": "/已整理/series/岁月有情时 (2026) {tmdbid=272681}/Season 1/岁月有情时 - S01E01.mkv",
+            }
+
+        def fake_urlopen(request, timeout):
+            calls.append(
+                {
+                    "url": request.full_url,
+                    "api_key": request.headers.get("X-api-key"),
+                    "body": json.loads(request.data.decode("utf-8")) if request.data else None,
+                    "timeout": timeout,
+                }
+            )
+            if request.get_method() == "GET" and len([call for call in calls if "/api/v1/strm/records?" in call["url"]]) == 1:
+                return FakeResponse({"success": True, "data": {"items": [record("/strm/series/series/岁月有情时 (2026) {tmdbid=272681}/Season 1/岁月有情时 - S01E01.strm")]}})
+            if request.get_method() == "POST":
+                return FakeResponse({"success": True, "data": {"updated": 1}})
+            return FakeResponse({"success": True, "data": {"items": [record("/strm/series/岁月有情时 (2026) {tmdbid=272681}/Season 1/岁月有情时 - S01E01.strm")]}})
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = redirect_mv3_strm_records(
+                "http://mv3.example",
+                "token",
+                record_ids=[17058],
+                expected_record_ids=[17058],
+                old_prefix="/strm/series/series",
+                new_prefix="/strm/series",
+                expected_source_prefix="/已整理/series/岁月有情时 (2026) {tmdbid=272681}",
+                keyword="岁月有情时",
+                timeout=42,
+            )
+
+        rendered = render_mv3_strm_records_redirect_report(report, "json")
+        post_call = next(call for call in calls if call["body"])
+        self.assertTrue(report["ok"])
+        self.assertEqual(post_call["url"], "http://mv3.example/api/v1/strm/records/redirect")
+        self.assertEqual(post_call["api_key"], "token")
+        self.assertEqual(post_call["timeout"], 42)
+        self.assertEqual(post_call["body"]["old_prefix"], "/strm/series/series")
+        self.assertEqual(post_call["body"]["new_prefix"], "/strm/series")
+        self.assertEqual(post_call["body"]["record_ids"], [17058])
+        self.assertEqual(report["before"]["matching_prefix_count"], 1)
+        self.assertEqual(report["after"]["matching_prefix_count"], 1)
+        self.assertNotIn("token", rendered)
+
+    def test_strm_records_redirect_blocks_before_prefix_mismatch(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                payload = {
+                    "success": True,
+                    "data": {
+                        "items": [
+                            {
+                                "id": 17058,
+                                "strm_path": "/strm/movie/Wrong.strm",
+                                "source_path": "/已整理/series/岁月有情时 (2026) {tmdbid=272681}/Season 1/E01.mkv",
+                            }
+                        ]
+                    },
+                }
+                return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+            report = redirect_mv3_strm_records(
+                "http://mv3.example",
+                "token",
+                record_ids=[17058],
+                expected_record_ids=[17058],
+                old_prefix="/strm/series/series",
+                new_prefix="/strm/series",
+                expected_source_prefix="/已整理/series/岁月有情时 (2026) {tmdbid=272681}",
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("before_strm_path_prefix_mismatch", report["blockers"])
+
     def test_strm_records_lists_and_filters_record_ids(self) -> None:
         seen = {}
 
@@ -3000,6 +3115,106 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["record_ids"], [16868])
             self.assertEqual(payload["request_summary"]["endpoint"]["path"], "/api/v1/strm/records/regenerate")
+
+    def test_cli_refuses_strm_records_redirect_without_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            with self.assertRaises(SystemExit) as caught:
+                main(
+                    [
+                        "mv3-strm-records-redirect",
+                        "--env-file",
+                        str(env_file),
+                        "--record-id",
+                        "17058",
+                        "--expected-record-id",
+                        "17058",
+                        "--old-prefix",
+                        "/strm/series/series",
+                        "--new-prefix",
+                        "/strm/series",
+                        "--expected-source-prefix",
+                        "/已整理/series/岁月有情时",
+                    ]
+                )
+
+            self.assertNotEqual(caught.exception.code, 0)
+
+    def test_cli_writes_strm_records_redirect_report_with_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "strm-redirect.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+            calls = []
+
+            class FakeResponse:
+                status = 200
+
+                def __init__(self, payload):
+                    self.payload = payload
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            def record(path):
+                return {
+                    "id": 17058,
+                    "strm_path": path,
+                    "source_path": "/已整理/series/岁月有情时/Season 1/E01.mkv",
+                }
+
+            def fake_urlopen(request, timeout):
+                calls.append(request.full_url)
+                if request.get_method() == "POST":
+                    return FakeResponse({"success": True, "data": {"updated": 1}})
+                get_count = sum(1 for url in calls if "/api/v1/strm/records?" in url)
+                if get_count == 1:
+                    return FakeResponse({"success": True, "data": {"items": [record("/strm/series/series/岁月有情时/Season 1/E01.strm")]}})
+                return FakeResponse({"success": True, "data": {"items": [record("/strm/series/岁月有情时/Season 1/E01.strm")]}})
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                code = main(
+                    [
+                        "mv3-strm-records-redirect",
+                        "--env-file",
+                        str(env_file),
+                        "--record-id",
+                        "17058",
+                        "--expected-record-id",
+                        "17058",
+                        "--old-prefix",
+                        "/strm/series/series",
+                        "--new-prefix",
+                        "/strm/series",
+                        "--expected-source-prefix",
+                        "/已整理/series/岁月有情时",
+                        "--approve-redirect",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["request_summary"]["endpoint"]["path"], "/api/v1/strm/records/redirect")
+            self.assertEqual(payload["after"]["matching_prefix_count"], 1)
 
     def test_cli_writes_strm_records_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
