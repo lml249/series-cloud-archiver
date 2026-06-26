@@ -971,6 +971,131 @@ class MoviePilotEvidenceTest(unittest.TestCase):
         self.assertEqual(report["summary"]["attempted_count"], 0)
         self.assertIn("record_count_mismatch", report["blockers"])
 
+    def test_mp_cleanup_execute_can_allow_multiple_hashes_and_source_roots(self) -> None:
+        preview = build_mp_cleanup_preview(
+            "八千里路云和月",
+            [
+                MPTransferHistoryRecord(
+                    id=10,
+                    title="八千里路云和月",
+                    episodes="E01",
+                    src="/volume3/TV/source-a/E01.mkv",
+                    dest="/volume3/hlink/TV/八千里路云和月 (2026) {tmdbid=289624}/Season 01/E01.mkv",
+                    mode="link",
+                    status=True,
+                    download_hash="aaaabbbbcccc1111",
+                    tmdbid=289624,
+                ),
+                MPTransferHistoryRecord(
+                    id=11,
+                    title="八千里路云和月",
+                    episodes="E02",
+                    src="/volume3/TV/source-b/E02.mkv",
+                    dest="/volume3/hlink/TV/八千里路云和月 (2026) {tmdbid=289624}/Season 01/E02.mkv",
+                    mode="link",
+                    status=True,
+                    download_hash="ddddffffeeee2222",
+                    tmdbid=289624,
+                ),
+            ],
+            expected_title="八千里路云和月",
+            expected_tmdbid=289624,
+        )
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def delete_transfer_history(self, history_id, deletesrc=True, deletedest=True):
+                self.calls.append((history_id, deletesrc, deletedest))
+                return {"http_status": 200, "ok": True, "response": {"success": True}}
+
+        blocked = execute_mp_cleanup_from_preview(
+            FakeClient(),
+            preview,
+            expected_title="八千里路云和月",
+            expected_tmdbid=289624,
+            expected_hash_prefix="",
+            expected_record_count=2,
+            expected_episode_count=2,
+            expected_episode_min=1,
+            expected_episode_max=2,
+        )
+        self.assertFalse(blocked["ok"])
+        self.assertIn("preview_has_warnings", blocked["blockers"])
+
+        client = FakeClient()
+        report = execute_mp_cleanup_from_preview(
+            client,
+            preview,
+            expected_title="八千里路云和月",
+            expected_tmdbid=289624,
+            expected_hash_prefix="",
+            expected_record_count=2,
+            expected_episode_count=2,
+            expected_episode_min=1,
+            expected_episode_max=2,
+            allow_multiple_hashes=True,
+            allow_multiple_source_roots=True,
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(client.calls, [(10, True, True), (11, True, True)])
+        self.assertTrue(report["expected"]["allow_multiple_hashes"])
+        self.assertTrue(report["expected"]["allow_multiple_source_roots"])
+
+    def test_mp_cleanup_execute_blocks_multiple_destination_roots_even_with_allowances(self) -> None:
+        preview = build_mp_cleanup_preview(
+            "八千里路云和月",
+            [
+                MPTransferHistoryRecord(
+                    id=10,
+                    title="八千里路云和月",
+                    episodes="E01",
+                    src="/volume3/TV/source-a/E01.mkv",
+                    dest="/volume3/hlink/TV/八千里路云和月 (2026) {tmdbid=289624}/Season 01/E01.mkv",
+                    mode="link",
+                    status=True,
+                    download_hash="aaaabbbbcccc1111",
+                    tmdbid=289624,
+                ),
+                MPTransferHistoryRecord(
+                    id=11,
+                    title="八千里路云和月",
+                    episodes="E02",
+                    src="/volume3/TV/source-b/E02.mkv",
+                    dest="/volume3/hlink/TV/八千里路云和月 副本/Season 01/E02.mkv",
+                    mode="link",
+                    status=True,
+                    download_hash="ddddffffeeee2222",
+                    tmdbid=289624,
+                ),
+            ],
+            expected_title="八千里路云和月",
+            expected_tmdbid=289624,
+        )
+
+        class FakeClient:
+            def delete_transfer_history(self, history_id, deletesrc=True, deletedest=True):
+                raise AssertionError("delete should be blocked before API call")
+
+        report = execute_mp_cleanup_from_preview(
+            FakeClient(),
+            preview,
+            expected_title="八千里路云和月",
+            expected_tmdbid=289624,
+            expected_hash_prefix="",
+            expected_record_count=2,
+            expected_episode_count=2,
+            expected_episode_min=1,
+            expected_episode_max=2,
+            allow_multiple_hashes=True,
+            allow_multiple_source_roots=True,
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("destination_root_count_mismatch", report["blockers"])
+
     def test_mp_cleanup_verify_passes_after_records_paths_and_qb_are_gone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             strm_root = Path(tmp) / "strm" / "楚汉传奇 (2012) {tmdbid=41146}" / "Season 01"

@@ -151,6 +151,8 @@ def build_parser() -> argparse.ArgumentParser:
     mp_cleanup_exec_parser.add_argument("--keep-source", action="store_true", help="Execute without deletesrc=true")
     mp_cleanup_exec_parser.add_argument("--keep-dest", action="store_true", help="Execute without deletedest=true")
     mp_cleanup_exec_parser.add_argument("--continue-on-error", action="store_true", help="Continue deleting remaining MP records if one record fails")
+    mp_cleanup_exec_parser.add_argument("--allow-multiple-hashes", action="store_true", help="Allow preview warning multiple_download_hashes when all other episode/title/TMDB gates pass")
+    mp_cleanup_exec_parser.add_argument("--allow-multiple-source-roots", action="store_true", help="Allow preview warning multiple_source_roots when destination root is unique and all other gates pass")
     mp_cleanup_exec_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
     mp_cleanup_exec_parser.add_argument("--approve-mp-cleanup", action="store_true", help="Required: actually send MoviePilot DELETE requests")
     mp_cleanup_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
@@ -687,6 +689,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             include_deletedest=not args.keep_dest,
             timeout=args.timeout,
             continue_on_error=args.continue_on_error,
+            allow_multiple_hashes=args.allow_multiple_hashes,
+            allow_multiple_source_roots=args.allow_multiple_source_roots,
         )
         rendered = render_mp_cleanup_execute_report(report, args.format)
         if args.output:

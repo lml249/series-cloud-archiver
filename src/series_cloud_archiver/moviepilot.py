@@ -289,6 +289,8 @@ def execute_mp_cleanup_from_preview_report(
     include_deletedest: bool = True,
     timeout: int = 20,
     continue_on_error: bool = False,
+    allow_multiple_hashes: bool = False,
+    allow_multiple_source_roots: bool = False,
 ) -> Dict[str, object]:
     client = MoviePilotClient(base_url, token, timeout=timeout)
     return execute_mp_cleanup_from_preview(
@@ -305,6 +307,8 @@ def execute_mp_cleanup_from_preview_report(
         include_deletesrc=include_deletesrc,
         include_deletedest=include_deletedest,
         continue_on_error=continue_on_error,
+        allow_multiple_hashes=allow_multiple_hashes,
+        allow_multiple_source_roots=allow_multiple_source_roots,
     )
 
 
@@ -322,6 +326,8 @@ def execute_mp_cleanup_from_preview(
     include_deletesrc: bool = True,
     include_deletedest: bool = True,
     continue_on_error: bool = False,
+    allow_multiple_hashes: bool = False,
+    allow_multiple_source_roots: bool = False,
 ) -> Dict[str, object]:
     expected_episode_list = _normalize_expected_episodes(expected_episodes)
     blockers = _mp_cleanup_execution_blockers(
@@ -336,6 +342,8 @@ def execute_mp_cleanup_from_preview(
         expected_episodes=expected_episode_list,
         include_deletesrc=include_deletesrc,
         include_deletedest=include_deletedest,
+        allow_multiple_hashes=allow_multiple_hashes,
+        allow_multiple_source_roots=allow_multiple_source_roots,
     )
     records = preview.get("records") if isinstance(preview.get("records"), list) else []
     result: Dict[str, object] = {
@@ -354,6 +362,8 @@ def execute_mp_cleanup_from_preview(
             "episode_min": expected_episode_min,
             "episode_max": expected_episode_max,
             "episodes": expected_episode_list,
+            "allow_multiple_hashes": allow_multiple_hashes,
+            "allow_multiple_source_roots": allow_multiple_source_roots,
         },
         "summary": {
             "planned_count": len(records),
@@ -597,11 +607,17 @@ def _mp_cleanup_execution_blockers(
     expected_episodes: Optional[Iterable[int]],
     include_deletesrc: bool,
     include_deletedest: bool,
+    allow_multiple_hashes: bool = False,
+    allow_multiple_source_roots: bool = False,
 ) -> List[str]:
     blockers: List[str] = []
     expected_episode_list = _normalize_expected_episodes(expected_episodes)
     expected_episode_set = set(expected_episode_list)
     allowed_warnings = {"episode_gap_detected"} if expected_episode_set else set()
+    if allow_multiple_hashes:
+        allowed_warnings.add("multiple_download_hashes")
+    if allow_multiple_source_roots:
+        allowed_warnings.add("multiple_source_roots")
     if preview.get("mode") != "readonly-mp-cleanup-preview":
         blockers.append("preview_mode_not_supported")
     if not preview.get("ready_for_manual_cleanup_approval"):
@@ -623,6 +639,8 @@ def _mp_cleanup_execution_blockers(
 
     summary = preview.get("summary") if isinstance(preview.get("summary"), dict) else {}
     records = preview.get("records") if isinstance(preview.get("records"), list) else []
+    if int(summary.get("destination_root_count") or 0) > 1:
+        blockers.append("destination_root_count_mismatch")
     if expected_record_count and len(records) != expected_record_count:
         blockers.append("record_count_mismatch")
     if expected_record_count and int(summary.get("records_matched") or 0) != expected_record_count:
