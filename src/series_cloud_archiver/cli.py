@@ -495,6 +495,7 @@ def build_parser() -> argparse.ArgumentParser:
     strm_materialize_parser.add_argument("--expected-strm-prefix", required=True, help="Safety check: MV3 strm_path must start with this prefix")
     strm_materialize_parser.add_argument("--expected-source-prefix", required=True, help="Safety check: MV3 source_path must start with this prefix")
     strm_materialize_parser.add_argument("--host-strm-prefix", required=True, help="Map host STRM root to MV3 STRM root, e.g. /host-strm-root=/strm-root")
+    strm_materialize_parser.add_argument("--rewrite-strm-prefix", default="", help="Optional safety rewrite old_mv3_prefix=new_mv3_prefix before host path mapping")
     strm_materialize_parser.add_argument("--overwrite", action="store_true", help="Allow overwriting existing STRM files")
     strm_materialize_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     strm_materialize_parser.add_argument("--approve-write", action="store_true", help="Required: actually write STRM files from MV3 record content")
@@ -1440,6 +1441,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             expected_strm_prefix=args.expected_strm_prefix,
             expected_source_prefix=args.expected_source_prefix,
             host_strm_prefix=args.host_strm_prefix,
+            rewrite_strm_prefix=args.rewrite_strm_prefix,
             keyword=args.keyword,
             overwrite=args.overwrite,
             timeout=args.timeout,

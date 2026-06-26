@@ -1735,6 +1735,105 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("strm_path_prefix_mismatch", report["blockers"])
         self.assertIn("source_path_prefix_mismatch", report["blockers"])
 
+    def test_strm_records_materialize_can_rewrite_strm_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            host_root = tmp_path / "strm"
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    payload = {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {
+                                    "id": 17093,
+                                    "strm_path": "/strm/series/series/岁月有情时/Season 1/岁月有情时 - S01E21.strm",
+                                    "source_path": "/已整理/series/岁月有情时/Season 1/岁月有情时 - S01E21.mkv",
+                                    "strm_content": "https://mv3.example/redirect?path=/已整理/series/岁月有情时/Season%201/E21.mkv",
+                                }
+                            ]
+                        },
+                    }
+                    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                report = materialize_mv3_strm_records(
+                    "http://mv3.example",
+                    "token",
+                    record_ids=[17093],
+                    expected_record_ids=[17093],
+                    expected_strm_prefix="/strm/series/岁月有情时",
+                    expected_source_prefix="/已整理/series/岁月有情时",
+                    host_strm_prefix=f"{host_root}=/strm",
+                    rewrite_strm_prefix="/strm/series/series=/strm/series",
+                    keyword="岁月有情时",
+                )
+
+            output_file = host_root / "series" / "岁月有情时" / "Season 1" / "岁月有情时 - S01E21.strm"
+            self.assertTrue(report["ok"])
+            self.assertTrue(output_file.exists())
+            self.assertEqual(report["writes"][0]["original_strm_path"], "/strm/series/series/岁月有情时/Season 1/岁月有情时 - S01E21.strm")
+            self.assertEqual(report["writes"][0]["strm_path"], "/strm/series/岁月有情时/Season 1/岁月有情时 - S01E21.strm")
+
+    def test_strm_records_materialize_blocks_rewrite_prefix_mismatch(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                payload = {
+                    "success": True,
+                    "data": {
+                        "items": [
+                            {
+                                "id": 17093,
+                                "strm_path": "/strm/movie/Wrong.strm",
+                                "source_path": "/已整理/series/岁月有情时/Season 1/岁月有情时 - S01E21.mkv",
+                                "strm_content": "https://mv3.example/redirect?path=/已整理/series/岁月有情时/Season%201/E21.mkv",
+                            }
+                        ]
+                    },
+                }
+                return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                report = materialize_mv3_strm_records(
+                    "http://mv3.example",
+                    "token",
+                    record_ids=[17093],
+                    expected_record_ids=[17093],
+                    expected_strm_prefix="/strm/series/岁月有情时",
+                    expected_source_prefix="/已整理/series/岁月有情时",
+                    host_strm_prefix=f"{tmp}=/strm",
+                    rewrite_strm_prefix="/strm/series/series=/strm/series",
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("rewrite_strm_prefix_mismatch", report["blockers"])
+
     def test_reports_missing_configuration_without_network(self) -> None:
         report = probe_mv3("", "")
 
@@ -3056,6 +3155,76 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["writes"][0]["record_id"], 16868)
             self.assertNotIn("pickcode=secret", output.read_text(encoding="utf-8"))
+
+    def test_cli_writes_strm_records_materialize_with_rewrite_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "materialize.json"
+            host_root = tmp_path / "strm"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    payload = {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {
+                                    "id": 17093,
+                                    "strm_path": "/strm/series/series/岁月有情时/Season 1/岁月有情时 - S01E21.strm",
+                                    "source_path": "/已整理/series/岁月有情时/Season 1/岁月有情时 - S01E21.mkv",
+                                    "strm_content": "https://mv3.example/redirect?path=/已整理/series/岁月有情时/Season%201/E21.mkv",
+                                }
+                            ]
+                        },
+                    }
+                    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                code = main(
+                    [
+                        "mv3-strm-records-materialize",
+                        "--env-file",
+                        str(env_file),
+                        "--record-id",
+                        "17093",
+                        "--expected-record-id",
+                        "17093",
+                        "--keyword",
+                        "岁月有情时",
+                        "--expected-strm-prefix",
+                        "/strm/series/岁月有情时",
+                        "--expected-source-prefix",
+                        "/已整理/series/岁月有情时",
+                        "--host-strm-prefix",
+                        f"{host_root}=/strm",
+                        "--rewrite-strm-prefix",
+                        "/strm/series/series=/strm/series",
+                        "--approve-write",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["rewrite_strm_prefix"], "/strm/series/series=/strm/series")
 
     def test_cli_writes_cloud_browse_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

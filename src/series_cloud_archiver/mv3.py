@@ -1221,6 +1221,7 @@ def materialize_mv3_strm_records(
     expected_strm_prefix: str = "",
     expected_source_prefix: str = "",
     host_strm_prefix: str = "",
+    rewrite_strm_prefix: str = "",
     keyword: str = "",
     overwrite: bool = False,
     timeout: int = 60,
@@ -1263,6 +1264,7 @@ def materialize_mv3_strm_records(
                     expected_strm_prefix=expected_strm_prefix,
                     expected_source_prefix=expected_source_prefix,
                     host_strm_prefix=host_strm_prefix,
+                    rewrite_strm_prefix=rewrite_strm_prefix,
                     overwrite=overwrite,
                 )
             )
@@ -1280,6 +1282,7 @@ def materialize_mv3_strm_records(
         "expected_strm_prefix": expected_strm_prefix,
         "expected_source_prefix": expected_source_prefix,
         "host_strm_prefix": host_strm_prefix,
+        "rewrite_strm_prefix": rewrite_strm_prefix,
         "overwrite": overwrite,
         "records_query": {
             "ok": bool(records_report.get("ok")),
@@ -2963,16 +2966,28 @@ def _materialize_strm_record(
     expected_strm_prefix: str,
     expected_source_prefix: str,
     host_strm_prefix: str,
+    rewrite_strm_prefix: str,
     overwrite: bool,
 ) -> Dict[str, object]:
     blockers: List[str] = []
     warnings: List[str] = []
     record_id = int(record.get("id") or 0)
     strm_path = str(record.get("strm_path") or "")
+    original_strm_path = strm_path
     source_path = str(record.get("source_path") or "")
     content = str(record.get("strm_content") or "")
     expected_strm_prefix = expected_strm_prefix.rstrip("/")
     expected_source_prefix = expected_source_prefix.rstrip("/")
+    rewrite_from, rewrite_to = _parse_strm_rewrite_prefix(rewrite_strm_prefix)
+    if rewrite_strm_prefix and (not rewrite_from or not rewrite_to):
+        blockers.append("rewrite_strm_prefix_invalid")
+    elif rewrite_from:
+        if strm_path == rewrite_from:
+            strm_path = rewrite_to
+        elif strm_path.startswith(rewrite_from.rstrip("/") + "/"):
+            strm_path = rewrite_to.rstrip("/") + "/" + strm_path[len(rewrite_from.rstrip("/")) :].lstrip("/")
+        else:
+            blockers.append("rewrite_strm_prefix_mismatch")
 
     host_prefix, mv3_prefix = _parse_host_strm_prefix(host_strm_prefix)
     host_path = ""
@@ -3014,6 +3029,7 @@ def _materialize_strm_record(
         "record_id": record_id,
         "action": action,
         "strm_path": strm_path,
+        "original_strm_path": original_strm_path,
         "source_path": source_path,
         "host_path": host_path,
         "bytes_written": bytes_written,
@@ -3029,6 +3045,13 @@ def _parse_host_strm_prefix(value: str) -> Tuple[str, str]:
         return "", ""
     host_prefix, mv3_prefix = value.split("=", 1)
     return host_prefix.rstrip("/"), mv3_prefix.rstrip("/")
+
+
+def _parse_strm_rewrite_prefix(value: str) -> Tuple[str, str]:
+    if "=" not in value:
+        return "", ""
+    source_prefix, target_prefix = value.split("=", 1)
+    return source_prefix.rstrip("/"), target_prefix.rstrip("/")
 
 
 def _episode_numbers_from_scan_items(items: List[Dict[str, object]]) -> List[int]:
