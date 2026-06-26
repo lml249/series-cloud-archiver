@@ -2334,6 +2334,9 @@ def _episode_number_from_text(text: str) -> Optional[int]:
     match = re.search(r"[Ss](\d{1,2})[Ee](\d{1,3})", text)
     if match:
         return int(match.group(2))
+    match = re.search(r"(?i)(?:^|[\s._\-\[\(])E(?:P)?(\d{1,3})(?=$|[\s._\-\]\)])", text)
+    if match:
+        return int(match.group(1))
     match = re.search(r"(?:第\s*)?(\d{1,3})(?:\s*[集话話])", text)
     if match:
         return int(match.group(1))
@@ -2384,10 +2387,12 @@ def _share_browse_items(payload: object) -> List[Dict[str, object]]:
 
 
 def _share_browse_item_summary(item: Dict[str, object], index: int) -> Dict[str, object]:
+    name = _first_present(item, ["name", "file_name", "filename", "n", "title"])
     return {
         "index": index,
-        "name": _first_present(item, ["name", "file_name", "filename", "n", "title"]),
+        "name": name,
         "kind": _share_item_kind(item),
+        "episode": _episode_number_from_text(name),
         "size": _format_size_value(_first_raw_present(item, ["size", "size_text", "file_size", "file_size_text", "s"])),
         "file_id": _share_item_file_id(item),
         "raw": _sanitize_json(_sample_json(item, max_keys=30)),
