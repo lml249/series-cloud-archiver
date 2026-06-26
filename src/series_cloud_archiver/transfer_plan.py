@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Set
 
 
 DEFAULT_TRANSFER_STATUSES = ["cloud_strm_not_found"]
@@ -21,6 +22,38 @@ FORBIDDEN_EXECUTION_ENDPOINTS = [
     "POST /api/v1/files/115/move",
     "DELETE /api/v1/strm/records/{record_id}",
 ]
+TITLE_STOP_TOKENS = {"a", "an", "and", "in", "of", "on", "the", "to", "with"}
+TECHNICAL_TOKENS = {
+    "1080p",
+    "2160p",
+    "aac",
+    "ac3",
+    "adweb",
+    "atmos",
+    "bluray",
+    "chdweb",
+    "ddp",
+    "dovi",
+    "dts",
+    "dv",
+    "h264",
+    "h265",
+    "hdr",
+    "hhweb",
+    "hevc",
+    "iq",
+    "nf",
+    "ourtv",
+    "season",
+    "web",
+    "webdl",
+    "x264",
+    "x265",
+}
+TMDBID_PATTERN = re.compile(r"\{tmdbid=\d+\}", re.IGNORECASE)
+YEAR_SUFFIX_PATTERN = re.compile(r"\(\d{4}\)")
+SEASON_TOKEN_PATTERN = re.compile(r"(?i)^s\d{1,2}$")
+EPISODE_TOKEN_PATTERN = re.compile(r"(?i)^e\d{1,3}$")
 
 
 def load_cloud_check_report(path: str) -> Dict[str, object]:
@@ -493,12 +526,10 @@ def _has_complete_marker(text: str) -> bool:
     lowered = text.lower()
     if any(marker in lowered for marker in ["完结", "complete"]):
         return True
-    return bool(__import__("re").search(r"(?i)(全|共)\s*\d{1,3}\s*[集话話]", text))
+    return bool(re.search(r"(?i)(全|共)\s*\d{1,3}\s*[集话話]", text))
 
 
 def _season_matches(text: str, season: int) -> bool:
-    import re
-
     if season <= 0:
         return False
     patterns = [
@@ -510,8 +541,6 @@ def _season_matches(text: str, season: int) -> bool:
 
 
 def _compact(value: str) -> str:
-    import re
-
     return re.sub(r"[\W_]+", "", value, flags=re.UNICODE).lower()
 
 
@@ -524,11 +553,43 @@ def _title_token_overlap(left: str, right: str) -> float:
 
 
 def _title_tokens(value: str) -> List[str]:
-    import re
+    return sorted(_title_token_set(value))
 
-    tokens = re.findall(r"[\u4e00-\u9fff]+|[A-Za-z0-9]+", value.lower())
-    ignored = {"s01", "s02", "s03", "season", "web", "dl", "h264", "h265", "2160p", "1080p"}
-    return [token for token in tokens if token not in ignored]
+
+def _title_token_set(value: str) -> Set[str]:
+    text = YEAR_SUFFIX_PATTERN.sub(" ", TMDBID_PATTERN.sub(" ", value.casefold()))
+    tokens: Set[str] = set()
+    for raw in re.findall(r"[a-z]+|[0-9]+|[\u4e00-\u9fff]+", text):
+        token = raw.strip()
+        if not token or token.isdigit():
+            continue
+        if token in TITLE_STOP_TOKENS or token in TECHNICAL_TOKENS:
+            continue
+        if SEASON_TOKEN_PATTERN.match(token) or EPISODE_TOKEN_PATTERN.match(token):
+            continue
+        if len(token) <= 1 and not re.search(r"[\u4e00-\u9fff]", token):
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _normalized_title_match(left: str, right: str) -> bool:
+    left_tokens = _title_token_set(left)
+    if not left_tokens:
+        return False
+    right_tokens = _title_token_set(right)
+    overlap = left_tokens.intersection(right_tokens)
+    if not overlap:
+        return False
+
+    left_compact = "".join(sorted(left_tokens))
+    right_compact = "".join(sorted(right_tokens))
+    if left_compact and len(left_compact) >= 4 and left_compact in right_compact:
+        return True
+
+    overlap_ratio = len(overlap) / max(1, len(left_tokens))
+    has_cjk_overlap = any(re.search(r"[\u4e00-\u9fff]", token) for token in overlap)
+    return overlap_ratio >= 0.67 or (has_cjk_overlap and overlap_ratio >= 0.5)
 
 
 def _proposed_cloud_destination(cloud_root: object, item: Dict[str, object]) -> str:
@@ -648,6 +709,10 @@ def _match_qb_torrents_for_transfer_item(item: Dict[str, object], qb_torrents: L
             matches.append(torrent)
             continue
         if any(title and (title in name or name in title) for title in wanted_titles):
+            matches.append(torrent)
+            continue
+        torrent_text = " ".join([name, content_path, save_path])
+        if any(title and _normalized_title_match(title, torrent_text) for title in wanted_titles):
             matches.append(torrent)
     matches.sort(key=lambda torrent: (-int(torrent.get("size") or torrent.get("total_size") or 0), str(torrent.get("name") or "")))
     return matches

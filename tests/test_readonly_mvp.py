@@ -342,6 +342,54 @@ class QBittorrentClientTest(unittest.TestCase):
         self.assertIsNone(match_torrent(series, [wrong_torrent], aliases))
         self.assertIs(match_torrent(series, [wrong_torrent, right_torrent], aliases), right_torrent)
 
+    def test_match_torrent_uses_normalized_hlink_title(self) -> None:
+        series = FileSystemSeries(
+            title="沉默的荣耀 (2025) {tmdbid=123456}",
+            path="/volume3/volume3/hlink/TV/沉默的荣耀 (2025) {tmdbid=123456}",
+            size_bytes=10,
+            video_count=39,
+            latest_mtime=0,
+            age_days=10,
+            signal=EpisodeSignal(seasons=[1], episodes=list(range(1, 40))),
+        )
+        torrent = QBTorrentEvidence(
+            name="沉默的荣耀.Silent.Honor.S01.2025.2160p.WEB-DL.H265.AAC-ADWeb",
+            hash="right",
+            state="stalledUP",
+            save_path="/volume3/TV/",
+            content_path="/volume3/TV/沉默的荣耀.Silent.Honor.S01.2025.2160p.WEB-DL.H265.AAC-ADWeb",
+            progress=1.0,
+            seeding_time_seconds=86400 * 8,
+            seed_days=8.0,
+            size_bytes=10,
+        )
+
+        self.assertIs(match_torrent(series, [torrent], {"/volume3": "/volume3/volume3"}), torrent)
+
+    def test_match_torrent_title_tokens_stay_conservative(self) -> None:
+        series = FileSystemSeries(
+            title="沉默的荣耀 (2025) {tmdbid=123456}",
+            path="/volume3/volume3/hlink/TV/沉默的荣耀 (2025) {tmdbid=123456}",
+            size_bytes=10,
+            video_count=39,
+            latest_mtime=0,
+            age_days=10,
+            signal=EpisodeSignal(seasons=[1], episodes=list(range(1, 40))),
+        )
+        wrong_torrent = QBTorrentEvidence(
+            name="荣耀乒乓.Ping.Pong.Life.S01.2021.1080p.WEB-DL.H264",
+            hash="wrong",
+            state="stalledUP",
+            save_path="/volume3/TV/",
+            content_path="/volume3/TV/荣耀乒乓.Ping.Pong.Life.S01.2021.1080p.WEB-DL.H264",
+            progress=1.0,
+            seeding_time_seconds=86400 * 8,
+            seed_days=8.0,
+            size_bytes=10,
+        )
+
+        self.assertIsNone(match_torrent(series, [wrong_torrent], {"/volume3": "/volume3/volume3"}))
+
 
 class EmbyRefreshVerifyTest(unittest.TestCase):
     def test_verify_emby_library_paths_blocks_stale_local_records(self) -> None:

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import urllib.parse
 import urllib.request
 from http.cookiejar import CookieJar
 from pathlib import PurePosixPath
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from .models import FileSystemSeries, QBTorrentEvidence
 
@@ -19,6 +20,49 @@ UP_STATES = {
     "forcedUP",
     "checkingUP",
 }
+
+TITLE_STOP_TOKENS = {
+    "a",
+    "an",
+    "and",
+    "in",
+    "of",
+    "on",
+    "the",
+    "to",
+    "with",
+}
+
+TECHNICAL_TOKENS = {
+    "aac",
+    "ac3",
+    "adweb",
+    "atmos",
+    "bluray",
+    "chdweb",
+    "ddp",
+    "dovi",
+    "dts",
+    "dv",
+    "h264",
+    "h265",
+    "hdr",
+    "hhweb",
+    "hevc",
+    "iq",
+    "nf",
+    "ourtv",
+    "dl",
+    "web",
+    "webdl",
+    "x264",
+    "x265",
+}
+
+TMDBID_PATTERN = re.compile(r"\{tmdbid=\d+\}", re.IGNORECASE)
+YEAR_SUFFIX_PATTERN = re.compile(r"\(\d{4}\)")
+SEASON_TOKEN_PATTERN = re.compile(r"(?i)^s\d{1,2}$")
+EPISODE_TOKEN_PATTERN = re.compile(r"(?i)^e\d{1,3}$")
 
 
 class QBClient:
@@ -436,6 +480,62 @@ def _torrent_content_paths(torrent: QBTorrentEvidence) -> List[str]:
     return sorted(paths)
 
 
+def _title_tokens(value: str) -> Set[str]:
+    text = YEAR_SUFFIX_PATTERN.sub(" ", TMDBID_PATTERN.sub(" ", value.casefold()))
+    tokens: Set[str] = set()
+    for raw in re.findall(r"[a-z]+|[0-9]+|[\u4e00-\u9fff]+", text):
+        token = raw.strip()
+        if not token or token.isdigit():
+            continue
+        if token in TITLE_STOP_TOKENS or token in TECHNICAL_TOKENS:
+            continue
+        if SEASON_TOKEN_PATTERN.match(token) or EPISODE_TOKEN_PATTERN.match(token):
+            continue
+        if len(token) <= 1 and not re.search(r"[\u4e00-\u9fff]", token):
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _compact_title(value: str) -> str:
+    return "".join(sorted(_title_tokens(value)))
+
+
+def _torrent_title_text(torrent: QBTorrentEvidence) -> str:
+    path_names = [PurePosixPath(path).name for path in _torrent_content_paths(torrent)]
+    return " ".join([torrent.name, *path_names])
+
+
+def _title_similarity_score(series_title: str, torrent: QBTorrentEvidence) -> int:
+    wanted_tokens = _title_tokens(series_title)
+    if not wanted_tokens:
+        return 0
+
+    torrent_text = _torrent_title_text(torrent)
+    wanted_compact = _compact_title(series_title)
+    torrent_compact = _compact_title(torrent_text)
+    if wanted_compact and len(wanted_compact) >= 4 and wanted_compact in torrent_compact:
+        return 60
+
+    torrent_tokens = _title_tokens(torrent_text)
+    overlap = wanted_tokens.intersection(torrent_tokens)
+    if not overlap:
+        return 0
+    overlap_ratio = len(overlap) / max(1, len(wanted_tokens))
+    has_cjk_overlap = any(re.search(r"[\u4e00-\u9fff]", token) for token in overlap)
+    if overlap_ratio >= 0.67 or (has_cjk_overlap and overlap_ratio >= 0.5):
+        return 55
+    return 0
+
+
+def _torrent_match_sort_key(torrent: QBTorrentEvidence) -> Tuple[float, float, int]:
+    return (
+        float(torrent.progress or 0.0),
+        float(torrent.seed_days or 0.0),
+        int(torrent.size_bytes or 0),
+    )
+
+
 def match_torrent(
     series: FileSystemSeries,
     torrents: List[QBTorrentEvidence],
@@ -467,7 +567,13 @@ def match_torrent(
             score = 40
         elif series.title.lower() in torrent.name.lower():
             score = 35
-        if score > best_score:
+        else:
+            score = _title_similarity_score(series.title, torrent)
+        if score > best_score or (
+            score == best_score
+            and best is not None
+            and _torrent_match_sort_key(torrent) > _torrent_match_sort_key(best)
+        ):
             best_score = score
             best = torrent
     return best

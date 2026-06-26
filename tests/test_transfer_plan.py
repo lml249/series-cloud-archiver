@@ -294,6 +294,48 @@ class TransferPlanTest(unittest.TestCase):
         self.assertNotIn("magnet:?", rendered)
         self.assertIn("POST /api/v1/files/115/offline/add", manifest["forbidden_endpoints"])
 
+    def test_offline_manifest_matches_normalized_hlink_title_to_qb(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "沉默的荣耀",
+                    "tmdbid": 123456,
+                    "season": 1,
+                    "size_bytes": 100,
+                    "expected_count": 39,
+                    "candidate_count": 1,
+                    "titles": ["沉默的荣耀 (2025) {tmdbid=123456}"],
+                    "source_paths": ["/volume3/volume3/hlink/TV/沉默的荣耀 (2025) {tmdbid=123456}"],
+                }
+            ],
+        }
+        qb_torrents = [
+            {
+                "name": "沉默的荣耀.Silent.Honor.S01.2025.2160p.WEB-DL.H265.AAC-ADWeb",
+                "hash": "abc",
+                "state": "stalledUP",
+                "content_path": "/volume3/TV/沉默的荣耀.Silent.Honor.S01.2025.2160p.WEB-DL.H265.AAC-ADWeb",
+                "size": 100,
+                "progress": 1,
+                "seeding_time": 8 * 86400,
+                "magnet_uri": "magnet:?xt=urn:btih:abc&secret=private",
+            }
+        ]
+        instances = {
+            "probes": [
+                {
+                    "path": "/api/v1/cloud-drive/instances",
+                    "sample": {"instances": [{"slug": "115-default", "name": "115", "mount_path": {"/已整理/series": "/已整理/series"}}]},
+                }
+            ]
+        }
+
+        manifest = plan_mv3_offline_manifest(transfer_plan, qb_torrents, instances, limit=1)
+
+        self.assertEqual(manifest["items"][0]["qb_match_count"], 1)
+        self.assertEqual(manifest["items"][0]["qb_magnet_available_count"], 1)
+
     def test_renders_offline_manifest_markdown(self) -> None:
         manifest = {
             "mode": "readonly-mv3-offline-manifest",
