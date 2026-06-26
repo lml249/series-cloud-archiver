@@ -378,7 +378,7 @@ def _share_search_candidate(row: Dict[str, object], transfer_item: Dict[str, obj
     title = str(row.get("title") or "")
     expected_count = int(transfer_item.get("expected_count") or 0)
     local_size = int(transfer_item.get("size_bytes") or 0)
-    remote_size = _parse_size_bytes(row.get("size"))
+    remote_size = _parse_size_bytes(row.get("size")) or _parse_size_bytes(title)
     score = 0
     reasons: List[str] = []
     blockers: List[str] = []
@@ -397,7 +397,7 @@ def _share_search_candidate(row: Dict[str, object], transfer_item: Dict[str, obj
     if expected_count and len(episodes) >= expected_count:
         score += 25
         reasons.append("episode_count_covers_expected")
-    elif expected_count and any(marker in title.lower() for marker in ["全", "完结", "complete"]):
+    elif expected_count and _has_complete_marker(title):
         score += 15
         reasons.append("complete_marker")
     elif expected_count:
@@ -445,16 +445,20 @@ def _parse_size_bytes(value: object) -> int:
     if not text:
         return 0
     compact = text.replace(",", "").replace(" ", "")
-    match = __import__("re").search(r"(?i)(\d+(?:\.\d+)?)(b|kb|kib|mb|mib|gb|gib|tb|tib)", compact)
+    match = __import__("re").search(r"(?i)(\d+(?:\.\d+)?)(b|k|kb|kib|m|mb|mib|g|gb|gib|t|tb|tib)", compact)
     if not match:
         return int(float(compact)) if compact.isdigit() else 0
     number = float(match.group(1))
     unit = match.group(2).lower()
     factor = {
         "b": 1,
+        "k": 1024,
         "kb": 1000,
+        "m": 1024**2,
         "mb": 1000**2,
+        "g": 1024**3,
         "gb": 1000**3,
+        "t": 1024**4,
         "tb": 1000**4,
         "kib": 1024,
         "mib": 1024**2,
@@ -474,7 +478,7 @@ def _episode_numbers_from_text(text: str) -> List[int]:
     import re
 
     episodes = set()
-    for start, end in re.findall(r"(?i)E?(\d{1,3})\s*[-~到至]\s*E?(\d{1,3})", text):
+    for start, end in re.findall(r"(?i)(?:S\d{1,2})?E?0?(\d{1,3})\s*[-~到至]\s*(?:S\d{1,2})?E?0?(\d{1,3})\s*[集话話]?", text):
         a, b = int(start), int(end)
         if 0 < a <= b <= 300:
             episodes.update(range(a, b + 1))
@@ -483,6 +487,13 @@ def _episode_numbers_from_text(text: str) -> List[int]:
         if value and 0 < int(value) <= 300:
             episodes.add(int(value))
     return sorted(episodes)
+
+
+def _has_complete_marker(text: str) -> bool:
+    lowered = text.lower()
+    if any(marker in lowered for marker in ["完结", "complete"]):
+        return True
+    return bool(__import__("re").search(r"(?i)(全|共)\s*\d{1,3}\s*[集话話]", text))
 
 
 def _season_matches(text: str, season: int) -> bool:

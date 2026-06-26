@@ -424,6 +424,42 @@ class TransferPlanTest(unittest.TestCase):
         self.assertIn("size_similar", recommended["reasons"])
         self.assertIn("episode_count_covers_expected", recommended["reasons"])
 
+    def test_share_search_plan_reads_chinese_episode_ranges_and_title_size(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "四喜",
+                    "tmdbid": 273131,
+                    "season": 1,
+                    "size_bytes": int(1.1 * 1024**4),
+                    "expected_count": 36,
+                    "source_paths": ["/volume3/hlink/TV/四喜"],
+                }
+            ],
+        }
+        search_reports = {
+            "四喜": {
+                "ok": True,
+                "result_count": 1,
+                "items": [
+                    {
+                        "index": 1,
+                        "title": "🎬 四喜 全36集 1.24T",
+                        "size": "",
+                        "share_code_available": True,
+                    }
+                ],
+            }
+        }
+
+        plan = plan_mv3_share_search_from_transfer_plan(transfer_plan, search_reports, limit=1)
+
+        recommended = plan["items"][0]["recommended_candidate"]
+        self.assertEqual(recommended["search_index"], 1)
+        self.assertIn("complete_marker", recommended["reasons"])
+        self.assertIn("size_similar", recommended["reasons"])
+
     def test_renders_share_search_plan_markdown(self) -> None:
         plan = {
             "mode": "readonly-mv3-share-search-plan",
