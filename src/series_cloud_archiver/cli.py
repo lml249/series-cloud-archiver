@@ -1108,8 +1108,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "cloud-check":
         config = config_from_env(args.env_file, [])
         roots = args.strm_root or config.strm_roots
-        top = args.top if args.top is not None else config.top
         output_format = args.format or config.output_format
+        if args.top is not None:
+            top = args.top
+        elif output_format == "json":
+            top = 0
+        else:
+            top = config.top
         identity_file = args.identity_file if args.identity_file is not None else config.identity_file
         report = cloud_check_from_scan_report(load_scan_report(args.scan_report), roots, top=top, identity_file=identity_file)
         rendered = render_cloud_check_report(report, output_format)
