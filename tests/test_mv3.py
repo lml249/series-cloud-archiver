@@ -16,6 +16,7 @@ from series_cloud_archiver.mv3 import (
     inspect_mv3_capabilities,
     inspect_mv3_instances,
     list_mv3_strm_records,
+    materialize_mv3_strm_records,
     probe_mv3,
     render_mv3_capabilities_report,
     render_mv3_cloud_browse_report,
@@ -30,6 +31,7 @@ from series_cloud_archiver.mv3 import (
     render_mv3_share_receive_report,
     render_mv3_share_preview_report,
     render_mv3_strm_generate_report,
+    render_mv3_strm_records_materialize_report,
     render_mv3_strm_records_report,
     render_mv3_strm_records_regenerate_report,
     render_mv3_wrong_root_repair_report,
@@ -1374,6 +1376,108 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["records"][0]["episode"], 37)
         self.assertNotIn("token", rendered)
 
+    def test_strm_records_materialize_writes_record_content_with_prefix_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            host_root = tmp_path / "volume4" / "mv3" / "strm"
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    payload = {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {
+                                    "id": 16868,
+                                    "source": "organize",
+                                    "strm_path": "/volume4/mv3/strm/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.strm",
+                                    "source_path": "/已整理/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.mkv",
+                                    "strm_content": "https://mv3.example/redirect?path=/已整理/series/八千里路云和月/Season%201/E37.mkv&pickcode=secret",
+                                }
+                            ]
+                        },
+                    }
+                    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                report = materialize_mv3_strm_records(
+                    "http://mv3.example",
+                    "token",
+                    record_ids=[16868],
+                    expected_record_ids=[16868],
+                    expected_strm_prefix="/volume4/mv3/strm/series/八千里路云和月",
+                    expected_source_prefix="/已整理/series/八千里路云和月",
+                    host_strm_prefix=f"{host_root}=/volume4/mv3/strm",
+                    keyword="八千里路云和月",
+                )
+
+            rendered = render_mv3_strm_records_materialize_report(report, "json")
+            output_file = host_root / "series" / "八千里路云和月" / "Season 1" / "八千里路云和月 - S01E37.strm"
+            self.assertTrue(report["ok"])
+            self.assertTrue(output_file.exists())
+            self.assertIn("redirect?path=", output_file.read_text(encoding="utf-8"))
+            self.assertEqual(report["writes"][0]["record_id"], 16868)
+            self.assertEqual(report["writes"][0]["action"], "written")
+            self.assertNotIn("pickcode=secret", rendered)
+
+    def test_strm_records_materialize_blocks_prefix_mismatch(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                payload = {
+                    "success": True,
+                    "data": {
+                        "items": [
+                            {
+                                "id": 16868,
+                                "strm_path": "/volume4/mv3/strm/movie/Wrong.strm",
+                                "source_path": "/已整理/movie/Wrong.mkv",
+                                "strm_content": "https://mv3.example/redirect?path=/已整理/movie/Wrong.mkv",
+                            }
+                        ]
+                    },
+                }
+                return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                report = materialize_mv3_strm_records(
+                    "http://mv3.example",
+                    "token",
+                    record_ids=[16868],
+                    expected_record_ids=[16868],
+                    expected_strm_prefix="/volume4/mv3/strm/series/八千里路云和月",
+                    expected_source_prefix="/已整理/series/八千里路云和月",
+                    host_strm_prefix=f"{tmp}=/volume4/mv3/strm",
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("strm_path_prefix_mismatch", report["blockers"])
+        self.assertIn("source_path_prefix_mismatch", report["blockers"])
+
     def test_reports_missing_configuration_without_network(self) -> None:
         report = probe_mv3("", "")
 
@@ -2528,6 +2632,102 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["matched_record_count"], 1)
             self.assertEqual(payload["records"][0]["id"], 16868)
+
+    def test_cli_refuses_strm_records_materialize_without_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            with self.assertRaises(SystemExit) as caught:
+                main(
+                    [
+                        "mv3-strm-records-materialize",
+                        "--env-file",
+                        str(env_file),
+                        "--record-id",
+                        "16868",
+                        "--expected-record-id",
+                        "16868",
+                        "--expected-strm-prefix",
+                        "/volume4/mv3/strm/series/八千里路云和月",
+                        "--expected-source-prefix",
+                        "/已整理/series/八千里路云和月",
+                        "--host-strm-prefix",
+                        f"{tmp_path}=/volume4/mv3/strm",
+                    ]
+                )
+
+            self.assertNotEqual(caught.exception.code, 0)
+
+    def test_cli_writes_strm_records_materialize_report_with_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "materialize.json"
+            host_root = tmp_path / "strm"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    payload = {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {
+                                    "id": 16868,
+                                    "strm_path": "/volume4/mv3/strm/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.strm",
+                                    "source_path": "/已整理/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.mkv",
+                                    "strm_content": "https://mv3.example/redirect?path=/已整理/series/八千里路云和月/Season%201/E37.mkv&pickcode=secret",
+                                }
+                            ]
+                        },
+                    }
+                    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                code = main(
+                    [
+                        "mv3-strm-records-materialize",
+                        "--env-file",
+                        str(env_file),
+                        "--record-id",
+                        "16868",
+                        "--expected-record-id",
+                        "16868",
+                        "--keyword",
+                        "八千里路云和月",
+                        "--expected-strm-prefix",
+                        "/volume4/mv3/strm/series/八千里路云和月",
+                        "--expected-source-prefix",
+                        "/已整理/series/八千里路云和月",
+                        "--host-strm-prefix",
+                        f"{host_root}=/volume4/mv3/strm",
+                        "--approve-write",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["writes"][0]["record_id"], 16868)
+            self.assertNotIn("pickcode=secret", output.read_text(encoding="utf-8"))
 
     def test_cli_writes_cloud_browse_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

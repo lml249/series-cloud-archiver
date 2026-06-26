@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import socket
 import urllib.error
@@ -1120,6 +1121,124 @@ def render_mv3_strm_records_report(report: Dict[str, object], output_format: str
                 exists=record.get("exists_hint", ""),
             )
         )
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    return "\n".join(lines)
+
+
+def materialize_mv3_strm_records(
+    base_url: str,
+    token: str,
+    record_ids: List[int],
+    expected_record_ids: Optional[List[int]] = None,
+    expected_strm_prefix: str = "",
+    expected_source_prefix: str = "",
+    host_strm_prefix: str = "",
+    keyword: str = "",
+    overwrite: bool = False,
+    timeout: int = 60,
+) -> Dict[str, object]:
+    warnings: List[str] = []
+    blockers: List[str] = []
+    clean_record_ids = sorted({int(record_id) for record_id in record_ids if int(record_id) > 0})
+    clean_expected_ids = sorted({int(record_id) for record_id in (expected_record_ids or []) if int(record_id) > 0})
+    if not clean_record_ids:
+        blockers.append("record_ids_required")
+    if clean_expected_ids and clean_record_ids != clean_expected_ids:
+        blockers.append("record_id_safety_mismatch")
+
+    records_report: Dict[str, object] = {"skipped": True}
+    records: List[Dict[str, object]] = []
+    if not blockers:
+        records_report = list_mv3_strm_records(
+            base_url,
+            token,
+            keyword=keyword,
+            record_ids=clean_record_ids,
+            page=1,
+            page_size=max(100, len(clean_record_ids)),
+            timeout=timeout,
+        )
+        if not records_report.get("ok"):
+            blockers.append("mv3_strm_records_read_failed")
+        records = [record for record in records_report.get("records", []) if isinstance(record, dict)]
+        found_ids = sorted({int(record.get("id") or 0) for record in records})
+        missing_ids = sorted(set(clean_record_ids) - set(found_ids))
+        if missing_ids:
+            blockers.append("record_ids_not_found")
+
+    writes: List[Dict[str, object]] = []
+    if not blockers:
+        for record in records:
+            writes.append(
+                _materialize_strm_record(
+                    record,
+                    expected_strm_prefix=expected_strm_prefix,
+                    expected_source_prefix=expected_source_prefix,
+                    host_strm_prefix=host_strm_prefix,
+                    overwrite=overwrite,
+                )
+            )
+        for write in writes:
+            if not write.get("ok"):
+                blockers.extend(str(item) for item in write.get("blockers", []) if item)
+            warnings.extend(str(item) for item in write.get("warnings", []) if item)
+
+    return {
+        "mode": "mv3-strm-records-materialize-result",
+        "ok": not blockers and bool(writes),
+        "record_ids": clean_record_ids,
+        "expected_record_ids": clean_expected_ids,
+        "keyword": keyword,
+        "expected_strm_prefix": expected_strm_prefix,
+        "expected_source_prefix": expected_source_prefix,
+        "host_strm_prefix": host_strm_prefix,
+        "overwrite": overwrite,
+        "records_query": {
+            "ok": bool(records_report.get("ok")),
+            "matched_record_count": records_report.get("matched_record_count"),
+            "warnings": records_report.get("warnings", []),
+        },
+        "writes": writes,
+        "warnings": sorted(set(warnings)),
+        "blockers": sorted(set(blockers)),
+        "safety": "approved filesystem materialization from MV3 STRM record content only; no MV3 generation, cloud media move/delete, qBittorrent action, hlink deletion, or MP cleanup is performed",
+    }
+
+
+def render_mv3_strm_records_materialize_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# MV3 STRM Records Materialize Result",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Record IDs: `{report.get('record_ids', [])}`",
+        f"- Overwrite: `{bool(report.get('overwrite'))}`",
+        f"- Host STRM prefix: `{report.get('host_strm_prefix', '')}`",
+        "- Safety: approved write of STRM files from MV3 record content only; no cloud, qB, hlink, or MP cleanup was performed.",
+        "",
+        "| Record ID | Action | Host path | Bytes | SHA256 |",
+        "| ---: | --- | --- | ---: | --- |",
+    ]
+    for write in report.get("writes", []) if isinstance(report.get("writes"), list) else []:
+        if not isinstance(write, dict):
+            continue
+        lines.append(
+            "| {id} | {action} | {path} | {size} | {sha} |".format(
+                id=write.get("record_id", ""),
+                action=write.get("action", ""),
+                path=write.get("host_path", ""),
+                size=write.get("bytes_written", 0),
+                sha=write.get("sha256", ""),
+            )
+        )
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
     warnings = report.get("warnings")
     if isinstance(warnings, list) and warnings:
         lines.extend(["", "## Warnings", ""])
@@ -2734,6 +2853,7 @@ def _strm_record_summary(row: Dict[str, object]) -> Dict[str, object]:
     source_path = str(_first_present(row, ["source_path", "sourcePath", "target_path", "targetPath", "src_path", "srcPath"]))
     title = str(_first_present(row, ["title", "name", "media_title", "mediaTitle"]))
     episode = _episode_number_from_text(" ".join([strm_path, source_path, title]))
+    strm_content = _first_raw_present(row, ["strm_content", "strmContent", "content"])
     return {
         "id": _strm_record_id(row),
         "title": title,
@@ -2741,10 +2861,86 @@ def _strm_record_summary(row: Dict[str, object]) -> Dict[str, object]:
         "source": str(_first_present(row, ["source", "source_type", "sourceType", "record_source", "recordSource"])),
         "strm_path": strm_path,
         "source_path": source_path,
+        "strm_content": strm_content,
+        "strm_content_present": bool(strm_content),
+        "strm_content_sha256": hashlib.sha256(strm_content.encode("utf-8")).hexdigest() if strm_content else "",
         "pickcode_present": bool(_first_present(row, ["pickcode", "pick_code", "pickCode"])),
         "exists_hint": _first_present(row, ["exists", "file_exists", "fileExists", "is_exists", "isExists", "status"]),
         "raw": _sanitize_json(_sample_json(row, max_keys=30)),
     }
+
+
+def _materialize_strm_record(
+    record: Dict[str, object],
+    expected_strm_prefix: str,
+    expected_source_prefix: str,
+    host_strm_prefix: str,
+    overwrite: bool,
+) -> Dict[str, object]:
+    blockers: List[str] = []
+    warnings: List[str] = []
+    record_id = int(record.get("id") or 0)
+    strm_path = str(record.get("strm_path") or "")
+    source_path = str(record.get("source_path") or "")
+    content = str(record.get("strm_content") or "")
+    expected_strm_prefix = expected_strm_prefix.rstrip("/")
+    expected_source_prefix = expected_source_prefix.rstrip("/")
+
+    host_prefix, mv3_prefix = _parse_host_strm_prefix(host_strm_prefix)
+    host_path = ""
+    if not strm_path:
+        blockers.append("strm_path_required")
+    if not content:
+        blockers.append("strm_content_required")
+    if expected_strm_prefix and not strm_path.startswith(expected_strm_prefix.rstrip("/") + "/") and strm_path != expected_strm_prefix:
+        blockers.append("strm_path_prefix_mismatch")
+    if expected_source_prefix and not source_path.startswith(expected_source_prefix.rstrip("/") + "/") and source_path != expected_source_prefix:
+        blockers.append("source_path_prefix_mismatch")
+    if not host_prefix or not mv3_prefix:
+        blockers.append("host_strm_prefix_required")
+    elif strm_path and strm_path != mv3_prefix and not strm_path.startswith(mv3_prefix.rstrip("/") + "/"):
+        blockers.append("host_strm_prefix_mismatch")
+    elif strm_path:
+        suffix = strm_path[len(mv3_prefix.rstrip("/")) :].lstrip("/")
+        host_path = str(Path(host_prefix) / suffix)
+        if not Path(host_path).is_absolute():
+            blockers.append("host_path_not_absolute")
+    if host_path and Path(host_path).exists() and not overwrite:
+        blockers.append("target_file_exists")
+
+    action = "skipped"
+    bytes_written = 0
+    content_bytes = content.encode("utf-8")
+    sha256 = hashlib.sha256(content_bytes).hexdigest() if content else ""
+    if not blockers:
+        target = Path(host_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content_bytes if content.endswith("\n") else content_bytes + b"\n")
+        bytes_written = target.stat().st_size
+        action = "written"
+        if bytes_written == 0:
+            blockers.append("written_file_empty")
+
+    return {
+        "ok": not blockers and action == "written",
+        "record_id": record_id,
+        "action": action,
+        "strm_path": strm_path,
+        "source_path": source_path,
+        "host_path": host_path,
+        "bytes_written": bytes_written,
+        "sha256": sha256,
+        "overwrite": overwrite,
+        "warnings": sorted(set(warnings)),
+        "blockers": sorted(set(blockers)),
+    }
+
+
+def _parse_host_strm_prefix(value: str) -> Tuple[str, str]:
+    if "=" not in value:
+        return "", ""
+    host_prefix, mv3_prefix = value.split("=", 1)
+    return host_prefix.rstrip("/"), mv3_prefix.rstrip("/")
 
 
 def _episode_numbers_from_scan_items(items: List[Dict[str, object]]) -> List[int]:

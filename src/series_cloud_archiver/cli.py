@@ -30,6 +30,7 @@ from .mv3 import (
     inspect_mv3_capabilities,
     inspect_mv3_instances,
     list_mv3_strm_records,
+    materialize_mv3_strm_records,
     probe_mv3,
     regenerate_mv3_strm_records,
     render_mv3_capabilities_report,
@@ -45,6 +46,7 @@ from .mv3 import (
     render_mv3_share_receive_report,
     render_mv3_share_preview_report,
     render_mv3_strm_generate_report,
+    render_mv3_strm_records_materialize_report,
     render_mv3_strm_records_report,
     render_mv3_strm_records_regenerate_report,
     render_mv3_wrong_root_repair_report,
@@ -375,6 +377,20 @@ def build_parser() -> argparse.ArgumentParser:
     strm_records_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     strm_records_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     strm_records_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    strm_materialize_parser = subcommands.add_parser("mv3-strm-records-materialize", help="Materialize approved MV3 STRM record content to filesystem")
+    strm_materialize_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    strm_materialize_parser.add_argument("--record-id", action="append", required=True, help="MV3 STRM record id; can be repeated or comma-separated")
+    strm_materialize_parser.add_argument("--expected-record-id", action="append", required=True, help="Safety check: expected record id; can be repeated or comma-separated")
+    strm_materialize_parser.add_argument("--keyword", default="", help="Optional MV3 keyword filter")
+    strm_materialize_parser.add_argument("--expected-strm-prefix", required=True, help="Safety check: MV3 strm_path must start with this prefix")
+    strm_materialize_parser.add_argument("--expected-source-prefix", required=True, help="Safety check: MV3 source_path must start with this prefix")
+    strm_materialize_parser.add_argument("--host-strm-prefix", required=True, help="Map host STRM root to MV3 STRM root, e.g. /volume4/volume4/mv3/strm=/volume4/mv3/strm")
+    strm_materialize_parser.add_argument("--overwrite", action="store_true", help="Allow overwriting existing STRM files")
+    strm_materialize_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    strm_materialize_parser.add_argument("--approve-write", action="store_true", help="Required: actually write STRM files from MV3 record content")
+    strm_materialize_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    strm_materialize_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     strm_regenerate_parser = subcommands.add_parser("mv3-strm-records-regenerate", help="Execute one approved MV3 STRM records regenerate request")
     strm_regenerate_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -1104,6 +1120,35 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_strm_records_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "mv3-strm-records-materialize":
+        if not args.approve_write:
+            parser.error("mv3-strm-records-materialize requires --approve-write")
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-strm-records-materialize requires MV3_BASE_URL and MV3_API_TOKEN")
+        record_ids = _parse_int_list_args(args.record_id)
+        expected_record_ids = _parse_int_list_args(args.expected_record_id)
+        if record_ids != expected_record_ids:
+            parser.error(f"record id safety mismatch: got {record_ids}, expected {expected_record_ids}")
+        report = materialize_mv3_strm_records(
+            config.mv3_base_url,
+            config.mv3_token,
+            record_ids=record_ids,
+            expected_record_ids=expected_record_ids,
+            expected_strm_prefix=args.expected_strm_prefix,
+            expected_source_prefix=args.expected_source_prefix,
+            host_strm_prefix=args.host_strm_prefix,
+            keyword=args.keyword,
+            overwrite=args.overwrite,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_strm_records_materialize_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:
