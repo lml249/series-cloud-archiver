@@ -634,6 +634,10 @@ def receive_mv3_share(
     selection_index: int = 1,
     browse_index: int = 1,
     browse_cid: str = "",
+    receive_all_files: bool = False,
+    expected_episode_count: int = 0,
+    expected_episode_min: int = 0,
+    expected_episode_max: int = 0,
     channels: Optional[List[str]] = None,
     expected_title_contains: str = "",
     target_path: str = "/未整理",
@@ -647,15 +651,39 @@ def receive_mv3_share(
     raw = resolution.get("_raw") if isinstance(resolution.get("_raw"), dict) else {}
     browse_items = raw.get("browse_items") if isinstance(raw.get("browse_items"), list) else []
     browse_selection = browse_items[browse_index - 1] if 0 < browse_index <= len(browse_items) else {}
-    if not browse_selection:
+    if not browse_selection and not receive_all_files:
         warnings.append("browse_index_not_found")
 
     normalized_target_path = _normalize_cloud_path(target_path)
     if not normalized_target_path:
         warnings.append("target_path_required")
-    file_id = _share_item_file_id(browse_selection) if isinstance(browse_selection, dict) else ""
-    if not file_id:
+    selected_items = _share_receive_items(
+        browse_items,
+        browse_selection if isinstance(browse_selection, dict) else {},
+        receive_all_files,
+    )
+    file_ids = [_share_item_file_id(item) for item in selected_items]
+    file_ids = [item for item in file_ids if item]
+    if not file_ids:
         warnings.append("browse_selection_file_id_not_found")
+    episode_numbers = sorted(
+        {
+            episode
+            for episode in (_episode_number_from_text(_share_item_name(item)) for item in selected_items)
+            if episode is not None
+        }
+    )
+    missing_expected = [
+        episode
+        for episode in range(expected_episode_min, expected_episode_max + 1)
+        if episode not in set(episode_numbers)
+    ] if expected_episode_min and expected_episode_max else []
+    if expected_episode_count and len(episode_numbers) != expected_episode_count:
+        warnings.append("episode_count_mismatch")
+    if missing_expected:
+        warnings.append("episode_range_incomplete")
+    if receive_all_files and expected_episode_count and len(selected_items) != expected_episode_count:
+        warnings.append("file_count_mismatch")
 
     share_code = str(raw.get("share_code") or "")
     receive_code = str(raw.get("receive_code") or "")
@@ -663,10 +691,19 @@ def receive_mv3_share(
         warnings.append("share_code_not_available_for_receive")
 
     receive_report: Dict[str, object] = {"skipped": True}
-    if browse_selection and normalized_target_path and file_id and share_code:
+    blocking_warnings = {
+        "browse_index_not_found",
+        "target_path_required",
+        "browse_selection_file_id_not_found",
+        "share_code_not_available_for_receive",
+        "episode_count_mismatch",
+        "episode_range_incomplete",
+        "file_count_mismatch",
+    }
+    if normalized_target_path and file_ids and share_code and not (set(warnings) & blocking_warnings):
         receive_body: Dict[str, object] = {
             "share_code": share_code,
-            "file_ids": [file_id],
+            "file_ids": file_ids,
             "target_path": normalized_target_path,
         }
         if receive_code:
@@ -692,12 +729,23 @@ def receive_mv3_share(
     report["ok"] = bool(receive_report.get("ok"))
     report["browse_index"] = browse_index
     report["browse_cid"] = browse_cid
+    report["receive_all_files"] = receive_all_files
+    report["file_id_count"] = len(file_ids)
+    report["episode_count"] = len(episode_numbers)
+    report["episode_min"] = min(episode_numbers) if episode_numbers else None
+    report["episode_max"] = max(episode_numbers) if episode_numbers else None
+    report["episodes"] = episode_numbers
+    report["missing_expected"] = missing_expected
+    report["expected_episode_count"] = expected_episode_count
+    report["expected_episode_min"] = expected_episode_min
+    report["expected_episode_max"] = expected_episode_max
     report["browse_selection"] = _share_browse_item_summary(browse_selection, browse_index) if isinstance(browse_selection, dict) and browse_selection else {}
+    report["receive_items"] = [_share_browse_item_summary(item, index) for index, item in enumerate(selected_items[:50], start=1)]
     report["target_path"] = normalized_target_path
     report["storage"] = storage
     report["receive"] = receive_report
     report["warnings"] = warnings
-    report["safety"] = "exactly one approved MV3 share receive request may be sent; no organize/recognize/transfer, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed"
+    report["safety"] = "exactly one approved MV3 share receive request may be sent; selected share item IDs are gated by optional episode coverage checks; no organize/recognize/transfer, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed"
     return report
 
 
@@ -1433,6 +1481,9 @@ def render_mv3_share_receive_report(report: Dict[str, object], output_format: st
         f"- Browse selection: `{browse_selection.get('name', '')}`",
         f"- Browse kind: `{browse_selection.get('kind', '')}`",
         f"- Browse size: `{browse_selection.get('size', '')}`",
+        f"- Receive all files: `{bool(report.get('receive_all_files'))}`",
+        f"- File IDs: `{report.get('file_id_count', 0)}`",
+        f"- Episodes: `{report.get('episodes', [])}`",
         f"- Target path: `{report.get('target_path', '')}`",
         f"- Storage: `{report.get('storage', '')}`",
         f"- Receive OK: `{bool(receive.get('ok'))}`",
@@ -3009,8 +3060,22 @@ def _share_browse_items(payload: object) -> List[Dict[str, object]]:
     return []
 
 
+def _share_receive_items(
+    browse_items: List[Dict[str, object]],
+    browse_selection: Dict[str, object],
+    receive_all_files: bool,
+) -> List[Dict[str, object]]:
+    if receive_all_files:
+        return [item for item in browse_items if _share_item_kind(item) == "file"]
+    return [browse_selection] if browse_selection else []
+
+
+def _share_item_name(item: Dict[str, object]) -> str:
+    return _first_present(item, ["name", "file_name", "filename", "n", "title"])
+
+
 def _share_browse_item_summary(item: Dict[str, object], index: int) -> Dict[str, object]:
-    name = _first_present(item, ["name", "file_name", "filename", "n", "title"])
+    name = _share_item_name(item)
     return {
         "index": index,
         "name": name,

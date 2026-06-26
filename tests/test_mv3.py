@@ -969,6 +969,145 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertNotIn("parsed-code", rendered)
         self.assertNotIn("abcd", rendered)
 
+    def test_share_receive_can_receive_all_files_with_episode_gate(self) -> None:
+        seen = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.replace("http://mv3.example", "")
+            body = json.loads(request.data.decode("utf-8"))
+            seen.append((path, body))
+            if path == "/api/v1/resource-search/search":
+                return FakeResponse({"success": True, "data": {"items": [{"title": "凡人歌", "share_link": "https://example.test/s/private"}]}})
+            if path == "/api/v1/share-transfer/parse":
+                return FakeResponse({"success": True, "data": {"share_code": "parsed-code", "receive_code": "abcd"}})
+            if path == "/api/v1/share-transfer/browse":
+                self.assertEqual(body["cid"], "folder-1")
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {"name": "凡人歌.S01E01.mkv", "fid": "file-1", "ico": "mkv", "s": 100},
+                                {"name": "凡人歌.S01E02.mkv", "fid": "file-2", "ico": "mkv", "s": 100},
+                                {"name": "凡人歌.S01E03.mkv", "fid": "file-3", "ico": "mkv", "s": 100},
+                            ]
+                        },
+                    }
+                )
+            if path == "/api/v1/share-transfer/receive":
+                return FakeResponse({"success": True, "data": {"record_id": "record-1"}})
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = receive_mv3_share(
+                "http://mv3.example",
+                "token",
+                "凡人歌",
+                selection_index=1,
+                browse_cid="folder-1",
+                receive_all_files=True,
+                expected_episode_count=3,
+                expected_episode_min=1,
+                expected_episode_max=3,
+                expected_title_contains="凡人歌",
+                target_path="/未整理",
+                storage="115-default",
+            )
+
+        receive_body = seen[-1][1]
+        self.assertEqual(receive_body["file_ids"], ["file-1", "file-2", "file-3"])
+        self.assertEqual(report["file_id_count"], 3)
+        self.assertEqual(report["episodes"], [1, 2, 3])
+        self.assertEqual(report["missing_expected"], [])
+        self.assertTrue(report["ok"])
+
+    def test_share_receive_all_files_blocks_incomplete_episode_set(self) -> None:
+        seen = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.replace("http://mv3.example", "")
+            body = json.loads(request.data.decode("utf-8"))
+            seen.append((path, body))
+            if path == "/api/v1/resource-search/search":
+                return FakeResponse({"success": True, "data": {"items": [{"title": "凡人歌", "share_link": "https://example.test/s/private"}]}})
+            if path == "/api/v1/share-transfer/parse":
+                return FakeResponse({"success": True, "data": {"share_code": "parsed-code", "receive_code": "abcd"}})
+            if path == "/api/v1/share-transfer/browse":
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {"name": "凡人歌.S01E01.mkv", "fid": "file-1", "ico": "mkv", "s": 100},
+                                {"name": "凡人歌.S01E03.mkv", "fid": "file-3", "ico": "mkv", "s": 100},
+                            ]
+                        },
+                    }
+                )
+            if path == "/api/v1/share-transfer/receive":
+                raise AssertionError("receive should not be called for incomplete episodes")
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = receive_mv3_share(
+                "http://mv3.example",
+                "token",
+                "凡人歌",
+                selection_index=1,
+                browse_cid="folder-1",
+                receive_all_files=True,
+                expected_episode_count=3,
+                expected_episode_min=1,
+                expected_episode_max=3,
+                expected_title_contains="凡人歌",
+                target_path="/未整理",
+                storage="115-default",
+            )
+
+        self.assertNotIn("/api/v1/share-transfer/receive", [item[0] for item in seen])
+        self.assertFalse(report["ok"])
+        self.assertIn("episode_count_mismatch", report["warnings"])
+        self.assertIn("episode_range_incomplete", report["warnings"])
+        self.assertEqual(report["missing_expected"], [2])
+
     def test_organize_scan_source_reports_episode_gaps_without_transfer(self) -> None:
         seen = {}
 

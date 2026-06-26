@@ -311,6 +311,10 @@ def build_parser() -> argparse.ArgumentParser:
     share_receive_parser.add_argument("--selection-index", type=int, default=1, help="1-based search result to parse/browse")
     share_receive_parser.add_argument("--browse-index", type=int, default=1, help="1-based browsed share item to receive")
     share_receive_parser.add_argument("--browse-cid", default="", help="Optional share folder cid to browse before selecting --browse-index")
+    share_receive_parser.add_argument("--receive-all-files", action="store_true", help="Receive every file in the current browsed share folder instead of one selected item")
+    share_receive_parser.add_argument("--expected-episode-count", type=int, default=0, help="Safety check for --receive-all-files: exact episode count")
+    share_receive_parser.add_argument("--expected-episode-min", type=int, default=0, help="Safety check for --receive-all-files: first episode number")
+    share_receive_parser.add_argument("--expected-episode-max", type=int, default=0, help="Safety check for --receive-all-files: last episode number")
     share_receive_parser.add_argument("--expected-title-contains", required=True, help="Safety check: selected title must contain this text")
     share_receive_parser.add_argument("--target-path", default="/未整理", help="115 target path; defaults to /未整理")
     share_receive_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
@@ -1013,6 +1017,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             selection_index=args.selection_index,
             browse_index=args.browse_index,
             browse_cid=args.browse_cid,
+            receive_all_files=args.receive_all_files,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
             channels=args.channel,
             expected_title_contains=args.expected_title_contains,
             target_path=args.target_path,
