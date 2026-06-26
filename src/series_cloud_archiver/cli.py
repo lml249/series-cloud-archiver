@@ -192,6 +192,8 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_cleanup_plan_parser.add_argument("--title", action="append", default=[], help="Only include an exact title; can be repeated")
     cloud_cleanup_plan_parser.add_argument("--required-target-prefix", default="", help="Every STRM target must resolve under this prefix")
     cloud_cleanup_plan_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not resolve under this prefix; can be repeated")
+    cloud_cleanup_plan_parser.add_argument("--allow-multiple-hashes", action="store_true", help="Allow one season assembled from multiple qB hashes when destination root and episode gates pass")
+    cloud_cleanup_plan_parser.add_argument("--allow-multiple-source-roots", action="store_true", help="Allow one season assembled from multiple source roots when destination root and episode gates pass")
     cloud_cleanup_plan_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
     cloud_cleanup_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     cloud_cleanup_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
@@ -795,6 +797,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
             required_target_prefix=args.required_target_prefix,
             forbidden_target_prefixes=args.forbidden_target_prefix,
+            allow_multiple_hashes=args.allow_multiple_hashes,
+            allow_multiple_source_roots=args.allow_multiple_source_roots,
         )
         rendered = render_cloud_complete_cleanup_plan(report, args.format)
         if args.output:

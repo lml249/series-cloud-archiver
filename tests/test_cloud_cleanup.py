@@ -68,6 +68,28 @@ def ready_preview() -> dict:
     }
 
 
+def multi_hash_preview() -> dict:
+    preview = ready_preview()
+    preview["summary"] = {
+        **preview["summary"],
+        "download_hash_count": 2,
+        "source_root_count": 2,
+        "destination_root_count": 1,
+    }
+    preview["qb_targets"] = [
+        {"hash_prefix": "feedface0000", "downloader": "20099"},
+        {"hash_prefix": "beadfeed1111", "downloader": "20099"},
+    ]
+    preview["source_roots"] = ["/example-service/TV/source-a", "/example-service/TV/source-b"]
+    preview["destination_roots"] = ["/example-service/hlink/TV/沉默的荣耀 (2025) {tmdbid=281538}"]
+    preview["records"] = [
+        {"id": 10, "title": "沉默的荣耀", "tmdbid": 281538, "episodes": "E01", "episode_number": 1, "hash_prefix": "feedface0000", "status": True},
+        {"id": 11, "title": "沉默的荣耀", "tmdbid": 281538, "episodes": "E02", "episode_number": 2, "hash_prefix": "beadfeed1111", "status": True},
+    ]
+    preview["warnings"] = ["multiple_download_hashes", "multiple_source_roots"]
+    return preview
+
+
 class CloudCompleteCleanupTest(unittest.TestCase):
     def test_plans_ready_cloud_complete_item_without_deleting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -108,6 +130,30 @@ class CloudCompleteCleanupTest(unittest.TestCase):
         self.assertFalse(plan["items"][0]["ready_for_execute"])
         self.assertIn("mp_record_count_mismatch", plan["items"][0]["execution_blockers"])
         self.assertIn("mp_episode_count_mismatch", plan["items"][0]["execution_blockers"])
+
+    def test_plan_can_allow_multiple_hashes_and_source_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm" / "series" / "沉默的荣耀 (2025) {tmdbid=281538}" / "Season 1"
+            touch_strm(root / "沉默的荣耀 S01E01.strm")
+            touch_strm(root / "沉默的荣耀 S01E02.strm")
+            report = {"items": [cloud_complete_item(root)]}
+
+            with patch("series_cloud_archiver.cloud_cleanup.mp_cleanup_preview_from_transfer_history", return_value=multi_hash_preview()):
+                blocked = plan_cloud_complete_cleanup(report, "http://mp.example", "token", path_aliases={"/example-host": "/example-service"})
+                allowed = plan_cloud_complete_cleanup(
+                    report,
+                    "http://mp.example",
+                    "token",
+                    path_aliases={"/example-host": "/example-service"},
+                    allow_multiple_hashes=True,
+                    allow_multiple_source_roots=True,
+                )
+
+        self.assertEqual(blocked["ready_items"], 0)
+        self.assertIn("mp_single_hash_required", blocked["items"][0]["execution_blockers"])
+        self.assertEqual(allowed["ready_items"], 1)
+        self.assertTrue(allowed["items"][0]["ready_for_execute"])
+        self.assertEqual(allowed["items"][0]["expected_hash_prefixes"], ["feedface0000", "beadfeed1111"])
 
     def test_execute_skips_not_ready_items_before_moviepilot_delete(self) -> None:
         plan = {
@@ -156,6 +202,45 @@ class CloudCompleteCleanupTest(unittest.TestCase):
         self.assertEqual(verify.call_count, 1)
         self.assertTrue(report["results"][0]["ok"])
         self.assertIn("approved batch MoviePilot cleanup", render_cloud_complete_cleanup_execute(report, "markdown"))
+
+    def test_execute_blocks_when_any_multi_hash_qb_match_remains(self) -> None:
+        plan = {
+            "mode": "cloud-complete-cleanup-plan",
+            "items": [
+                {
+                    "title": "沉默的荣耀",
+                    "tmdbid": 281538,
+                    "season": 1,
+                    "ready_for_execute": True,
+                    "mp_preview": multi_hash_preview(),
+                    "expected_hash_prefix": "",
+                    "expected_hash_prefixes": ["feedface0000", "beadfeed1111"],
+                    "expected_episode_count": 2,
+                    "expected_episode_min": 1,
+                    "expected_episode_max": 2,
+                    "expected_episodes": [1, 2],
+                    "allow_multiple_hashes": True,
+                    "allow_multiple_source_roots": True,
+                    "source_roots_host": ["/example-host/TV/source-a", "/example-host/TV/source-b"],
+                    "destination_roots_host": ["/example-host/hlink/TV/沉默的荣耀 (2025) {tmdbid=281538}"],
+                    "strm_root": "/example-cloud/mv3/strm/series/沉默的荣耀 (2025) {tmdbid=281538}/Season 1",
+                }
+            ],
+        }
+        execute_report = {"ok": True, "blockers": [], "summary": {"success_count": 2}}
+        verify_report = {
+            "ok": True,
+            "blockers": [],
+            "qbittorrent": {"matches": [{"hash_prefix": "beadfeed1111", "state": "stalledUP"}]},
+        }
+
+        with patch("series_cloud_archiver.cloud_cleanup.execute_mp_cleanup_from_preview_report", return_value=execute_report), patch(
+            "series_cloud_archiver.cloud_cleanup.verify_mp_cleanup_from_services", return_value=verify_report
+        ):
+            report = execute_cloud_complete_cleanup_plan(plan, "http://mp.example", "token", qb_base_url="http://qb.example")
+
+        self.assertFalse(report["ok"])
+        self.assertIn("qb_torrent_still_present:beadfeed1111", report["results"][0]["blockers"])
 
     def test_cli_writes_cloud_complete_cleanup_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

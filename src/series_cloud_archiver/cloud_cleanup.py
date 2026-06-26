@@ -18,6 +18,8 @@ def plan_cloud_complete_cleanup(
     timeout: int = 20,
     required_target_prefix: str = "",
     forbidden_target_prefixes: Optional[Sequence[str]] = None,
+    allow_multiple_hashes: bool = False,
+    allow_multiple_source_roots: bool = False,
 ) -> Dict[str, object]:
     title_filter = {item for item in (titles or []) if item}
     aliases = _normalize_aliases(path_aliases or {})
@@ -42,6 +44,8 @@ def plan_cloud_complete_cleanup(
             timeout=timeout,
             required_target_prefix=required_target_prefix,
             forbidden_target_prefixes=forbidden_target_prefixes or [],
+            allow_multiple_hashes=allow_multiple_hashes,
+            allow_multiple_source_roots=allow_multiple_source_roots,
         )
         for item in candidates
     ]
@@ -55,6 +59,8 @@ def plan_cloud_complete_cleanup(
         "ready_items": ready_count,
         "limit": limit,
         "title_filter": sorted(title_filter),
+        "allow_multiple_hashes": allow_multiple_hashes,
+        "allow_multiple_source_roots": allow_multiple_source_roots,
         "total_size_bytes": sum(int(item.get("size_bytes") or 0) for item in items),
         "path_aliases": aliases,
         "items": items,
@@ -201,6 +207,8 @@ def _plan_cleanup_item(
     timeout: int,
     required_target_prefix: str,
     forbidden_target_prefixes: Sequence[str],
+    allow_multiple_hashes: bool,
+    allow_multiple_source_roots: bool,
 ) -> Dict[str, object]:
     title = str(item.get("title") or "")
     tmdbid = int(item.get("tmdbid") or 0)
@@ -257,9 +265,9 @@ def _plan_cleanup_item(
         blockers.append("mp_episode_max_mismatch")
     if summary.get("missing_in_range"):
         blockers.append("mp_episode_gap_detected")
-    if int(summary.get("download_hash_count") or 0) != 1:
+    if int(summary.get("download_hash_count") or 0) != 1 and not allow_multiple_hashes:
         blockers.append("mp_single_hash_required")
-    if int(summary.get("source_root_count") or 0) != 1:
+    if int(summary.get("source_root_count") or 0) != 1 and not allow_multiple_source_roots:
         blockers.append("mp_single_source_root_required")
     if int(summary.get("destination_root_count") or 0) != 1:
         blockers.append("mp_single_destination_root_required")
@@ -274,6 +282,7 @@ def _plan_cleanup_item(
 
     qb_targets = [target for target in preview.get("qb_targets", []) if isinstance(target, dict)]
     expected_hash_prefix = str(qb_targets[0].get("hash_prefix") or "") if len(qb_targets) == 1 else ""
+    expected_hash_prefixes = [str(target.get("hash_prefix") or "") for target in qb_targets if target.get("hash_prefix")]
 
     return {
         "title": title,
@@ -289,6 +298,7 @@ def _plan_cleanup_item(
         "mp_preview": preview,
         "mp_summary": summary,
         "expected_hash_prefix": expected_hash_prefix,
+        "expected_hash_prefixes": expected_hash_prefixes,
         "source_roots_service": source_roots_service,
         "destination_roots_service": destination_roots_service,
         "source_roots_host": source_roots_host,
@@ -296,6 +306,8 @@ def _plan_cleanup_item(
         "ready_for_execute": not blockers,
         "execution_blockers": sorted(set(blockers)),
         "warnings": sorted(set(warnings)),
+        "allow_multiple_hashes": allow_multiple_hashes,
+        "allow_multiple_source_roots": allow_multiple_source_roots,
     }
 
 
@@ -339,6 +351,8 @@ def _execute_cleanup_item(
         expected_episode_max=int(item.get("expected_episode_max") or 0),
         expected_episodes=item.get("expected_episodes") if isinstance(item.get("expected_episodes"), list) else None,
         timeout=timeout,
+        allow_multiple_hashes=bool(item.get("allow_multiple_hashes")),
+        allow_multiple_source_roots=bool(item.get("allow_multiple_source_roots")),
     )
     result["execute"] = execute_report
     if not execute_report.get("ok"):
@@ -363,9 +377,13 @@ def _execute_cleanup_item(
         qb_pass=qb_pass,
         timeout=timeout,
     )
+    verify_blockers = [str(blocker) for blocker in verify_report.get("blockers", [])]
+    for prefix in _string_list(item.get("expected_hash_prefixes")):
+        if _qb_hash_present(verify_report, prefix):
+            verify_blockers.append(f"qb_torrent_still_present:{prefix}")
     result["verify"] = verify_report
-    result["ok"] = bool(verify_report.get("ok"))
-    result["blockers"] = sorted(set(blockers + [str(blocker) for blocker in verify_report.get("blockers", [])]))
+    result["ok"] = bool(verify_report.get("ok")) and not verify_blockers
+    result["blockers"] = sorted(set(blockers + verify_blockers))
     return result
 
 
@@ -413,6 +431,13 @@ def _service_to_host_path(path: str, path_aliases: Dict[str, str]) -> str:
 
 def _normalize_paths(paths: Sequence[str]) -> Set[str]:
     return {str(path or "").rstrip("/") for path in paths if path}
+
+
+def _qb_hash_present(verify_report: Dict[str, object], hash_prefix: str) -> bool:
+    qb = verify_report.get("qbittorrent") if isinstance(verify_report.get("qbittorrent"), dict) else {}
+    matches = qb.get("matches") if isinstance(qb.get("matches"), list) else []
+    wanted = hash_prefix.lower()
+    return any(str(item.get("hash_prefix") or "").lower().startswith(wanted) for item in matches if isinstance(item, dict))
 
 
 def _int_list(value: object) -> List[int]:
