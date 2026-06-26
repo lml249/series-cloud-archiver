@@ -28,6 +28,7 @@ from series_cloud_archiver.mv3 import (
     render_mv3_resource_search_report,
     render_mv3_share_receive_report,
     render_mv3_share_preview_report,
+    render_mv3_strm_generate_report,
     render_mv3_wrong_root_repair_report,
     repair_mv3_wrong_root,
     scan_mv3_organize_source,
@@ -35,6 +36,7 @@ from series_cloud_archiver.mv3 import (
     preview_mv3_share,
     receive_mv3_share,
     execute_mv3_organize_transfer_from_browse_report,
+    generate_mv3_strm,
 )
 
 
@@ -1210,6 +1212,54 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["source_path"], "/未整理/Demo/Season 1")
         self.assertEqual(seen["body"]["files"][0]["source_path"], "/未整理/Demo/Season 1/Demo.S01E01.mp4")
 
+    def test_strm_generate_posts_incremental_request(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return b'{"success":true,"data":{"task_id":"strm-task-1"}}'
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["api_key"] = request.headers.get("X-api-key")
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = generate_mv3_strm(
+                "http://mv3.example",
+                "token",
+                source_dir="/已整理/series/Demo/Season 1",
+                target_dir="/volume4/mv3/strm",
+                storage="115-default",
+                timeout=42,
+            )
+
+        rendered = render_mv3_strm_generate_report(report, "json")
+        self.assertTrue(report["ok"])
+        self.assertEqual(seen["url"], "http://mv3.example/api/v1/strm/generate")
+        self.assertEqual(seen["api_key"], "token")
+        self.assertEqual(seen["timeout"], 42)
+        self.assertEqual(seen["body"]["source_dir"], "/已整理/series/Demo/Season 1")
+        self.assertEqual(seen["body"]["target_dir"], "/volume4/mv3/strm")
+        self.assertTrue(seen["body"]["cloud"])
+        self.assertTrue(seen["body"]["incremental"])
+        self.assertFalse(seen["body"]["overwrite"])
+        self.assertNotIn("token", rendered)
+
     def test_reports_missing_configuration_without_network(self) -> None:
         report = probe_mv3("", "")
 
@@ -2171,6 +2221,74 @@ class MV3ProbeTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertFalse(payload["ok"])
             self.assertIn("target_dir_should_be_organize_root_not_media_category", payload["blockers"])
+
+    def test_cli_refuses_strm_generate_without_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            with self.assertRaises(SystemExit) as caught:
+                main(
+                    [
+                        "mv3-strm-generate",
+                        "--env-file",
+                        str(env_file),
+                        "--source-dir",
+                        "/已整理/series/Demo/Season 1",
+                        "--target-dir",
+                        "/volume4/mv3/strm",
+                    ]
+                )
+
+            self.assertNotEqual(caught.exception.code, 0)
+
+    def test_cli_writes_strm_generate_report_with_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "strm-generate.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return b'{"success":true,"data":{"task_id":"strm-task-1"}}'
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                code = main(
+                    [
+                        "mv3-strm-generate",
+                        "--env-file",
+                        str(env_file),
+                        "--source-dir",
+                        "/已整理/series/Demo/Season 1",
+                        "--target-dir",
+                        "/volume4/mv3/strm",
+                        "--approve-generate",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["source_dir"], "/已整理/series/Demo/Season 1")
+            self.assertEqual(payload["target_dir"], "/volume4/mv3/strm")
 
     def test_cli_writes_cloud_browse_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

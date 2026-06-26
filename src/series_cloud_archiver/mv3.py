@@ -886,6 +886,126 @@ def execute_mv3_organize_transfer_from_browse_report(
     }
 
 
+def generate_mv3_strm(
+    base_url: str,
+    token: str,
+    source_dir: str,
+    target_dir: str,
+    storage: str = "115-default",
+    cloud: bool = True,
+    incremental: bool = True,
+    overwrite: bool = False,
+    organize: bool = False,
+    openlist: bool = False,
+    enable_primary_category: bool = True,
+    enable_secondary_category: bool = True,
+    template: str = "",
+    timeout: int = 180,
+) -> Dict[str, object]:
+    warnings: List[str] = []
+    blockers: List[str] = []
+    normalized_source_dir = _normalize_cloud_path(source_dir)
+    normalized_target_dir = _normalize_cloud_path(target_dir)
+    if not normalized_source_dir:
+        blockers.append("source_dir_required")
+    if not normalized_target_dir:
+        blockers.append("target_dir_required")
+    if normalized_target_dir.startswith("/已整理"):
+        blockers.append("target_dir_looks_like_cloud_media_root")
+    if cloud and normalized_source_dir.startswith("/volume"):
+        blockers.append("source_dir_looks_like_local_strm_root")
+
+    request_body: Dict[str, object] = {
+        "source_dir": normalized_source_dir,
+        "target_dir": normalized_target_dir,
+        "cloud": cloud,
+        "storage": storage or None,
+        "incremental": incremental,
+        "overwrite": overwrite,
+        "organize": organize,
+        "openlist": openlist,
+        "enable_primary_category": enable_primary_category,
+        "enable_secondary_category": enable_secondary_category,
+    }
+    if template:
+        request_body["template"] = template
+
+    generate_report: Dict[str, object] = {"skipped": True}
+    if not blockers:
+        client = MV3Client(base_url, token, timeout=timeout)
+        try:
+            status, headers, response_body = client.post_json("/api/v1/strm/generate", request_body)
+            parsed = _parse_json(response_body.decode("utf-8", "replace"))
+            payload = _unwrap_api_payload(parsed)
+            api_success = _api_success(parsed)
+            generate_report = _mv3_api_call_summary(
+                "POST",
+                "/api/v1/strm/generate",
+                status,
+                headers,
+                request_body,
+                payload,
+                api_success,
+                response_body,
+            )
+        except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+            blockers.append("mv3_strm_generate_request_failed")
+            warnings.append(f"mv3_strm_generate_request_failed:{type(exc).__name__}:{exc}")
+            generate_report = _mv3_api_error_summary(
+                "POST",
+                "/api/v1/strm/generate",
+                request_body,
+                exc,
+            )
+
+    return {
+        "mode": "mv3-strm-generate-result",
+        "ok": bool(generate_report.get("ok")) and not blockers,
+        "source_dir": normalized_source_dir,
+        "target_dir": normalized_target_dir,
+        "storage": storage,
+        "cloud": cloud,
+        "incremental": incremental,
+        "overwrite": overwrite,
+        "organize": organize,
+        "openlist": openlist,
+        "enable_primary_category": enable_primary_category,
+        "enable_secondary_category": enable_secondary_category,
+        "template": template,
+        "request_summary": _strm_generate_request_summary(request_body),
+        "generate": generate_report,
+        "warnings": warnings,
+        "blockers": sorted(set(blockers)),
+        "safety": "approved MV3 STRM generation only; no cloud media move/delete, qBittorrent action, hlink deletion, local filesystem deletion, or MP cleanup is performed",
+    }
+
+
+def render_mv3_strm_generate_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    generate = report.get("generate") if isinstance(report.get("generate"), dict) else {}
+    lines = [
+        "# MV3 STRM Generate Result",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Source dir: `{report.get('source_dir', '')}`",
+        f"- Target dir: `{report.get('target_dir', '')}`",
+        f"- Storage: `{report.get('storage', '')}`",
+        f"- Cloud source: `{bool(report.get('cloud'))}`",
+        f"- Incremental: `{bool(report.get('incremental'))}`",
+        f"- Overwrite: `{bool(report.get('overwrite'))}`",
+        f"- Organize: `{bool(report.get('organize'))}`",
+        f"- Generate OK: `{bool(generate.get('ok'))}`",
+        f"- Generate HTTP status: `{generate.get('status', '')}`",
+        "- Safety: one approved MV3 STRM generate request only; no qB, hlink, local filesystem, or MP cleanup was performed.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    return "\n".join(lines)
+
+
 def render_mv3_organize_transfer_report(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -2346,6 +2466,23 @@ def _organize_transfer_request_summary(request_body: Dict[str, object]) -> Dict[
             for file in files[:100]
             if isinstance(file, dict)
         ],
+    }
+
+
+def _strm_generate_request_summary(request_body: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "endpoint": {"method": "POST", "path": "/api/v1/strm/generate"},
+        "source_dir": request_body.get("source_dir") or "",
+        "target_dir": request_body.get("target_dir") or "",
+        "storage": request_body.get("storage") or "",
+        "cloud": bool(request_body.get("cloud")),
+        "incremental": bool(request_body.get("incremental")),
+        "overwrite": bool(request_body.get("overwrite")),
+        "organize": bool(request_body.get("organize")),
+        "openlist": bool(request_body.get("openlist")),
+        "enable_primary_category": bool(request_body.get("enable_primary_category")),
+        "enable_secondary_category": bool(request_body.get("enable_secondary_category")),
+        "template_configured": bool(request_body.get("template")),
     }
 
 

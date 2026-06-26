@@ -26,6 +26,7 @@ from .mv3 import (
     ensure_mv3_115_path,
     check_mv3_offline_task,
     execute_mv3_organize_transfer_from_browse_report,
+    generate_mv3_strm,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
     probe_mv3,
@@ -41,6 +42,7 @@ from .mv3 import (
     render_mv3_resource_search_report,
     render_mv3_share_receive_report,
     render_mv3_share_preview_report,
+    render_mv3_strm_generate_report,
     render_mv3_wrong_root_repair_report,
     preview_mv3_share,
     receive_mv3_share,
@@ -337,6 +339,24 @@ def build_parser() -> argparse.ArgumentParser:
     organize_transfer_parser.add_argument("--approve-transfer", action="store_true", help="Required: actually send one MV3 organize transfer request")
     organize_transfer_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     organize_transfer_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    strm_generate_parser = subcommands.add_parser("mv3-strm-generate", help="Execute one approved MV3 STRM generation request")
+    strm_generate_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    strm_generate_parser.add_argument("--source-dir", required=True, help="Cloud source media directory, e.g. /已整理/series/Demo/Season 1")
+    strm_generate_parser.add_argument("--target-dir", required=True, help="Local/MV3 STRM output dir, e.g. /volume4/mv3/strm")
+    strm_generate_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    strm_generate_parser.add_argument("--local-source", action="store_true", help="Treat source as local instead of cloud")
+    strm_generate_parser.add_argument("--overwrite", action="store_true", help="Allow MV3 to overwrite existing STRM files")
+    strm_generate_parser.add_argument("--full", action="store_true", help="Disable incremental mode")
+    strm_generate_parser.add_argument("--organize", action="store_true", help="Ask MV3 to organize while generating STRM")
+    strm_generate_parser.add_argument("--openlist", action="store_true", help="Use MV3 openlist mode")
+    strm_generate_parser.add_argument("--disable-primary-category", action="store_true", help="Disable MV3 primary category output")
+    strm_generate_parser.add_argument("--disable-secondary-category", action="store_true", help="Disable MV3 secondary category output")
+    strm_generate_parser.add_argument("--template", default="", help="Optional MV3 STRM template override")
+    strm_generate_parser.add_argument("--timeout", type=int, default=180, help="Per-request timeout in seconds")
+    strm_generate_parser.add_argument("--approve-generate", action="store_true", help="Required: actually send one MV3 STRM generate request")
+    strm_generate_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    strm_generate_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     cloud_browse_parser = subcommands.add_parser("mv3-cloud-browse", help="Readonly MV3 cloud folder browse")
     cloud_browse_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -993,6 +1013,35 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_organize_transfer_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "mv3-strm-generate":
+        if not args.approve_generate:
+            parser.error("mv3-strm-generate requires --approve-generate")
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-strm-generate requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = generate_mv3_strm(
+            config.mv3_base_url,
+            config.mv3_token,
+            source_dir=args.source_dir,
+            target_dir=args.target_dir,
+            storage=args.storage,
+            cloud=not args.local_source,
+            incremental=not args.full,
+            overwrite=args.overwrite,
+            organize=args.organize,
+            openlist=args.openlist,
+            enable_primary_category=not args.disable_primary_category,
+            enable_secondary_category=not args.disable_secondary_category,
+            template=args.template,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_strm_generate_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:
