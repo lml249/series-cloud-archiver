@@ -5,6 +5,12 @@ from pathlib import Path
 from typing import List, Optional
 
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
+from .cloud_cleanup import (
+    execute_cloud_complete_cleanup_plan,
+    plan_cloud_complete_cleanup,
+    render_cloud_complete_cleanup_execute,
+    render_cloud_complete_cleanup_plan,
+)
 from .cleanup_verify import (
     render_mp_cleanup_verification,
     render_strm_verification,
@@ -178,6 +184,28 @@ def build_parser() -> argparse.ArgumentParser:
     mp_cleanup_verify_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
     mp_cleanup_verify_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     mp_cleanup_verify_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    cloud_cleanup_plan_parser = subcommands.add_parser("plan-cloud-complete-cleanup", help="Build a readonly MP cleanup plan for candidates whose cloud STRM is already complete")
+    cloud_cleanup_plan_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    cloud_cleanup_plan_parser.add_argument("--cloud-report", required=True, help="JSON report from cloud-check")
+    cloud_cleanup_plan_parser.add_argument("--limit", type=int, default=0, help="Maximum cloud_strm_complete items to plan")
+    cloud_cleanup_plan_parser.add_argument("--title", action="append", default=[], help="Only include an exact title; can be repeated")
+    cloud_cleanup_plan_parser.add_argument("--required-target-prefix", default="", help="Every STRM target must resolve under this prefix")
+    cloud_cleanup_plan_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not resolve under this prefix; can be repeated")
+    cloud_cleanup_plan_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    cloud_cleanup_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    cloud_cleanup_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    cloud_cleanup_exec_parser = subcommands.add_parser("cloud-complete-cleanup-execute", help="Execute approved MP cleanup from a cloud-complete cleanup plan")
+    cloud_cleanup_exec_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    cloud_cleanup_exec_parser.add_argument("--plan", required=True, help="JSON report from plan-cloud-complete-cleanup")
+    cloud_cleanup_exec_parser.add_argument("--limit", type=int, default=0, help="Maximum ready items to execute")
+    cloud_cleanup_exec_parser.add_argument("--title", action="append", default=[], help="Only execute an exact title; can be repeated")
+    cloud_cleanup_exec_parser.add_argument("--continue-on-error", action="store_true", help="Continue after a failed item")
+    cloud_cleanup_exec_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    cloud_cleanup_exec_parser.add_argument("--approve-mp-cleanup", action="store_true", help="Required: actually send MoviePilot DELETE requests")
+    cloud_cleanup_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    cloud_cleanup_exec_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     strm_verify_parser = subcommands.add_parser("strm-verify", help="Readonly STRM episode and target-path verification")
     strm_verify_parser.add_argument("--title", required=True, help="Series title for reporting")
@@ -747,6 +775,56 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mp_cleanup_verification(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "plan-cloud-complete-cleanup":
+        config = config_from_env(args.env_file, [])
+        if not config.mp_base_url or not config.mp_token:
+            parser.error("plan-cloud-complete-cleanup requires MP_BASE_URL and MP_API_TOKEN")
+        report = plan_cloud_complete_cleanup(
+            load_cloud_check_report(args.cloud_report),
+            config.mp_base_url,
+            config.mp_token,
+            path_aliases=config.path_aliases,
+            limit=args.limit,
+            titles=args.title,
+            timeout=args.timeout,
+            required_target_prefix=args.required_target_prefix,
+            forbidden_target_prefixes=args.forbidden_target_prefix,
+        )
+        rendered = render_cloud_complete_cleanup_plan(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "cloud-complete-cleanup-execute":
+        if not args.approve_mp_cleanup:
+            parser.error("cloud-complete-cleanup-execute requires --approve-mp-cleanup")
+        config = config_from_env(args.env_file, [])
+        if not config.mp_base_url or not config.mp_token:
+            parser.error("cloud-complete-cleanup-execute requires MP_BASE_URL and MP_API_TOKEN")
+        plan = load_optional_json_report(args.plan)
+        if not isinstance(plan, dict):
+            parser.error("cleanup plan must be a JSON object")
+        report = execute_cloud_complete_cleanup_plan(
+            plan,
+            config.mp_base_url,
+            config.mp_token,
+            qb_base_url=config.qb_base_url,
+            qb_user=config.qb_user,
+            qb_pass=config.qb_pass,
+            limit=args.limit,
+            titles=args.title,
+            timeout=args.timeout,
+            continue_on_error=args.continue_on_error,
+        )
+        rendered = render_cloud_complete_cleanup_execute(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:
