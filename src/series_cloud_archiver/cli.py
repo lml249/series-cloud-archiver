@@ -25,6 +25,11 @@ from .emby import (
     render_emby_delete_stale_paths_report,
     render_emby_refresh_verify_report,
 )
+from .hlink_cleanup import (
+    execute_cloud_hlink_cleanup,
+    preview_cloud_hlink_cleanup,
+    render_cloud_hlink_cleanup,
+)
 from .identity import render_identity_overrides, resolve_identity_overrides_from_scan_report
 from .moviepilot import (
     execute_mp_cleanup_from_preview_report,
@@ -226,6 +231,33 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_cleanup_exec_parser.add_argument("--approve-mp-cleanup", action="store_true", help="Required: actually send MoviePilot DELETE requests")
     cloud_cleanup_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     cloud_cleanup_exec_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    hlink_cleanup_preview_parser = subcommands.add_parser("cloud-hlink-cleanup-preview", help="Readonly cleanup preview when cloud STRM is complete but MP history is missing")
+    hlink_cleanup_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    hlink_cleanup_preview_parser.add_argument("--title", required=True, help="Series title for reporting")
+    hlink_cleanup_preview_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Expected TMDB ID")
+    hlink_cleanup_preview_parser.add_argument("--hlink-root", required=True, help="Explicit hlink root to remove after qB source cleanup")
+    hlink_cleanup_preview_parser.add_argument("--strm-root", required=True, help="STRM season root that must be complete")
+    hlink_cleanup_preview_parser.add_argument("--expected-episode-count", type=int, required=True, help="Expected distinct STRM episode count")
+    hlink_cleanup_preview_parser.add_argument("--expected-episode-min", type=int, required=True, help="Expected first STRM episode number")
+    hlink_cleanup_preview_parser.add_argument("--expected-episode-max", type=int, required=True, help="Expected last STRM episode number")
+    hlink_cleanup_preview_parser.add_argument("--min-seed-days", type=int, default=7, help="Minimum qB seed days")
+    hlink_cleanup_preview_parser.add_argument("--required-target-prefix", default="", help="Every STRM target must start with this prefix")
+    hlink_cleanup_preview_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
+    hlink_cleanup_preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    hlink_cleanup_preview_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    hlink_cleanup_exec_parser = subcommands.add_parser("cloud-hlink-cleanup-execute", help="Execute approved qB+hlink cleanup from a validated cloud-hlink preview")
+    hlink_cleanup_exec_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    hlink_cleanup_exec_parser.add_argument("--preview-report", required=True, help="JSON report from cloud-hlink-cleanup-preview")
+    hlink_cleanup_exec_parser.add_argument("--expected-title", required=True, help="Safety check: title must exactly match preview")
+    hlink_cleanup_exec_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Safety check: expected TMDB ID")
+    hlink_cleanup_exec_parser.add_argument("--expected-hlink-root", required=True, help="Safety check: hlink root must exactly match preview")
+    hlink_cleanup_exec_parser.add_argument("--expected-qb-hash", action="append", required=True, help="Expected full qB hash from preview; can be repeated")
+    hlink_cleanup_exec_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    hlink_cleanup_exec_parser.add_argument("--approve-delete", action="store_true", help="Required: actually delete qB torrents/files and the explicit hlink root")
+    hlink_cleanup_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    hlink_cleanup_exec_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     strm_verify_parser = subcommands.add_parser("strm-verify", help="Readonly STRM episode and target-path verification")
     strm_verify_parser.add_argument("--title", required=True, help="Series title for reporting")
@@ -881,6 +913,70 @@ def main(argv: Optional[List[str]] = None) -> int:
             continue_on_error=args.continue_on_error,
         )
         rendered = render_cloud_complete_cleanup_execute(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "cloud-hlink-cleanup-preview":
+        config = config_from_env(args.env_file, [])
+        if not config.qb_base_url:
+            parser.error("cloud-hlink-cleanup-preview requires QB_BASE_URL")
+        report = preview_cloud_hlink_cleanup(
+            title=args.title,
+            hlink_root=args.hlink_root,
+            strm_root=args.strm_root,
+            expected_tmdbid=args.expected_tmdbid,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            qb_base_url=config.qb_base_url,
+            qb_user=config.qb_user,
+            qb_pass=config.qb_pass,
+            path_aliases=config.path_aliases,
+            min_seed_days=args.min_seed_days,
+            required_target_prefix=args.required_target_prefix,
+            forbidden_target_prefixes=args.forbidden_target_prefix,
+        )
+        rendered = render_cloud_hlink_cleanup(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "cloud-hlink-cleanup-execute":
+        if not args.approve_delete:
+            parser.error("cloud-hlink-cleanup-execute requires --approve-delete")
+        config = config_from_env(args.env_file, [])
+        if not config.qb_base_url:
+            parser.error("cloud-hlink-cleanup-execute requires QB_BASE_URL")
+        preview = load_optional_json_report(args.preview_report)
+        if not isinstance(preview, dict):
+            parser.error("preview report must be a JSON object")
+        preview_hlink = preview.get("hlink") if isinstance(preview.get("hlink"), dict) else {}
+        preview_qb = preview.get("qbittorrent") if isinstance(preview.get("qbittorrent"), dict) else {}
+        preview_expected = preview.get("expected") if isinstance(preview.get("expected"), dict) else {}
+        expected_hashes = sorted({str(item).lower() for item in args.expected_qb_hash if str(item)})
+        preview_hashes = sorted({str(item).lower() for item in preview_qb.get("hashes", [])}) if isinstance(preview_qb.get("hashes"), list) else []
+        if str(preview.get("title") or "") != args.expected_title:
+            parser.error("cloud-hlink-cleanup-execute expected title mismatch")
+        if int(preview_expected.get("tmdbid") or 0) != args.expected_tmdbid:
+            parser.error("cloud-hlink-cleanup-execute expected TMDB ID mismatch")
+        if str(preview_hlink.get("path") or "").rstrip("/") != args.expected_hlink_root.rstrip("/"):
+            parser.error("cloud-hlink-cleanup-execute expected hlink root mismatch")
+        if preview_hashes != expected_hashes:
+            parser.error("cloud-hlink-cleanup-execute expected qB hashes mismatch")
+        report = execute_cloud_hlink_cleanup(
+            preview,
+            config.qb_base_url,
+            config.qb_user,
+            config.qb_pass,
+            path_aliases=config.path_aliases,
+            timeout=args.timeout,
+        )
+        rendered = render_cloud_hlink_cleanup(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

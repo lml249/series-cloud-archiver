@@ -109,6 +109,27 @@ class QBClient:
             payload = json.loads(response.read().decode("utf-8", "replace"))
         return payload if isinstance(payload, dict) else {}
 
+    def delete_torrents(self, hashes: List[str], delete_files: bool = True) -> Dict[str, object]:
+        body = urllib.parse.urlencode(
+            {
+                "hashes": "|".join(hash_value for hash_value in hashes if hash_value),
+                "deleteFiles": str(delete_files).lower(),
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/api/v2/torrents/delete",
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with self.opener.open(request, timeout=self.timeout) as response:
+            text = response.read().decode("utf-8", "replace")
+            return {
+                "http_status": response.status,
+                "ok": 200 <= response.status < 300,
+                "response": text,
+            }
+
 
 def fetch_qb_evidence(base_url: str, user: str = "", qb_pass: str = "") -> List[QBTorrentEvidence]:
     items = fetch_qb_torrents(base_url, user, qb_pass)
