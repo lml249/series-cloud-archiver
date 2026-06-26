@@ -1206,7 +1206,7 @@ class MV3ProbeTest(unittest.TestCase):
             "token",
             browse_report,
             target_dir="/已整理",
-            strm_dir="/strm/series",
+            strm_dir="/strm",
             tmdb_id=123,
             expected_episode_count=3,
             expected_episode_min=1,
@@ -1254,7 +1254,7 @@ class MV3ProbeTest(unittest.TestCase):
                 "token",
                 browse_report,
                 target_dir="/已整理",
-                strm_dir="/strm/series",
+                strm_dir="/strm",
                 tmdb_id=123,
                 expected_episode_count=2,
                 expected_episode_min=1,
@@ -1265,7 +1265,7 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(seen["url"], "http://mv3.example/api/v1/organize/transfer")
         self.assertEqual(seen["body"]["target_dir"], "/已整理")
-        self.assertEqual(seen["body"]["strm_dir"], "/strm/series")
+        self.assertEqual(seen["body"]["strm_dir"], "/strm")
         self.assertEqual(seen["body"]["tmdb_id"], 123)
         self.assertEqual(seen["body"]["mode"], "move")
         self.assertEqual([item["source_file_id"] for item in seen["body"]["files"]], ["file-1", "file-2"])
@@ -1324,6 +1324,30 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("target_dir_should_be_organize_root_not_media_category", report["blockers"])
         self.assertEqual(report["transfer"], {"skipped": True})
 
+    def test_organize_transfer_blocks_media_category_strm_dir(self) -> None:
+        browse_report = {
+            "path": "/未整理/Demo",
+            "items": [
+                {"name": "Demo.S01E01.mp4", "kind": "file", "episode": 1, "file_id": "file-1"},
+            ],
+        }
+
+        report = execute_mv3_organize_transfer_from_browse_report(
+            "http://mv3.example",
+            "token",
+            browse_report,
+            target_dir="/已整理",
+            strm_dir="/strm/series",
+            tmdb_id=123,
+            expected_episode_count=1,
+            expected_episode_min=1,
+            expected_episode_max=1,
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("strm_dir_should_be_strm_root_not_media_category", report["blockers"])
+        self.assertEqual(report["transfer"], {"skipped": True})
+
     def test_organize_transfer_allows_source_path_override_for_folder_id_browse_report(self) -> None:
         seen = {}
         browse_report = {
@@ -1359,7 +1383,7 @@ class MV3ProbeTest(unittest.TestCase):
                 "token",
                 browse_report,
                 target_dir="/已整理",
-                strm_dir="/strm/series",
+                strm_dir="/strm",
                 tmdb_id=123,
                 expected_episode_count=1,
                 expected_episode_min=1,
@@ -2456,7 +2480,7 @@ class MV3ProbeTest(unittest.TestCase):
                         "--target-dir",
                         "/已整理",
                         "--strm-dir",
-                        "/strm/series",
+                        "/strm",
                         "--source-path-override",
                         "/未整理/Demo/Season 1",
                         "--tmdb-id",
@@ -2518,7 +2542,7 @@ class MV3ProbeTest(unittest.TestCase):
                         "--target-dir",
                         "/已整理",
                         "--strm-dir",
-                        "/strm/series",
+                        "/strm",
                         "--tmdb-id",
                         "123",
                         "--expected-episode-count",
@@ -2570,7 +2594,7 @@ class MV3ProbeTest(unittest.TestCase):
                         "--target-dir",
                         "/已整理/series",
                         "--strm-dir",
-                        "/strm/series",
+                        "/strm",
                         "--tmdb-id",
                         "123",
                         "--expected-episode-count",
