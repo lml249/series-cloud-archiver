@@ -9,6 +9,134 @@ from .moviepilot import MPTransferHistoryRecord, MoviePilotClient
 from .qbittorrent import fetch_qb_torrents
 
 
+def verify_strm_paths(
+    title: str,
+    strm_roots: Sequence[str],
+    expected_episode_count: int = 0,
+    expected_episode_min: int = 0,
+    expected_episode_max: int = 0,
+    required_target_prefix: str = "",
+    forbidden_target_prefixes: Optional[Sequence[str]] = None,
+) -> Dict[str, object]:
+    blockers: List[str] = []
+    warnings: List[str] = []
+    forbidden_target_prefixes = list(forbidden_target_prefixes or [])
+    if (expected_episode_count or expected_episode_min or expected_episode_max) and not strm_roots:
+        blockers.append("strm_root_required")
+
+    roots = [_strm_root_row(path, required_target_prefix=required_target_prefix, forbidden_target_prefixes=forbidden_target_prefixes) for path in strm_roots]
+    if any(not item["exists"] for item in roots):
+        blockers.append("strm_root_missing")
+
+    combined_episodes = sorted(
+        {
+            episode
+            for item in roots
+            for episode in item.get("episodes", [])
+            if isinstance(episode, int) and episode > 0
+        }
+    )
+    combined_missing = _missing_episode_numbers(combined_episodes)
+    combined = {
+        "episode_count": len(combined_episodes),
+        "episode_min": min(combined_episodes) if combined_episodes else None,
+        "episode_max": max(combined_episodes) if combined_episodes else None,
+        "missing_in_range": combined_missing,
+        "episodes": combined_episodes,
+    }
+    if expected_episode_count and len(combined_episodes) != expected_episode_count:
+        blockers.append("strm_episode_count_mismatch")
+    if expected_episode_min and (not combined_episodes or min(combined_episodes) != expected_episode_min):
+        blockers.append("strm_episode_min_mismatch")
+    if expected_episode_max and (not combined_episodes or max(combined_episodes) != expected_episode_max):
+        blockers.append("strm_episode_max_mismatch")
+    if combined_missing:
+        blockers.append("strm_episode_gap_detected")
+    for item in roots:
+        if item.get("duplicate_episodes"):
+            warnings.append("strm_duplicate_episode_files")
+        if item.get("target_prefix_mismatch_count"):
+            blockers.append("strm_target_prefix_mismatch")
+        if item.get("forbidden_target_count"):
+            blockers.append("strm_forbidden_target_prefix")
+
+    return {
+        "mode": "strm-verify",
+        "title": title,
+        "ok": not blockers,
+        "expected": {
+            "episode_count": expected_episode_count,
+            "episode_min": expected_episode_min,
+            "episode_max": expected_episode_max,
+            "required_target_prefix": required_target_prefix,
+            "forbidden_target_prefixes": forbidden_target_prefixes,
+        },
+        "strm": {
+            "roots": roots,
+            "combined": combined,
+        },
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "safety": "readonly STRM verification only; no MoviePilot request, qBittorrent action, filesystem deletion, or STRM write is performed",
+    }
+
+
+def render_strm_verification(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+
+    expected = report.get("expected") if isinstance(report.get("expected"), dict) else {}
+    strm = report.get("strm") if isinstance(report.get("strm"), dict) else {}
+    combined = strm.get("combined") if isinstance(strm.get("combined"), dict) else {}
+    lines = [
+        "# STRM Verification",
+        "",
+        f"- Title: `{report.get('title', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- STRM episode count: `{combined.get('episode_count', 0)}`",
+        f"- STRM episode range: `{combined.get('episode_min', '')}-{combined.get('episode_max', '')}`",
+        f"- STRM missing in range: `{combined.get('missing_in_range', [])}`",
+        f"- Required target prefix: `{expected.get('required_target_prefix', '')}`",
+        f"- Forbidden target prefixes: `{expected.get('forbidden_target_prefixes', [])}`",
+        "- Safety: readonly STRM verification only; no file changes were made.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+
+    roots = strm.get("roots")
+    if isinstance(roots, list) and roots:
+        lines.extend(
+            [
+                "",
+                "## STRM Roots",
+                "",
+                "| Path | Exists | Files | Episodes | Missing | Prefix mismatches | Forbidden targets |",
+                "| --- | --- | ---: | ---: | --- | ---: | ---: |",
+            ]
+        )
+        for item in roots:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "| {path} | {exists} | {file_count} | {episode_count} | {missing} | {mismatch} | {forbidden} |".format(
+                    path=_escape(str(item.get("path") or "")),
+                    exists=item.get("exists"),
+                    file_count=item.get("file_count", 0),
+                    episode_count=item.get("episode_count", 0),
+                    missing=_escape(str(item.get("missing_in_range", []))),
+                    mismatch=item.get("target_prefix_mismatch_count", 0),
+                    forbidden=item.get("forbidden_target_count", 0),
+                )
+            )
+    return "\n".join(lines)
+
+
 def verify_mp_cleanup_from_services(
     mp_base_url: str,
     mp_token: str,
@@ -288,8 +416,13 @@ def _path_exists_row(path: str) -> Dict[str, object]:
     return {"path": path, "exists": Path(path).exists()}
 
 
-def _strm_root_row(path: str) -> Dict[str, object]:
+def _strm_root_row(
+    path: str,
+    required_target_prefix: str = "",
+    forbidden_target_prefixes: Optional[Sequence[str]] = None,
+) -> Dict[str, object]:
     root = Path(path)
+    forbidden_target_prefixes = list(forbidden_target_prefixes or [])
     if not root.exists():
         return {
             "path": path,
@@ -302,11 +435,18 @@ def _strm_root_row(path: str) -> Dict[str, object]:
             "duplicate_episodes": [],
             "episodes": [],
             "sample_files": [],
+            "target_prefix_mismatch_count": 0,
+            "target_prefix_mismatch_samples": [],
+            "forbidden_target_count": 0,
+            "forbidden_target_samples": [],
         }
     files = sorted(item for item in root.rglob("*") if item.is_file() and item.suffix.lower() == ".strm")
     signal = episode_signal([item.name for item in files])
     episodes = signal.episodes
     duplicates = _duplicate_episode_numbers([item.name for item in files])
+    target_rows = [_strm_target_row(item, required_target_prefix, forbidden_target_prefixes) for item in files]
+    prefix_mismatches = [item for item in target_rows if item["target_prefix_mismatch"]]
+    forbidden_targets = [item for item in target_rows if item["forbidden_target"]]
     return {
         "path": path,
         "exists": True,
@@ -318,7 +458,30 @@ def _strm_root_row(path: str) -> Dict[str, object]:
         "duplicate_episodes": duplicates,
         "episodes": episodes,
         "sample_files": [str(item) for item in files[:5]],
+        "target_prefix_mismatch_count": len(prefix_mismatches),
+        "target_prefix_mismatch_samples": prefix_mismatches[:5],
+        "forbidden_target_count": len(forbidden_targets),
+        "forbidden_target_samples": forbidden_targets[:5],
     }
+
+
+def _strm_target_row(path: Path, required_target_prefix: str, forbidden_target_prefixes: Sequence[str]) -> Dict[str, object]:
+    target = path.read_text(encoding="utf-8", errors="replace").strip()
+    normalized_target = _normalize_target(target)
+    normalized_required = _normalize_target(required_target_prefix)
+    normalized_forbidden = [_normalize_target(item) for item in forbidden_target_prefixes if item]
+    target_prefix_mismatch = bool(normalized_required and not normalized_target.startswith(normalized_required))
+    forbidden_target = any(normalized_target.startswith(item) for item in normalized_forbidden)
+    return {
+        "file": str(path),
+        "target": target,
+        "target_prefix_mismatch": target_prefix_mismatch,
+        "forbidden_target": forbidden_target,
+    }
+
+
+def _normalize_target(value: str) -> str:
+    return str(value or "").strip().replace("\\", "/").rstrip("/")
 
 
 def _missing_episode_numbers(episodes: Sequence[int]) -> List[int]:

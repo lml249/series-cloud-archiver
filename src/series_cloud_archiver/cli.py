@@ -5,7 +5,12 @@ from pathlib import Path
 from typing import List, Optional
 
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
-from .cleanup_verify import render_mp_cleanup_verification, verify_mp_cleanup_from_services
+from .cleanup_verify import (
+    render_mp_cleanup_verification,
+    render_strm_verification,
+    verify_mp_cleanup_from_services,
+    verify_strm_paths,
+)
 from .config import config_from_env, db_path_from_env
 from .emby import refresh_and_verify_emby_library, render_emby_refresh_verify_report
 from .identity import render_identity_overrides, resolve_identity_overrides_from_scan_report
@@ -158,6 +163,17 @@ def build_parser() -> argparse.ArgumentParser:
     mp_cleanup_verify_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
     mp_cleanup_verify_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     mp_cleanup_verify_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    strm_verify_parser = subcommands.add_parser("strm-verify", help="Readonly STRM episode and target-path verification")
+    strm_verify_parser.add_argument("--title", required=True, help="Series title for reporting")
+    strm_verify_parser.add_argument("--strm-root", action="append", required=True, help="STRM root to verify; can be repeated")
+    strm_verify_parser.add_argument("--expected-episode-count", type=int, default=0, help="Expected distinct STRM episode count")
+    strm_verify_parser.add_argument("--expected-episode-min", type=int, default=0, help="Expected first STRM episode number")
+    strm_verify_parser.add_argument("--expected-episode-max", type=int, default=0, help="Expected last STRM episode number")
+    strm_verify_parser.add_argument("--required-target-prefix", default="", help="Every STRM target must start with this prefix")
+    strm_verify_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
+    strm_verify_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    strm_verify_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     emby_refresh_parser = subcommands.add_parser("emby-refresh-verify", help="Trigger Emby library refresh and verify stale local paths are gone")
     emby_refresh_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -633,6 +649,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(rendered)
         return 0
+
+    if args.command == "strm-verify":
+        report = verify_strm_paths(
+            title=args.title,
+            strm_roots=args.strm_root,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            required_target_prefix=args.required_target_prefix,
+            forbidden_target_prefixes=args.forbidden_target_prefix,
+        )
+        rendered = render_strm_verification(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
 
     if args.command == "emby-refresh-verify":
         config = config_from_env(args.env_file, [])

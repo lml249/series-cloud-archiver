@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from series_cloud_archiver.cli import main
 from series_cloud_archiver.config import ScanConfig
-from series_cloud_archiver.cleanup_verify import build_mp_cleanup_verification, render_mp_cleanup_verification
+from series_cloud_archiver.cleanup_verify import build_mp_cleanup_verification, render_mp_cleanup_verification, render_strm_verification, verify_strm_paths
 from series_cloud_archiver.emby import EmbyClient, refresh_and_verify_emby_library, render_emby_refresh_verify_report, verify_emby_library_paths
 from series_cloud_archiver.episode import episode_signal
 from series_cloud_archiver.models import FileSystemSeries, EpisodeSignal, QBTorrentEvidence
@@ -989,6 +989,54 @@ class MoviePilotEvidenceTest(unittest.TestCase):
             self.assertIn("qb_torrent_still_present", report["blockers"])
             self.assertIn("source_root_still_exists", report["blockers"])
             self.assertIn("strm_episode_count_mismatch", report["blockers"])
+
+    def test_strm_verify_checks_episode_coverage_and_target_prefixes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm" / "series" / "校园之外 (2026) {tmdbid=273240}" / "Season 01"
+            strm_root.mkdir(parents=True)
+            for index in range(1, 3):
+                (strm_root / f"校园之外 S01E{index:02d}.strm").write_text(
+                    f"/已整理/series/校园之外 (2026) {{tmdbid=273240}}/Season 1/E{index:02d}.mkv",
+                    encoding="utf-8",
+                )
+
+            report = verify_strm_paths(
+                "校园之外",
+                [str(strm_root)],
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+                required_target_prefix="/已整理/series/校园之外 (2026) {tmdbid=273240}",
+                forbidden_target_prefixes=["/series", "/已整理/series/series"],
+            )
+            rendered = render_strm_verification(report, "markdown")
+
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["strm"]["combined"]["episodes"], [1, 2])
+            self.assertIn("Required target prefix", rendered)
+
+    def test_strm_verify_blocks_wrong_target_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm" / "series" / "校园之外 (2026) {tmdbid=273240}" / "Season 01"
+            strm_root.mkdir(parents=True)
+            (strm_root / "校园之外 S01E01.strm").write_text(
+                "/series/校园之外 (2026) {tmdbid=273240}/Season 1/E01.mkv",
+                encoding="utf-8",
+            )
+
+            report = verify_strm_paths(
+                "校园之外",
+                [str(strm_root)],
+                expected_episode_count=1,
+                expected_episode_min=1,
+                expected_episode_max=1,
+                required_target_prefix="/已整理/series/校园之外 (2026) {tmdbid=273240}",
+                forbidden_target_prefixes=["/series"],
+            )
+
+            self.assertFalse(report["ok"])
+            self.assertIn("strm_target_prefix_mismatch", report["blockers"])
+            self.assertIn("strm_forbidden_target_prefix", report["blockers"])
 
     def test_history_match_respects_explicit_season(self) -> None:
         evidence = build_mp_subscription_evidence(

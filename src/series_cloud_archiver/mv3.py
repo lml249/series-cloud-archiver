@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -834,20 +835,30 @@ def execute_mv3_organize_transfer_from_browse_report(
     transfer_report: Dict[str, object] = {"skipped": True}
     if not blockers:
         client = MV3Client(base_url, token, timeout=timeout)
-        status, headers, response_body = client.post_json("/api/v1/organize/transfer", request_body)
-        parsed = _parse_json(response_body.decode("utf-8", "replace"))
-        payload = _unwrap_api_payload(parsed)
-        api_success = _api_success(parsed)
-        transfer_report = _mv3_api_call_summary(
-            "POST",
-            "/api/v1/organize/transfer",
-            status,
-            headers,
-            request_body,
-            payload,
-            api_success,
-            response_body,
-        )
+        try:
+            status, headers, response_body = client.post_json("/api/v1/organize/transfer", request_body)
+            parsed = _parse_json(response_body.decode("utf-8", "replace"))
+            payload = _unwrap_api_payload(parsed)
+            api_success = _api_success(parsed)
+            transfer_report = _mv3_api_call_summary(
+                "POST",
+                "/api/v1/organize/transfer",
+                status,
+                headers,
+                request_body,
+                payload,
+                api_success,
+                response_body,
+            )
+        except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+            blockers.append("mv3_transfer_request_failed")
+            warnings.append(f"mv3_transfer_request_failed:{type(exc).__name__}:{exc}")
+            transfer_report = _mv3_api_error_summary(
+                "POST",
+                "/api/v1/organize/transfer",
+                request_body,
+                exc,
+            )
 
     return {
         "mode": "mv3-organize-transfer-result",
@@ -2108,6 +2119,24 @@ def _mv3_api_call_summary(
         "response_shape": _json_shape(payload),
         "response_count": _json_count(payload),
         "sample": _sanitize_json(_sample_json(payload, max_items=10, max_keys=30)) if isinstance(payload, (dict, list)) else _sanitize_json(payload),
+    }
+
+
+def _mv3_api_error_summary(
+    method: str,
+    path: str,
+    request_body: Dict[str, object],
+    exc: BaseException,
+) -> Dict[str, object]:
+    return {
+        "endpoint": {"method": method, "path": path},
+        "ok": False,
+        "http_ok": False,
+        "api_success": False,
+        "status": 0,
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+        "request": _sanitize_json(request_body),
     }
 
 

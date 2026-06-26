@@ -1,4 +1,5 @@
 import json
+import socket
 import tempfile
 import urllib.parse
 import unittest
@@ -1108,6 +1109,35 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(seen["body"]["mode"], "move")
         self.assertEqual([item["source_file_id"] for item in seen["body"]["files"]], ["file-1", "file-2"])
         self.assertNotIn("token", rendered)
+
+    def test_organize_transfer_reports_timeout_without_throwing(self) -> None:
+        browse_report = {
+            "path": "/未整理/Demo/Season 1",
+            "items": [
+                {"name": "Demo.S01E01.mp4", "kind": "file", "episode": 1, "file_id": "file-1"},
+            ],
+        }
+
+        def fake_urlopen(_request, timeout):
+            raise socket.timeout("timed out")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = execute_mv3_organize_transfer_from_browse_report(
+                "http://mv3.example",
+                "token",
+                browse_report,
+                target_dir="/已整理",
+                strm_dir="/strm",
+                tmdb_id=123,
+                expected_episode_count=1,
+                expected_episode_min=1,
+                expected_episode_max=1,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("mv3_transfer_request_failed", report["blockers"])
+        self.assertEqual(report["transfer"]["error_type"], "TimeoutError")
+        self.assertEqual(report["transfer"]["endpoint"]["path"], "/api/v1/organize/transfer")
 
     def test_organize_transfer_blocks_media_category_target_dir(self) -> None:
         browse_report = {
