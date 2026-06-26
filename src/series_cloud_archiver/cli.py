@@ -1523,3 +1523,7 @@ def _qb_matches_for_manifest_selection(selected, qb_torrents):
             if isinstance(torrent, dict) and str(torrent.get("hash") or "").lower() in wanted_hashes
         ]
     return _match_qb_torrents_for_transfer_item(selected, qb_torrents)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
