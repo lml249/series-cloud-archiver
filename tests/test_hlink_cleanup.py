@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,7 +25,7 @@ class CloudHlinkCleanupTest(unittest.TestCase):
             hlink_root = tmp_path / "hlink" / "TV" / "沉默的荣耀 (2025) {tmdbid=281538}"
             hlink_file = hlink_root / "Season 01" / "沉默的荣耀 S01E01.mkv"
             hlink_file.parent.mkdir(parents=True)
-            hlink_file.hardlink_to(source_file)
+            os.link(source_file, hlink_file)
             strm_root = tmp_path / "strm" / "series" / "沉默的荣耀 (2025) {tmdbid=281538}" / "Season 01"
             write(strm_root / "沉默的荣耀 S01E01.strm", "/已整理/series/沉默的荣耀 (2025) {tmdbid=281538}/Season 01/E01.mkv")
             torrent = QBTorrentEvidence(
@@ -102,7 +103,7 @@ class CloudHlinkCleanupTest(unittest.TestCase):
             hlink_root = tmp_path / "hlink" / "TV" / "Show"
             hlink_file = hlink_root / "Season 01" / "Show S01E01.mkv"
             hlink_file.parent.mkdir(parents=True)
-            hlink_file.hardlink_to(source / "Show.S01E01.mkv")
+            os.link(source / "Show.S01E01.mkv", hlink_file)
             strm_root = tmp_path / "strm" / "Show" / "Season 01"
             write(strm_root / "Show S01E01.strm")
             torrent = QBTorrentEvidence(
