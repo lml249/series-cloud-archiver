@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from series_cloud_archiver.cli import main
-from series_cloud_archiver.dotqb_cleanup import cleanup_orphan_dotqb_roots
+from series_cloud_archiver.dotqb_cleanup import cleanup_orphan_dotqb_roots, render_dotqb_orphan_cleanup
 
 
 def touch(path: Path, text: str = "x") -> None:
@@ -128,6 +128,8 @@ class DotqbOrphanCleanupTest(unittest.TestCase):
             self.assertFalse(report["ok"])
             self.assertTrue((source / "Show.S01E01.mkv.!qB").exists())
             self.assertIn("qb_torrent_hash_still_present", report["blockers"])
+            rendered = render_dotqb_orphan_cleanup(report, "json")
+            self.assertEqual(json.loads(rendered)["expected"]["hash_prefixes"], ["feedface0000"])
 
     def test_cli_requires_approval_before_dotqb_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

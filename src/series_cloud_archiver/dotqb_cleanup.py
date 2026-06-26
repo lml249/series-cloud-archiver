@@ -33,6 +33,7 @@ def cleanup_orphan_dotqb_roots(
     warnings: List[str] = []
     aliases = _normalize_aliases(path_aliases or {})
     hash_prefixes = _normalize_hash_prefixes(expected_hash_prefixes or [])
+    hash_prefix_list = sorted(hash_prefixes)
 
     if not source_roots:
         blockers.append("source_root_required")
@@ -123,7 +124,7 @@ def cleanup_orphan_dotqb_roots(
         "ok": not all_blockers and bool(deleted_files),
         "expected": {
             "tmdbid": expected_tmdbid,
-            "hash_prefixes": hash_prefixes,
+            "hash_prefixes": hash_prefix_list,
             "episode_count": expected_episode_count,
             "episode_min": expected_episode_min,
             "episode_max": expected_episode_max,
