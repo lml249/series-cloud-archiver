@@ -1249,7 +1249,7 @@ class MV3ProbeTest(unittest.TestCase):
                 "http://mv3.example",
                 "token",
                 source_dir="/已整理/series/Demo/Season 1",
-                target_dir="/volume4/mv3/strm",
+                target_dir="/example/strm-root",
                 storage="115-default",
                 timeout=42,
             )
@@ -1260,7 +1260,7 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(seen["api_key"], "token")
         self.assertEqual(seen["timeout"], 42)
         self.assertEqual(seen["body"]["source_dir"], "/已整理/series/Demo/Season 1")
-        self.assertEqual(seen["body"]["target_dir"], "/volume4/mv3/strm")
+        self.assertEqual(seen["body"]["target_dir"], "/example/strm-root")
         self.assertTrue(seen["body"]["cloud"])
         self.assertTrue(seen["body"]["incremental"])
         self.assertFalse(seen["body"]["overwrite"])
@@ -1330,13 +1330,13 @@ class MV3ProbeTest(unittest.TestCase):
                             {
                                 "id": 16868,
                                 "source": "organize",
-                                "strm_path": "/volume4/mv3/strm/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.strm",
+                                "strm_path": "/example/strm-root/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.strm",
                                 "source_path": "/已整理/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.mkv",
                             },
                             {
                                 "id": 16962,
                                 "source": "generate",
-                                "strm_path": "/volume4/mv3/strm/八千里路云和月 - S01E37.strm",
+                                "strm_path": "/example/strm-root/八千里路云和月 - S01E37.strm",
                                 "source_path": "/已整理/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.mkv",
                             },
                         ],
@@ -1398,7 +1398,7 @@ class MV3ProbeTest(unittest.TestCase):
                                 {
                                     "id": 16868,
                                     "source": "organize",
-                                    "strm_path": "/volume4/mv3/strm/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.strm",
+                                    "strm_path": "/example/strm-root/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.strm",
                                     "source_path": "/已整理/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.mkv",
                                     "strm_content": "https://mv3.example/redirect?path=/已整理/series/八千里路云和月/Season%201/E37.mkv&pickcode=secret",
                                 }
@@ -1417,9 +1417,9 @@ class MV3ProbeTest(unittest.TestCase):
                     "token",
                     record_ids=[16868],
                     expected_record_ids=[16868],
-                    expected_strm_prefix="/volume4/mv3/strm/series/八千里路云和月",
+                    expected_strm_prefix="/example/strm-root/series/八千里路云和月",
                     expected_source_prefix="/已整理/series/八千里路云和月",
-                    host_strm_prefix=f"{host_root}=/volume4/mv3/strm",
+                    host_strm_prefix=f"{host_root}=/example/strm-root",
                     keyword="八千里路云和月",
                 )
 
@@ -1449,7 +1449,7 @@ class MV3ProbeTest(unittest.TestCase):
                         "items": [
                             {
                                 "id": 16868,
-                                "strm_path": "/volume4/mv3/strm/movie/Wrong.strm",
+                                "strm_path": "/example/strm-root/movie/Wrong.strm",
                                 "source_path": "/已整理/movie/Wrong.mkv",
                                 "strm_content": "https://mv3.example/redirect?path=/已整理/movie/Wrong.mkv",
                             }
@@ -1469,9 +1469,9 @@ class MV3ProbeTest(unittest.TestCase):
                     "token",
                     record_ids=[16868],
                     expected_record_ids=[16868],
-                    expected_strm_prefix="/volume4/mv3/strm/series/八千里路云和月",
+                    expected_strm_prefix="/example/strm-root/series/八千里路云和月",
                     expected_source_prefix="/已整理/series/八千里路云和月",
-                    host_strm_prefix=f"{tmp}=/volume4/mv3/strm",
+                    host_strm_prefix=f"{tmp}=/example/strm-root",
                 )
 
         self.assertFalse(report["ok"])
@@ -2455,7 +2455,7 @@ class MV3ProbeTest(unittest.TestCase):
                         "--source-dir",
                         "/已整理/series/Demo/Season 1",
                         "--target-dir",
-                        "/volume4/mv3/strm",
+                        "/example/strm-root",
                     ]
                 )
 
@@ -2493,7 +2493,7 @@ class MV3ProbeTest(unittest.TestCase):
                         "--source-dir",
                         "/已整理/series/Demo/Season 1",
                         "--target-dir",
-                        "/volume4/mv3/strm",
+                        "/example/strm-root",
                         "--approve-generate",
                         "--format",
                         "json",
@@ -2506,7 +2506,7 @@ class MV3ProbeTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["source_dir"], "/已整理/series/Demo/Season 1")
-            self.assertEqual(payload["target_dir"], "/volume4/mv3/strm")
+            self.assertEqual(payload["target_dir"], "/example/strm-root")
 
     def test_cli_refuses_strm_records_regenerate_without_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2598,7 +2598,7 @@ class MV3ProbeTest(unittest.TestCase):
                                 {
                                     "id": 16868,
                                     "source": "organize",
-                                    "strm_path": "/volume4/mv3/strm/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.strm",
+                                    "strm_path": "/example/strm-root/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.strm",
                                     "source_path": "/已整理/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.mkv",
                                 }
                             ]
@@ -2650,11 +2650,11 @@ class MV3ProbeTest(unittest.TestCase):
                         "--expected-record-id",
                         "16868",
                         "--expected-strm-prefix",
-                        "/volume4/mv3/strm/series/八千里路云和月",
+                        "/example/strm-root/series/八千里路云和月",
                         "--expected-source-prefix",
                         "/已整理/series/八千里路云和月",
                         "--host-strm-prefix",
-                        f"{tmp_path}=/volume4/mv3/strm",
+                        f"{tmp_path}=/example/strm-root",
                     ]
                 )
 
@@ -2684,7 +2684,7 @@ class MV3ProbeTest(unittest.TestCase):
                             "items": [
                                 {
                                     "id": 16868,
-                                    "strm_path": "/volume4/mv3/strm/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.strm",
+                                    "strm_path": "/example/strm-root/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.strm",
                                     "source_path": "/已整理/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.mkv",
                                     "strm_content": "https://mv3.example/redirect?path=/已整理/series/八千里路云和月/Season%201/E37.mkv&pickcode=secret",
                                 }
@@ -2710,11 +2710,11 @@ class MV3ProbeTest(unittest.TestCase):
                         "--keyword",
                         "八千里路云和月",
                         "--expected-strm-prefix",
-                        "/volume4/mv3/strm/series/八千里路云和月",
+                        "/example/strm-root/series/八千里路云和月",
                         "--expected-source-prefix",
                         "/已整理/series/八千里路云和月",
                         "--host-strm-prefix",
-                        f"{host_root}=/volume4/mv3/strm",
+                        f"{host_root}=/example/strm-root",
                         "--approve-write",
                         "--format",
                         "json",

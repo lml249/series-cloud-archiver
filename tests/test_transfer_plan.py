@@ -331,7 +331,7 @@ class TransferPlanTest(unittest.TestCase):
                     "expected_count": 39,
                     "candidate_count": 1,
                     "titles": ["沉默的荣耀 (2025) {tmdbid=123456}"],
-                    "source_paths": ["/volume3/volume3/hlink/TV/沉默的荣耀 (2025) {tmdbid=123456}"],
+                    "source_paths": ["/example/library-host/hlink/TV/沉默的荣耀 (2025) {tmdbid=123456}"],
                 }
             ],
         }
@@ -340,7 +340,7 @@ class TransferPlanTest(unittest.TestCase):
                 "name": "沉默的荣耀.Silent.Honor.S01.2025.2160p.WEB-DL.H265.AAC-ADWeb",
                 "hash": "abc",
                 "state": "stalledUP",
-                "content_path": "/volume3/TV/沉默的荣耀.Silent.Honor.S01.2025.2160p.WEB-DL.H265.AAC-ADWeb",
+                "content_path": "/example/qb-view/TV/沉默的荣耀.Silent.Honor.S01.2025.2160p.WEB-DL.H265.AAC-ADWeb",
                 "size": 100,
                 "progress": 1,
                 "seeding_time": 8 * 86400,
@@ -373,7 +373,7 @@ class TransferPlanTest(unittest.TestCase):
                     "expected_count": 24,
                     "candidate_count": 1,
                     "titles": ["海市蜃楼 (2025) {tmdbid=302726}"],
-                    "source_paths": ["/volume3/volume3/hlink/TV/海市蜃楼 (2025) {tmdbid=302726}"],
+                    "source_paths": ["/example/library-host/hlink/TV/海市蜃楼 (2025) {tmdbid=302726}"],
                 }
             ],
         }
@@ -382,7 +382,7 @@ class TransferPlanTest(unittest.TestCase):
                 "name": "海市蜃楼.2018.1080p.国西双语.简繁中字",
                 "hash": "wrong",
                 "state": "stalledUP",
-                "content_path": "/volume3/TV/海市蜃楼.2018.1080p.国西双语.简繁中字",
+                "content_path": "/example/qb-view/TV/海市蜃楼.2018.1080p.国西双语.简繁中字",
                 "size": 100,
                 "progress": 1,
                 "seeding_time": 8 * 86400,
@@ -491,7 +491,7 @@ class TransferPlanTest(unittest.TestCase):
                     "season": 1,
                     "size_bytes": 40 * 1024**3,
                     "expected_count": 40,
-                    "source_paths": ["/volume3/hlink/TV/八千里路云和月"],
+                    "source_paths": ["/example/library-host/hlink/TV/八千里路云和月"],
                 }
             ],
         }
@@ -535,7 +535,7 @@ class TransferPlanTest(unittest.TestCase):
                     "season": 1,
                     "size_bytes": int(1.1 * 1024**4),
                     "expected_count": 36,
-                    "source_paths": ["/volume3/hlink/TV/四喜"],
+                    "source_paths": ["/example/library-host/hlink/TV/四喜"],
                 }
             ],
         }

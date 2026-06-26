@@ -248,13 +248,13 @@ class QBittorrentClientTest(unittest.TestCase):
                     if url.endswith("/api/v2/torrents/info"):
                         return Response(
                             [
-                                {"hash": "aaa111", "name": "Incomplete", "state": "pausedDL", "progress": 0.5, "save_path": "/volume3/TV"},
-                                {"hash": "bbb222", "name": "Complete", "state": "stalledUP", "progress": 1.0, "save_path": "/volume3/TV"},
-                                {"hash": "ccc333", "name": "Missing", "state": "missingFiles", "progress": 0.0, "save_path": "/volume3/TV"},
+                                {"hash": "aaa111", "name": "Incomplete", "state": "pausedDL", "progress": 0.5, "save_path": "/example/qb-view/TV"},
+                                {"hash": "bbb222", "name": "Complete", "state": "stalledUP", "progress": 1.0, "save_path": "/example/qb-view/TV"},
+                                {"hash": "ccc333", "name": "Missing", "state": "missingFiles", "progress": 0.0, "save_path": "/example/qb-view/TV"},
                             ]
                         )
                     if url.endswith("/api/v2/app/preferences"):
-                        return Response({"save_path": "/volume3/TV", "temp_path_enabled": False, "incomplete_files_ext": True})
+                        return Response({"save_path": "/example/qb-view/TV", "temp_path_enabled": False, "incomplete_files_ext": True})
                     if "/api/v2/torrents/files?" in url:
                         if "aaa111" in url:
                             return Response([{"name": "Incomplete/E01.mkv", "size": 10, "progress": 0.5, "priority": 1}])
@@ -269,7 +269,7 @@ class QBittorrentClientTest(unittest.TestCase):
                     report = audit_dotqb_files(
                         "http://qb.example",
                         scan_roots=[str(host_root)],
-                        path_aliases={"/volume3/TV": str(host_root)},
+                        path_aliases={"/example/qb-view/TV": str(host_root)},
                     )
 
             self.assertEqual(report["dot_qb_total_count"], 4)
@@ -345,7 +345,7 @@ class QBittorrentClientTest(unittest.TestCase):
     def test_match_torrent_uses_normalized_hlink_title(self) -> None:
         series = FileSystemSeries(
             title="沉默的荣耀 (2025) {tmdbid=123456}",
-            path="/volume3/volume3/hlink/TV/沉默的荣耀 (2025) {tmdbid=123456}",
+            path="/example/library-host/hlink/TV/沉默的荣耀 (2025) {tmdbid=123456}",
             size_bytes=10,
             video_count=39,
             latest_mtime=0,
@@ -356,20 +356,20 @@ class QBittorrentClientTest(unittest.TestCase):
             name="沉默的荣耀.Silent.Honor.S01.2025.2160p.WEB-DL.H265.AAC-ADWeb",
             hash="right",
             state="stalledUP",
-            save_path="/volume3/TV/",
-            content_path="/volume3/TV/沉默的荣耀.Silent.Honor.S01.2025.2160p.WEB-DL.H265.AAC-ADWeb",
+            save_path="/example/qb-view/TV/",
+            content_path="/example/qb-view/TV/沉默的荣耀.Silent.Honor.S01.2025.2160p.WEB-DL.H265.AAC-ADWeb",
             progress=1.0,
             seeding_time_seconds=86400 * 8,
             seed_days=8.0,
             size_bytes=10,
         )
 
-        self.assertIs(match_torrent(series, [torrent], {"/volume3": "/volume3/volume3"}), torrent)
+        self.assertIs(match_torrent(series, [torrent], {"/example/library-host": "/example/qb-view"}), torrent)
 
     def test_match_torrent_title_tokens_stay_conservative(self) -> None:
         series = FileSystemSeries(
             title="沉默的荣耀 (2025) {tmdbid=123456}",
-            path="/volume3/volume3/hlink/TV/沉默的荣耀 (2025) {tmdbid=123456}",
+            path="/example/library-host/hlink/TV/沉默的荣耀 (2025) {tmdbid=123456}",
             size_bytes=10,
             video_count=39,
             latest_mtime=0,
@@ -380,20 +380,20 @@ class QBittorrentClientTest(unittest.TestCase):
             name="荣耀乒乓.Ping.Pong.Life.S01.2021.1080p.WEB-DL.H264",
             hash="wrong",
             state="stalledUP",
-            save_path="/volume3/TV/",
-            content_path="/volume3/TV/荣耀乒乓.Ping.Pong.Life.S01.2021.1080p.WEB-DL.H264",
+            save_path="/example/qb-view/TV/",
+            content_path="/example/qb-view/TV/荣耀乒乓.Ping.Pong.Life.S01.2021.1080p.WEB-DL.H264",
             progress=1.0,
             seeding_time_seconds=86400 * 8,
             seed_days=8.0,
             size_bytes=10,
         )
 
-        self.assertIsNone(match_torrent(series, [wrong_torrent], {"/volume3": "/volume3/volume3"}))
+        self.assertIsNone(match_torrent(series, [wrong_torrent], {"/example/library-host": "/example/qb-view"}))
 
     def test_match_torrent_rejects_same_title_wrong_year_without_tv_signal(self) -> None:
         series = FileSystemSeries(
             title="海市蜃楼 (2025) {tmdbid=302726}",
-            path="/volume3/volume3/hlink/TV/海市蜃楼 (2025) {tmdbid=302726}",
+            path="/example/library-host/hlink/TV/海市蜃楼 (2025) {tmdbid=302726}",
             size_bytes=10,
             video_count=24,
             latest_mtime=0,
@@ -404,15 +404,15 @@ class QBittorrentClientTest(unittest.TestCase):
             name="海市蜃楼.2018.1080p.国西双语.简繁中字",
             hash="wrong",
             state="stalledUP",
-            save_path="/volume3/TV/",
-            content_path="/volume3/TV/海市蜃楼.2018.1080p.国西双语.简繁中字",
+            save_path="/example/qb-view/TV/",
+            content_path="/example/qb-view/TV/海市蜃楼.2018.1080p.国西双语.简繁中字",
             progress=1.0,
             seeding_time_seconds=86400 * 8,
             seed_days=8.0,
             size_bytes=10,
         )
 
-        self.assertIsNone(match_torrent(series, [movie_torrent], {"/volume3": "/volume3/volume3"}))
+        self.assertIsNone(match_torrent(series, [movie_torrent], {"/example/library-host": "/example/qb-view"}))
 
 
 class EmbyRefreshVerifyTest(unittest.TestCase):
@@ -1051,8 +1051,8 @@ class MoviePilotEvidenceTest(unittest.TestCase):
                     id=10,
                     title="八千里路云和月",
                     episodes="E01",
-                    src="/volume3/TV/source-a/E01.mkv",
-                    dest="/volume3/hlink/TV/八千里路云和月 (2026) {tmdbid=289624}/Season 01/E01.mkv",
+                    src="/example/qb-view/TV/source-a/E01.mkv",
+                    dest="/example/library-host/hlink/TV/八千里路云和月 (2026) {tmdbid=289624}/Season 01/E01.mkv",
                     mode="link",
                     status=True,
                     download_hash="aaaabbbbcccc1111",
@@ -1062,8 +1062,8 @@ class MoviePilotEvidenceTest(unittest.TestCase):
                     id=11,
                     title="八千里路云和月",
                     episodes="E02",
-                    src="/volume3/TV/source-b/E02.mkv",
-                    dest="/volume3/hlink/TV/八千里路云和月 (2026) {tmdbid=289624}/Season 01/E02.mkv",
+                    src="/example/qb-view/TV/source-b/E02.mkv",
+                    dest="/example/library-host/hlink/TV/八千里路云和月 (2026) {tmdbid=289624}/Season 01/E02.mkv",
                     mode="link",
                     status=True,
                     download_hash="ddddffffeeee2222",
@@ -1124,8 +1124,8 @@ class MoviePilotEvidenceTest(unittest.TestCase):
                     id=10,
                     title="八千里路云和月",
                     episodes="E01",
-                    src="/volume3/TV/source-a/E01.mkv",
-                    dest="/volume3/hlink/TV/八千里路云和月 (2026) {tmdbid=289624}/Season 01/E01.mkv",
+                    src="/example/qb-view/TV/source-a/E01.mkv",
+                    dest="/example/library-host/hlink/TV/八千里路云和月 (2026) {tmdbid=289624}/Season 01/E01.mkv",
                     mode="link",
                     status=True,
                     download_hash="aaaabbbbcccc1111",
@@ -1135,8 +1135,8 @@ class MoviePilotEvidenceTest(unittest.TestCase):
                     id=11,
                     title="八千里路云和月",
                     episodes="E02",
-                    src="/volume3/TV/source-b/E02.mkv",
-                    dest="/volume3/hlink/TV/八千里路云和月 副本/Season 01/E02.mkv",
+                    src="/example/qb-view/TV/source-b/E02.mkv",
+                    dest="/example/library-host/hlink/TV/八千里路云和月 副本/Season 01/E02.mkv",
                     mode="link",
                     status=True,
                     download_hash="ddddffffeeee2222",
