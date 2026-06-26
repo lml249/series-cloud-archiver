@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import json
 import time
@@ -55,6 +56,25 @@ class EmbyClient:
                 "response": _parse_json_object(text),
             }
 
+    def _delete_empty(self, path: str, query: Optional[Dict[str, str]] = None) -> Dict[str, object]:
+        url = _url_with_query(f"{self.base_url}{path}", query or {})
+        request = urllib.request.Request(url, data=b"", headers=self._auth_headers(), method="DELETE")
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                text = response.read().decode("utf-8", "replace")
+                return {
+                    "http_status": response.status,
+                    "ok": 200 <= response.status < 300,
+                    "response": _parse_json_object(text),
+                }
+        except urllib.error.HTTPError as exc:
+            text = exc.read().decode("utf-8", "replace")
+            return {
+                "http_status": exc.code,
+                "ok": False,
+                "response": _parse_json_object(text),
+            }
+
     def series_items(self) -> List[Dict[str, object]]:
         payload = self._get(
             "/emby/Items",
@@ -70,6 +90,9 @@ class EmbyClient:
 
     def refresh_library(self) -> Dict[str, object]:
         return self._post_empty("/emby/Library/Refresh")
+
+    def delete_item(self, item_id: object) -> Dict[str, object]:
+        return self._delete_empty(f"/emby/Items/{urllib.parse.quote(str(item_id), safe='')}")
 
     def scheduled_tasks(self) -> List[Dict[str, object]]:
         payload = self._get("/emby/ScheduledTasks", {})
@@ -313,6 +336,114 @@ def render_emby_refresh_verify_report(report: Dict[str, object], output_format: 
     return "\n".join(lines)
 
 
+def delete_stale_emby_paths(
+    base_url: str,
+    api_key: str,
+    title: str,
+    stale_path_prefixes: Sequence[str],
+    strm_path_prefixes: Sequence[str],
+    stale_host_prefix: str = "",
+    expected_episode_count: int = 0,
+    expected_episode_min: int = 0,
+    expected_episode_max: int = 0,
+    library_db_path: str = "",
+    timeout: int = 20,
+) -> Dict[str, object]:
+    client = EmbyClient(base_url, api_key, timeout=timeout)
+    verification = verify_emby_library_paths(
+        client,
+        title=title,
+        stale_path_prefixes=stale_path_prefixes,
+        strm_path_prefixes=strm_path_prefixes,
+        expected_episode_count=expected_episode_count,
+        expected_episode_min=expected_episode_min,
+        expected_episode_max=expected_episode_max,
+        library_db_path=library_db_path,
+    )
+    blockers: List[str] = []
+    warnings: List[str] = list(verification.get("warnings", [])) if isinstance(verification.get("warnings"), list) else []
+    verification_blockers = [
+        str(blocker)
+        for blocker in verification.get("blockers", [])
+        if blocker != "emby_stale_path_records_present"
+    ] if isinstance(verification.get("blockers"), list) else []
+    blockers.extend(verification_blockers)
+    if not stale_path_prefixes:
+        blockers.append("stale_path_prefix_required")
+    if not strm_path_prefixes:
+        blockers.append("strm_path_prefix_required")
+    if not library_db_path:
+        blockers.append("library_db_required_for_stale_delete")
+    if not stale_host_prefix:
+        blockers.append("stale_host_prefix_required")
+
+    stale_rows = _db_rows_for_prefixes_path(library_db_path, stale_path_prefixes) if library_db_path else []
+    root_rows = _stale_root_rows(stale_rows, stale_path_prefixes)
+    if not root_rows:
+        blockers.append("stale_root_item_not_found")
+    if len(root_rows) != len({str(row.get("path") or "").rstrip("/") for row in root_rows}):
+        blockers.append("duplicate_stale_root_items")
+
+    host_checks = [_stale_host_check(prefix, stale_path_prefixes, stale_host_prefix) for prefix in _normalize_prefixes(stale_path_prefixes)]
+    if any(check.get("blocked") for check in host_checks):
+        blockers.append("stale_host_path_check_failed")
+    if any(check.get("exists") for check in host_checks):
+        blockers.append("stale_host_path_still_exists")
+
+    delete_results: List[Dict[str, object]] = []
+    if not blockers:
+        for row in root_rows:
+            result = client.delete_item(row.get("id"))
+            delete_results.append(
+                {
+                    "id": row.get("id"),
+                    "path": row.get("path"),
+                    "name": row.get("name"),
+                    "http_status": result.get("http_status"),
+                    "ok": bool(result.get("ok")),
+                    "response": result.get("response"),
+                }
+            )
+        if any(not item.get("ok") for item in delete_results):
+            blockers.append("emby_delete_item_failed")
+
+    return {
+        "mode": "emby-delete-stale-paths",
+        "title": title,
+        "ok": not blockers and bool(delete_results),
+        "verification": verification,
+        "stale_rows_count": len(stale_rows),
+        "root_items": root_rows,
+        "host_checks": host_checks,
+        "delete_results": delete_results,
+        "blockers": sorted(set(blockers)),
+        "warnings": warnings,
+        "safety": "approved Emby item delete only for stale root items whose host paths no longer exist and whose STRM replacement verifies complete; no filesystem, qBittorrent, MoviePilot, or direct database write is performed",
+    }
+
+
+def render_emby_delete_stale_paths_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    verification = report.get("verification") if isinstance(report.get("verification"), dict) else {}
+    totals = verification.get("totals") if isinstance(verification.get("totals"), dict) else {}
+    lines = [
+        "# Emby Stale Path Delete",
+        "",
+        f"- Title: `{report.get('title', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Stale rows before delete: `{report.get('stale_rows_count', 0)}`",
+        f"- Root items deleted: `{len(report.get('delete_results', [])) if isinstance(report.get('delete_results'), list) else 0}`",
+        f"- STRM records: `{totals.get('strm_records', 0)}`",
+        "- Safety: approved Emby item delete only; no files, qB, MP, or Emby database rows are modified directly.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    return "\n".join(lines)
+
+
 def fetch_emby_evidence(base_url: str, api_key: str) -> List[EmbyEvidence]:
     client = EmbyClient(base_url, api_key)
     evidence: List[EmbyEvidence] = []
@@ -426,6 +557,18 @@ def _db_rows_for_prefixes(connection: sqlite3.Connection, prefixes: Sequence[str
                 }
             )
     return rows
+
+
+def _db_rows_for_prefixes_path(library_db_path: str, prefixes: Sequence[str]) -> List[Dict[str, object]]:
+    db_path = Path(library_db_path)
+    if not db_path.exists():
+        return []
+    connection = sqlite3.connect(_sqlite_readonly_uri(db_path), uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        return _db_rows_for_prefixes(connection, prefixes)
+    finally:
+        connection.close()
 
 
 def _rows_for_prefixes(items: Sequence[Dict[str, object]], prefixes: Sequence[str]) -> List[Dict[str, object]]:
@@ -553,6 +696,47 @@ def _episode_summary(episodes: Sequence[int]) -> Dict[str, object]:
 
 def _normalize_prefixes(prefixes: Sequence[str]) -> List[str]:
     return [prefix.rstrip("/") for prefix in prefixes if prefix]
+
+
+def _stale_root_rows(rows: Sequence[Dict[str, object]], stale_path_prefixes: Sequence[str]) -> List[Dict[str, object]]:
+    prefixes = set(_normalize_prefixes(stale_path_prefixes))
+    roots = []
+    for row in rows:
+        path = str(row.get("path") or "").rstrip("/")
+        if path in prefixes:
+            roots.append(
+                {
+                    "id": row.get("id"),
+                    "type": row.get("type"),
+                    "name": row.get("name"),
+                    "path": path,
+                }
+            )
+    return roots
+
+
+def _stale_host_check(stale_prefix: str, stale_path_prefixes: Sequence[str], stale_host_prefix: str) -> Dict[str, object]:
+    normalized_stale_host_prefix = stale_host_prefix.rstrip("/")
+    normalized_stale_prefixes = _normalize_prefixes(stale_path_prefixes)
+    if not normalized_stale_host_prefix:
+        return {"stale_prefix": stale_prefix, "host_path": "", "exists": False, "blocked": True}
+    try:
+        index = normalized_stale_prefixes.index(stale_prefix)
+    except ValueError:
+        index = 0
+    host_prefixes = [part.strip().rstrip("/") for part in normalized_stale_host_prefix.split(",") if part.strip()]
+    host_prefix = host_prefixes[index] if index < len(host_prefixes) else host_prefixes[-1] if host_prefixes else ""
+    if not host_prefix:
+        return {"stale_prefix": stale_prefix, "host_path": "", "exists": False, "blocked": True}
+    # The host path must be a direct mapping for the same stale root, not a broad parent such as /volume3.
+    if not (Path(host_prefix).name and Path(stale_prefix).name and Path(host_prefix).name == Path(stale_prefix).name):
+        return {"stale_prefix": stale_prefix, "host_path": host_prefix, "exists": False, "blocked": True}
+    return {
+        "stale_prefix": stale_prefix,
+        "host_path": host_prefix,
+        "exists": os.path.exists(host_prefix),
+        "blocked": False,
+    }
 
 
 def _summarize_task_wait(task_wait: Dict[str, object]) -> Dict[str, object]:

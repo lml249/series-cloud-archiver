@@ -8,7 +8,13 @@ from unittest.mock import patch
 from series_cloud_archiver.cli import main
 from series_cloud_archiver.config import ScanConfig
 from series_cloud_archiver.cleanup_verify import build_mp_cleanup_verification, render_mp_cleanup_verification, render_strm_verification, verify_strm_paths
-from series_cloud_archiver.emby import EmbyClient, refresh_and_verify_emby_library, render_emby_refresh_verify_report, verify_emby_library_paths
+from series_cloud_archiver.emby import (
+    EmbyClient,
+    delete_stale_emby_paths,
+    refresh_and_verify_emby_library,
+    render_emby_refresh_verify_report,
+    verify_emby_library_paths,
+)
 from series_cloud_archiver.episode import episode_signal
 from series_cloud_archiver.models import FileSystemSeries, EpisodeSignal, QBTorrentEvidence
 from series_cloud_archiver.moviepilot import (
@@ -808,6 +814,129 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
         self.assertEqual(report["method"], "sqlite_library_db")
         self.assertEqual(report["totals"]["strm_records"], 1)
         self.assertEqual(report["blockers"], [])
+
+    def test_delete_stale_emby_paths_only_deletes_missing_stale_root_when_strm_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "library.db"
+            stale_host = tmp_path / "missing" / "楚汉传奇 (2012) {tmdbid=41146}"
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE MediaItems (
+                        Id TEXT,
+                        type TEXT,
+                        Name TEXT,
+                        SeriesName TEXT,
+                        Path TEXT,
+                        IndexNumber INTEGER,
+                        ParentIndexNumber INTEGER
+                    )
+                    """
+                )
+                rows = [
+                    ("local-series", "Series", "楚汉传奇", None, "/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}", None, None),
+                    ("local-season", "Season", "Season 01", None, "/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}/Season 01", None, None),
+                    ("local-episode", "Episode", "第1集", "楚汉传奇", "/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E01.mkv", 1, 1),
+                    ("strm-series", "Series", "楚汉传奇", None, "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}", None, None),
+                    ("strm-episode-1", "Episode", "第1集", "楚汉传奇", "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E01.strm", 1, 1),
+                    ("strm-episode-2", "Episode", "第2集", "楚汉传奇", "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E02.strm", 2, 1),
+                ]
+                connection.executemany("INSERT INTO MediaItems VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+                connection.commit()
+            finally:
+                connection.close()
+
+            calls = []
+
+            class FakeClient:
+                def __init__(self, base_url, api_key, timeout=20):
+                    pass
+
+                def items_by_search(self, _search_term):
+                    raise AssertionError("sqlite path should be used")
+
+                def delete_item(self, item_id):
+                    calls.append(item_id)
+                    return {"http_status": 204, "ok": True, "response": {}}
+
+            with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+                report = delete_stale_emby_paths(
+                    "http://emby.example",
+                    "token",
+                    title="楚汉传奇",
+                    stale_path_prefixes=["/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}"],
+                    stale_host_prefix=str(stale_host),
+                    strm_path_prefixes=["/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}"],
+                    expected_episode_count=2,
+                    expected_episode_min=1,
+                    expected_episode_max=2,
+                    library_db_path=str(db_path),
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(calls, ["local-series"])
+        self.assertEqual(report["stale_rows_count"], 3)
+        self.assertEqual(report["delete_results"][0]["id"], "local-series")
+
+    def test_delete_stale_emby_paths_blocks_when_host_path_still_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "library.db"
+            stale_host = tmp_path / "楚汉传奇 (2012) {tmdbid=41146}"
+            stale_host.mkdir()
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE MediaItems (
+                        Id TEXT,
+                        type TEXT,
+                        Name TEXT,
+                        SeriesName TEXT,
+                        Path TEXT,
+                        IndexNumber INTEGER,
+                        ParentIndexNumber INTEGER
+                    )
+                    """
+                )
+                rows = [
+                    ("local-series", "Series", "楚汉传奇", None, "/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}", None, None),
+                    ("strm-episode-1", "Episode", "第1集", "楚汉传奇", "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E01.strm", 1, 1),
+                ]
+                connection.executemany("INSERT INTO MediaItems VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+                connection.commit()
+            finally:
+                connection.close()
+
+            class FakeClient:
+                def __init__(self, base_url, api_key, timeout=20):
+                    pass
+
+                def items_by_search(self, _search_term):
+                    raise AssertionError("sqlite path should be used")
+
+                def delete_item(self, _item_id):
+                    raise AssertionError("delete should be blocked")
+
+            with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+                report = delete_stale_emby_paths(
+                    "http://emby.example",
+                    "token",
+                    title="楚汉传奇",
+                    stale_path_prefixes=["/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}"],
+                    stale_host_prefix=str(stale_host),
+                    strm_path_prefixes=["/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}"],
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    library_db_path=str(db_path),
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("stale_host_path_still_exists", report["blockers"])
+        self.assertEqual(report["delete_results"], [])
 
 
 class MoviePilotEvidenceTest(unittest.TestCase):
