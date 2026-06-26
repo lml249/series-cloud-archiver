@@ -388,6 +388,7 @@ def build_parser() -> argparse.ArgumentParser:
     share_search_plan_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
     share_search_plan_parser.add_argument("--transfer-plan", required=True, help="JSON report from plan-mv3-transfer")
     share_search_plan_parser.add_argument("--limit", type=int, default=10, help="Maximum transfer rows to search")
+    share_search_plan_parser.add_argument("--offset", type=int, default=0, help="Skip this many transfer rows before searching")
     share_search_plan_parser.add_argument("--max-candidates", type=int, default=5, help="Maximum ranked search candidates per row")
     share_search_plan_parser.add_argument("--channel", action="append", default=[], help="Optional channel filter; can be repeated")
     share_search_plan_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
@@ -1233,7 +1234,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             parser.error("plan-mv3-share-search requires MV3_BASE_URL and MV3_API_TOKEN")
         transfer_plan = load_mv3_transfer_plan(args.transfer_plan)
         raw_items = [item for item in transfer_plan.get("items", []) if isinstance(item, dict)]
-        selected_items = raw_items[: args.limit if args.limit > 0 else len(raw_items)]
+        start = max(0, args.offset)
+        stop = start + args.limit if args.limit > 0 else len(raw_items)
+        selected_items = raw_items[start:stop]
         search_reports = {}
         for item in selected_items:
             title = str(item.get("title") or "")
@@ -1251,6 +1254,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             search_reports,
             limit=args.limit,
             max_candidates=args.max_candidates,
+            offset=args.offset,
         )
         rendered = render_mv3_share_search_plan(plan, args.format)
         if args.output:

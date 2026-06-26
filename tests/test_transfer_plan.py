@@ -525,6 +525,29 @@ class TransferPlanTest(unittest.TestCase):
         self.assertIn("size_similar", recommended["reasons"])
         self.assertIn("episode_count_covers_expected", recommended["reasons"])
 
+    def test_share_search_plan_can_start_from_offset(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {"title": "第一部", "season": 1, "size_bytes": 1, "expected_count": 1},
+                {"title": "第二部", "season": 1, "size_bytes": 2, "expected_count": 1},
+                {"title": "第三部", "season": 1, "size_bytes": 3, "expected_count": 1},
+            ],
+        }
+        search_reports = {"第二部": {"ok": True, "result_count": 0, "items": []}}
+
+        plan = plan_mv3_share_search_from_transfer_plan(
+            transfer_plan,
+            search_reports,
+            limit=1,
+            offset=1,
+        )
+
+        self.assertEqual(plan["planned_items"], 1)
+        self.assertEqual(plan["offset"], 1)
+        self.assertEqual(plan["items"][0]["priority"], 2)
+        self.assertEqual(plan["items"][0]["title"], "第二部")
+
     def test_share_search_plan_reads_chinese_episode_ranges_and_title_size(self) -> None:
         transfer_plan = {
             "mode": "readonly-mv3-transfer-plan",

@@ -207,12 +207,15 @@ def plan_mv3_share_search_from_transfer_plan(
     search_reports: Dict[str, Dict[str, object]],
     limit: int = 10,
     max_candidates: int = 5,
+    offset: int = 0,
 ) -> Dict[str, object]:
     raw_items = [item for item in transfer_plan.get("items", []) if isinstance(item, dict)]
-    selected_items = raw_items[: limit if limit > 0 else len(raw_items)]
+    start = max(0, offset)
+    stop = start + limit if limit > 0 else len(raw_items)
+    selected_items = raw_items[start:stop]
     items = [
         _share_search_plan_item(index, item, search_reports.get(str(item.get("title") or ""), {}), max_candidates)
-        for index, item in enumerate(selected_items, start=1)
+        for index, item in enumerate(selected_items, start=start + 1)
     ]
     ready_count = sum(1 for item in items if item.get("recommended_candidate"))
     return {
@@ -222,6 +225,7 @@ def plan_mv3_share_search_from_transfer_plan(
         "planned_items": len(items),
         "ready_items": ready_count,
         "limit": limit,
+        "offset": offset,
         "max_candidates": max_candidates,
         "total_size_bytes": sum(int(item.get("size_bytes") or 0) for item in items),
         "items": items,
