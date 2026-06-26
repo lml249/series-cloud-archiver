@@ -1366,6 +1366,7 @@ def redirect_mv3_strm_records(
 
     before_report: Dict[str, object] = {"skipped": True}
     before_records: List[Dict[str, object]] = []
+    expected_after_paths: Dict[int, str] = {}
     if not blockers:
         before_report = list_mv3_strm_records(
             base_url,
@@ -1380,6 +1381,8 @@ def redirect_mv3_strm_records(
             blockers.append("mv3_strm_records_read_failed")
         before_records = [record for record in before_report.get("records", []) if isinstance(record, dict)]
         _validate_redirect_record_set(before_records, clean_record_ids, old_prefix, expected_source_prefix, blockers, phase="before")
+        if not blockers:
+            expected_after_paths = _expected_redirect_paths(before_records, old_prefix, new_prefix)
 
     request_body: Dict[str, object] = {
         "old_prefix": old_prefix,
@@ -1390,12 +1393,14 @@ def redirect_mv3_strm_records(
         request_body["strm_dir"] = strm_dir
 
     redirect_report: Dict[str, object] = {"skipped": True}
+    redirect_payload: object = {}
     if not blockers:
         client = MV3Client(base_url, token, timeout=timeout)
         try:
             status, headers, response_body = client.post_json("/api/v1/strm/records/redirect", request_body)
             parsed = _parse_json(response_body.decode("utf-8", "replace"))
             payload = _unwrap_api_payload(parsed)
+            redirect_payload = payload
             api_success = _api_success(parsed)
             redirect_report = _mv3_api_call_summary(
                 "POST",
@@ -1409,6 +1414,7 @@ def redirect_mv3_strm_records(
             )
             if not redirect_report.get("ok"):
                 blockers.append("mv3_strm_records_redirect_failed")
+            _validate_redirect_mutation_result(payload, len(clean_record_ids), blockers)
         except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
             blockers.append("mv3_strm_records_redirect_request_failed")
             warnings.append(f"mv3_strm_records_redirect_request_failed:{type(exc).__name__}:{exc}")
@@ -1436,6 +1442,7 @@ def redirect_mv3_strm_records(
             post_blockers.append("mv3_strm_records_post_read_failed")
         after_records = [record for record in after_report.get("records", []) if isinstance(record, dict)]
         _validate_redirect_record_set(after_records, clean_record_ids, new_prefix, expected_source_prefix, post_blockers, phase="after")
+        _validate_redirect_expected_paths(after_records, expected_after_paths, post_blockers)
 
     all_blockers = sorted(set(blockers + post_blockers))
     return {
@@ -1452,7 +1459,8 @@ def redirect_mv3_strm_records(
         "request_summary": _strm_records_redirect_request_summary(request_body),
         "before": _strm_redirect_records_summary(before_records, old_prefix),
         "redirect": redirect_report,
-        "after": _strm_redirect_records_summary(after_records, new_prefix),
+        "after": _strm_redirect_records_summary(after_records, new_prefix, expected_after_paths),
+        "redirect_payload_summary": _redirect_payload_counts(redirect_payload),
         "warnings": sorted(set(warnings)),
         "blockers": all_blockers,
         "safety": "approved MV3 STRM record redirect only; records are read before and after, and no cloud media move/delete, qBittorrent action, hlink deletion, local filesystem deletion, or MP cleanup is performed",
@@ -3142,24 +3150,95 @@ def _validate_redirect_record_set(
     for record in records:
         strm_path = str(record.get("strm_path") or "")
         source_path = str(record.get("source_path") or "")
-        if expected_strm_prefix and strm_path != expected_strm_prefix and not strm_path.startswith(expected_strm_prefix.rstrip("/") + "/"):
+        if expected_strm_prefix and not _path_has_prefix(strm_path, expected_strm_prefix):
             blockers.append(f"{phase}_strm_path_prefix_mismatch")
-        if expected_source_prefix and source_path != expected_source_prefix and not source_path.startswith(expected_source_prefix.rstrip("/") + "/"):
+        if expected_source_prefix and not _path_has_prefix(source_path, expected_source_prefix):
             blockers.append(f"{phase}_source_path_prefix_mismatch")
 
 
-def _strm_redirect_records_summary(records: List[Dict[str, object]], expected_prefix: str) -> Dict[str, object]:
+def _validate_redirect_mutation_result(payload: object, expected_count: int, blockers: List[str]) -> None:
+    counts = _redirect_payload_counts(payload)
+    skipped = int(counts.get("skipped") or 0)
+    failed = int(counts.get("failed") or 0)
+    changed = int(counts.get("success") or counts.get("updated") or counts.get("changed") or 0)
+    if failed:
+        blockers.append("mv3_strm_records_redirect_failed_records")
+    if skipped:
+        blockers.append("mv3_strm_records_redirect_skipped_records")
+    if expected_count and changed not in (0, expected_count):
+        blockers.append("mv3_strm_records_redirect_partial_success")
+    if expected_count and changed == 0:
+        blockers.append("mv3_strm_records_redirect_no_records_changed")
+
+
+def _redirect_payload_counts(payload: object) -> Dict[str, int]:
+    if not isinstance(payload, dict):
+        return {}
+    counts: Dict[str, int] = {}
+    for key in ("success", "failed", "skipped", "updated", "changed"):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            continue
+        try:
+            counts[key] = int(value)
+        except (TypeError, ValueError):
+            pass
+    return counts
+
+
+def _expected_redirect_paths(records: List[Dict[str, object]], old_prefix: str, new_prefix: str) -> Dict[int, str]:
+    expected: Dict[int, str] = {}
+    for record in records:
+        record_id = int(record.get("id") or 0)
+        strm_path = str(record.get("strm_path") or "")
+        if record_id and _path_has_prefix(strm_path, old_prefix):
+            expected[record_id] = _replace_path_prefix(strm_path, old_prefix, new_prefix)
+    return expected
+
+
+def _validate_redirect_expected_paths(records: List[Dict[str, object]], expected_paths: Dict[int, str], blockers: List[str]) -> None:
+    if not expected_paths:
+        return
+    by_id = {int(record.get("id") or 0): str(record.get("strm_path") or "") for record in records}
+    for record_id, expected_path in expected_paths.items():
+        if by_id.get(record_id) != expected_path:
+            blockers.append("after_strm_path_expected_rewrite_mismatch")
+            return
+
+
+def _replace_path_prefix(path: str, old_prefix: str, new_prefix: str) -> str:
+    old_prefix = old_prefix.rstrip("/")
+    new_prefix = new_prefix.rstrip("/")
+    if path == old_prefix:
+        return new_prefix
+    suffix = path[len(old_prefix) :].lstrip("/")
+    return new_prefix + ("/" + suffix if suffix else "")
+
+
+def _path_has_prefix(path: str, prefix: str) -> bool:
+    path = str(path or "").rstrip("/")
+    prefix = str(prefix or "").rstrip("/")
+    return bool(prefix and (path == prefix or path.startswith(prefix + "/")))
+
+
+def _strm_redirect_records_summary(records: List[Dict[str, object]], expected_prefix: str, expected_paths: Optional[Dict[int, str]] = None) -> Dict[str, object]:
     expected_prefix = expected_prefix.rstrip("/")
     matching = [
         record
         for record in records
-        if str(record.get("strm_path") or "") == expected_prefix
-        or str(record.get("strm_path") or "").startswith(expected_prefix + "/")
+        if _path_has_prefix(str(record.get("strm_path") or ""), expected_prefix)
+    ]
+    expected_paths = expected_paths or {}
+    expected_rewrite_matches = [
+        record
+        for record in records
+        if expected_paths.get(int(record.get("id") or 0)) == str(record.get("strm_path") or "")
     ]
     episodes = sorted({int(record.get("episode") or 0) for record in records if int(record.get("episode") or 0) > 0})
     return {
         "record_count": len(records),
         "matching_prefix_count": len(matching),
+        "expected_rewrite_match_count": len(expected_rewrite_matches),
         "episodes": episodes,
         "sample_paths": [str(record.get("strm_path") or "") for record in records[:5]],
     }

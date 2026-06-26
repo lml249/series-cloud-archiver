@@ -1682,6 +1682,115 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertIn("before_strm_path_prefix_mismatch", report["blockers"])
 
+    def test_strm_records_redirect_blocks_skipped_response(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            if request.get_method() == "POST":
+                return FakeResponse({"success": True, "data": {"success": 0, "failed": 0, "skipped": 1}})
+            return FakeResponse(
+                {
+                    "success": True,
+                    "data": {
+                        "items": [
+                            {
+                                "id": 17058,
+                                "strm_path": "/strm/series/series/岁月有情时/Season 1/E01.strm",
+                                "source_path": "/已整理/series/岁月有情时/Season 1/E01.mkv",
+                            }
+                        ]
+                    },
+                }
+            )
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = redirect_mv3_strm_records(
+                "http://mv3.example",
+                "token",
+                record_ids=[17058],
+                expected_record_ids=[17058],
+                old_prefix="/strm/series/series",
+                new_prefix="/strm/series",
+                expected_source_prefix="/已整理/series/岁月有情时",
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("mv3_strm_records_redirect_skipped_records", report["blockers"])
+        self.assertIn("mv3_strm_records_redirect_no_records_changed", report["blockers"])
+
+    def test_strm_records_redirect_blocks_when_after_path_still_has_old_prefix(self) -> None:
+        calls = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            calls.append(request.get_method())
+            if request.get_method() == "POST":
+                return FakeResponse({"success": True, "data": {"success": 1, "failed": 0, "skipped": 0}})
+            return FakeResponse(
+                {
+                    "success": True,
+                    "data": {
+                        "items": [
+                            {
+                                "id": 17058,
+                                "strm_path": "/strm/series/series/岁月有情时/Season 1/E01.strm",
+                                "source_path": "/已整理/series/岁月有情时/Season 1/E01.mkv",
+                            }
+                        ]
+                    },
+                }
+            )
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = redirect_mv3_strm_records(
+                "http://mv3.example",
+                "token",
+                record_ids=[17058],
+                expected_record_ids=[17058],
+                old_prefix="/strm/series/series",
+                new_prefix="/strm/series",
+                expected_source_prefix="/已整理/series/岁月有情时",
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("after_strm_path_expected_rewrite_mismatch", report["blockers"])
+        self.assertEqual(report["after"]["expected_rewrite_match_count"], 0)
+
     def test_strm_records_lists_and_filters_record_ids(self) -> None:
         seen = {}
 
