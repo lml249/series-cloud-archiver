@@ -581,6 +581,7 @@ def search_mv3_resources(
     try:
         status, headers, response_body = client.post_json("/api/v1/resource-search/search", body)
     except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+        error_type = "TimeoutError" if isinstance(exc, (TimeoutError, socket.timeout)) else type(exc).__name__
         return {
             "mode": "readonly-mv3-resource-search",
             "endpoint": {"method": "POST", "path": "/api/v1/resource-search/search"},
@@ -594,7 +595,7 @@ def search_mv3_resources(
             "result_count": 0,
             "items": [],
             "response_shape": {},
-            "error_type": type(exc).__name__,
+            "error_type": error_type,
             "error": str(exc),
             "warnings": ["mv3_resource_search_request_failed"],
             "safety": "resource search only; no share parsing, receive/transfer, offline task, STRM generation, file operation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
