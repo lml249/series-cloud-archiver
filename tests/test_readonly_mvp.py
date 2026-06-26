@@ -588,6 +588,71 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["verification"]["totals"]["stale_records"], 0)
 
+    def test_emby_refresh_verify_cli_can_trigger_without_waiting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "emby.json"
+            env_file.write_text("EMBY_BASE_URL=http://emby.example\nEMBY_API_KEY=token\n", encoding="utf-8")
+
+            class FakeClient:
+                waited = False
+
+                def __init__(self, base_url, api_key, timeout=20):
+                    pass
+
+                def refresh_library(self):
+                    return {"http_status": 204, "ok": True, "response": {}}
+
+                def task_by_key(self, key):
+                    return {"Key": key, "Name": "Scan media library", "State": "Running", "LastExecutionResult": {"Status": "Completed"}}
+
+                def wait_for_task(self, key, poll_seconds=10.0, max_wait_seconds=900):
+                    FakeClient.waited = True
+                    return {"key": key, "timed_out": True, "final_task": {"Key": key}, "polls": []}
+
+                def items_by_search(self, search_term):
+                    return [
+                        {
+                            "Id": "episode-strm-1",
+                            "Type": "Episode",
+                            "IndexNumber": 1,
+                            "Path": "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E01.strm",
+                        }
+                    ]
+
+            with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+                code = main(
+                    [
+                        "emby-refresh-verify",
+                        "--env-file",
+                        str(env_file),
+                        "--title",
+                        "楚汉传奇",
+                        "--strm-path-prefix",
+                        "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}",
+                        "--expected-episode-count",
+                        "1",
+                        "--expected-episode-min",
+                        "1",
+                        "--expected-episode-max",
+                        "1",
+                        "--no-wait",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            self.assertFalse(FakeClient.waited)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertTrue(payload["refresh"]["wait_skipped"])
+            self.assertEqual(payload["refresh"]["task"]["state"], "Running")
+            self.assertNotIn("emby_refresh_task_timeout", payload["blockers"])
+
     def test_emby_refresh_verify_cli_returns_nonzero_when_verification_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

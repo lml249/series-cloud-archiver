@@ -196,6 +196,7 @@ def build_parser() -> argparse.ArgumentParser:
     emby_refresh_parser.add_argument("--expected-episode-max", type=int, default=0, help="Expected last STRM episode number")
     emby_refresh_parser.add_argument("--library-db", default="", help="Optional Emby library.db path for exact readonly verification")
     emby_refresh_parser.add_argument("--skip-refresh", action="store_true", help="Only verify current Emby state without triggering a new scan")
+    emby_refresh_parser.add_argument("--no-wait", action="store_true", help="Trigger Emby refresh but do not wait for the full library scan to finish")
     emby_refresh_parser.add_argument("--poll-seconds", type=float, default=10.0, help="Seconds between refresh task polls")
     emby_refresh_parser.add_argument("--max-wait-seconds", type=int, default=900, help="Maximum seconds to wait for Emby scan completion")
     emby_refresh_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
@@ -761,6 +762,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             expected_episode_max=args.expected_episode_max,
             library_db_path=args.library_db or config.emby_library_db_path,
             skip_refresh=args.skip_refresh,
+            no_wait=args.no_wait,
             poll_seconds=args.poll_seconds,
             max_wait_seconds=args.max_wait_seconds,
             timeout=args.timeout,

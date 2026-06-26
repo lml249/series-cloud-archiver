@@ -160,6 +160,7 @@ def refresh_and_verify_emby_library(
     expected_episode_max: int = 0,
     library_db_path: str = "",
     skip_refresh: bool = False,
+    no_wait: bool = False,
     poll_seconds: float = 10.0,
     max_wait_seconds: int = 900,
     timeout: int = 20,
@@ -173,10 +174,17 @@ def refresh_and_verify_emby_library(
         refresh["request"] = result
         if not result.get("ok"):
             blockers.append("emby_refresh_request_failed")
-        task = client.wait_for_task(REFRESH_LIBRARY_TASK_KEY, poll_seconds=poll_seconds, max_wait_seconds=max_wait_seconds)
-        refresh["task"] = _summarize_task_wait(task)
-        if task.get("timed_out"):
-            blockers.append("emby_refresh_task_timeout")
+        if no_wait:
+            refresh["wait_skipped"] = True
+            try:
+                refresh["task"] = _summarize_task_wait({"final_task": client.task_by_key(REFRESH_LIBRARY_TASK_KEY), "polls": [], "timed_out": False})
+            except Exception as exc:  # pragma: no cover - integration guard
+                warnings.append(f"emby_task_check_failed:{type(exc).__name__}:{exc}")
+        else:
+            task = client.wait_for_task(REFRESH_LIBRARY_TASK_KEY, poll_seconds=poll_seconds, max_wait_seconds=max_wait_seconds)
+            refresh["task"] = _summarize_task_wait(task)
+            if task.get("timed_out"):
+                blockers.append("emby_refresh_task_timeout")
     else:
         refresh["request"] = {"skipped": True}
         try:
@@ -205,7 +213,7 @@ def refresh_and_verify_emby_library(
         "verification": verification,
         "blockers": sorted(set(blockers)),
         "warnings": warnings,
-        "safety": "Emby library refresh and readonly verification only; no filesystem deletion, qBittorrent action, MoviePilot cleanup, or direct Emby database write is performed",
+        "safety": "Emby library refresh trigger and readonly verification only; no filesystem deletion, qBittorrent action, MoviePilot cleanup, or direct Emby database write is performed",
     }
     return report
 
