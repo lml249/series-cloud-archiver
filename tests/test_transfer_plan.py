@@ -170,6 +170,31 @@ class TransferPlanTest(unittest.TestCase):
         self.assertIn("mv3_libraries_probe_unavailable", item["execution_blockers"])
         self.assertIn("POST /api/v1/media-transfer/execute", manifest["forbidden_endpoints"])
 
+    def test_preview_manifest_does_not_duplicate_tmdb_suffix(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "沉默的荣耀 (2025) {tmdbid=281538}",
+                    "tmdbid": 281538,
+                    "season": 1,
+                    "size_bytes": 100,
+                    "expected_count": 39,
+                    "candidate_count": 1,
+                    "titles": ["沉默的荣耀 (2025) {tmdbid=281538}"],
+                    "source_paths": ["/example/media/沉默的荣耀"],
+                    "blockers": ["no_matching_strm_tmdb_season"],
+                },
+            ],
+        }
+
+        manifest = plan_mv3_preview_manifest(transfer_plan, limit=1)
+
+        self.assertEqual(
+            manifest["items"][0]["proposed_cloud_destination"],
+            "/已整理/series/沉默的荣耀 (2025) {tmdbid=281538}/Season 01",
+        )
+
     def test_renders_preview_manifest_markdown(self) -> None:
         manifest = {
             "mode": "readonly-mv3-preview-manifest",
@@ -335,6 +360,40 @@ class TransferPlanTest(unittest.TestCase):
 
         self.assertEqual(manifest["items"][0]["qb_match_count"], 1)
         self.assertEqual(manifest["items"][0]["qb_magnet_available_count"], 1)
+
+    def test_offline_manifest_rejects_same_title_wrong_year_without_tv_signal(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "海市蜃楼 (2025) {tmdbid=302726}",
+                    "tmdbid": 302726,
+                    "season": 1,
+                    "size_bytes": 100,
+                    "expected_count": 24,
+                    "candidate_count": 1,
+                    "titles": ["海市蜃楼 (2025) {tmdbid=302726}"],
+                    "source_paths": ["/volume3/volume3/hlink/TV/海市蜃楼 (2025) {tmdbid=302726}"],
+                }
+            ],
+        }
+        qb_torrents = [
+            {
+                "name": "海市蜃楼.2018.1080p.国西双语.简繁中字",
+                "hash": "wrong",
+                "state": "stalledUP",
+                "content_path": "/volume3/TV/海市蜃楼.2018.1080p.国西双语.简繁中字",
+                "size": 100,
+                "progress": 1,
+                "seeding_time": 8 * 86400,
+                "magnet_uri": "magnet:?xt=urn:btih:wrong",
+            }
+        ]
+
+        manifest = plan_mv3_offline_manifest(transfer_plan, qb_torrents, limit=1)
+
+        self.assertEqual(manifest["items"][0]["qb_match_count"], 0)
+        self.assertIn("missing_qb_torrent_match", manifest["items"][0]["execution_blockers"])
 
     def test_renders_offline_manifest_markdown(self) -> None:
         manifest = {

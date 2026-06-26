@@ -390,6 +390,30 @@ class QBittorrentClientTest(unittest.TestCase):
 
         self.assertIsNone(match_torrent(series, [wrong_torrent], {"/volume3": "/volume3/volume3"}))
 
+    def test_match_torrent_rejects_same_title_wrong_year_without_tv_signal(self) -> None:
+        series = FileSystemSeries(
+            title="海市蜃楼 (2025) {tmdbid=302726}",
+            path="/volume3/volume3/hlink/TV/海市蜃楼 (2025) {tmdbid=302726}",
+            size_bytes=10,
+            video_count=24,
+            latest_mtime=0,
+            age_days=10,
+            signal=EpisodeSignal(seasons=[1], episodes=list(range(1, 25))),
+        )
+        movie_torrent = QBTorrentEvidence(
+            name="海市蜃楼.2018.1080p.国西双语.简繁中字",
+            hash="wrong",
+            state="stalledUP",
+            save_path="/volume3/TV/",
+            content_path="/volume3/TV/海市蜃楼.2018.1080p.国西双语.简繁中字",
+            progress=1.0,
+            seeding_time_seconds=86400 * 8,
+            seed_days=8.0,
+            size_bytes=10,
+        )
+
+        self.assertIsNone(match_torrent(series, [movie_torrent], {"/volume3": "/volume3/volume3"}))
+
 
 class EmbyRefreshVerifyTest(unittest.TestCase):
     def test_verify_emby_library_paths_blocks_stale_local_records(self) -> None:

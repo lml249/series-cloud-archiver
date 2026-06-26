@@ -52,8 +52,12 @@ TECHNICAL_TOKENS = {
 }
 TMDBID_PATTERN = re.compile(r"\{tmdbid=\d+\}", re.IGNORECASE)
 YEAR_SUFFIX_PATTERN = re.compile(r"\(\d{4}\)")
+YEAR_VALUE_PATTERN = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 SEASON_TOKEN_PATTERN = re.compile(r"(?i)^s\d{1,2}$")
 EPISODE_TOKEN_PATTERN = re.compile(r"(?i)^e\d{1,3}$")
+TV_SIGNAL_PATTERN = re.compile(
+    r"(?i)(\bS\d{1,2}\b|\bS\d{1,2}\s*[-~_]\s*S?\d{1,2}\b|\bE\d{1,3}\b|第\s*\d{1,3}\s*[季集话話]|全\s*\d{1,4}\s*[集话話]|全集|完结|complete)"
+)
 
 
 def load_cloud_check_report(path: str) -> Dict[str, object]:
@@ -574,6 +578,9 @@ def _title_token_set(value: str) -> Set[str]:
 
 
 def _normalized_title_match(left: str, right: str) -> bool:
+    if not _title_years_are_compatible(left, right):
+        return False
+
     left_tokens = _title_token_set(left)
     if not left_tokens:
         return False
@@ -592,13 +599,37 @@ def _normalized_title_match(left: str, right: str) -> bool:
     return overlap_ratio >= 0.67 or (has_cjk_overlap and overlap_ratio >= 0.5)
 
 
+def _years_from_text(value: str) -> Set[int]:
+    return {int(match.group(0)) for match in YEAR_VALUE_PATTERN.finditer(value)}
+
+
+def _has_tv_signal(value: str) -> bool:
+    return bool(TV_SIGNAL_PATTERN.search(value))
+
+
+def _title_years_are_compatible(left: str, right: str) -> bool:
+    left_years = _years_from_text(left)
+    if not left_years:
+        return True
+    right_years = _years_from_text(right)
+    if not right_years:
+        return True
+    if left_years.intersection(right_years):
+        return True
+    return _has_tv_signal(right)
+
+
 def _proposed_cloud_destination(cloud_root: object, item: Dict[str, object]) -> str:
     root = str(cloud_root or DEFAULT_CLOUD_ROOT).rstrip("/") or DEFAULT_CLOUD_ROOT
-    title = _safe_cloud_segment(str(item.get("title") or "unknown"))
+    title = _safe_cloud_segment(_strip_identity_suffix(str(item.get("title") or "unknown")))
     tmdbid = int(item.get("tmdbid") or 0)
     season = int(item.get("season") or 0)
     season_segment = f"Season {season:02d}" if season > 0 else "Season XX"
     return f"{root}/{title} {{tmdbid={tmdbid}}}/{season_segment}"
+
+
+def _strip_identity_suffix(value: str) -> str:
+    return " ".join(TMDBID_PATTERN.sub(" ", value).split())
 
 
 def _safe_cloud_segment(value: str) -> str:
@@ -706,9 +737,6 @@ def _match_qb_torrents_for_transfer_item(item: Dict[str, object], qb_torrents: L
         content_path = str(torrent.get("content_path") or "")
         save_path = str(torrent.get("save_path") or "")
         if any(path and (content_path == path or content_path.startswith(path + "/") or path.startswith(content_path + "/")) for path in wanted_paths):
-            matches.append(torrent)
-            continue
-        if any(title and (title in name or name in title) for title in wanted_titles):
             matches.append(torrent)
             continue
         torrent_text = " ".join([name, content_path, save_path])

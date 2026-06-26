@@ -61,8 +61,12 @@ TECHNICAL_TOKENS = {
 
 TMDBID_PATTERN = re.compile(r"\{tmdbid=\d+\}", re.IGNORECASE)
 YEAR_SUFFIX_PATTERN = re.compile(r"\(\d{4}\)")
+YEAR_VALUE_PATTERN = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 SEASON_TOKEN_PATTERN = re.compile(r"(?i)^s\d{1,2}$")
 EPISODE_TOKEN_PATTERN = re.compile(r"(?i)^e\d{1,3}$")
+TV_SIGNAL_PATTERN = re.compile(
+    r"(?i)(\bS\d{1,2}\b|\bS\d{1,2}\s*[-~_]\s*S?\d{1,2}\b|\bE\d{1,3}\b|第\s*\d{1,3}\s*[季集话話]|全\s*\d{1,4}\s*[集话話]|全集|完结|complete)"
+)
 
 
 class QBClient:
@@ -506,12 +510,35 @@ def _torrent_title_text(torrent: QBTorrentEvidence) -> str:
     return " ".join([torrent.name, *path_names])
 
 
+def _years_from_text(value: str) -> Set[int]:
+    return {int(match.group(0)) for match in YEAR_VALUE_PATTERN.finditer(value)}
+
+
+def _has_tv_signal(value: str) -> bool:
+    return bool(TV_SIGNAL_PATTERN.search(value))
+
+
+def _title_years_are_compatible(series_title: str, torrent_text: str) -> bool:
+    series_years = _years_from_text(series_title)
+    if not series_years:
+        return True
+    torrent_years = _years_from_text(torrent_text)
+    if not torrent_years:
+        return True
+    if series_years.intersection(torrent_years):
+        return True
+    return _has_tv_signal(torrent_text)
+
+
 def _title_similarity_score(series_title: str, torrent: QBTorrentEvidence) -> int:
     wanted_tokens = _title_tokens(series_title)
     if not wanted_tokens:
         return 0
 
     torrent_text = _torrent_title_text(torrent)
+    if not _title_years_are_compatible(series_title, torrent_text):
+        return 0
+
     wanted_compact = _compact_title(series_title)
     torrent_compact = _compact_title(torrent_text)
     if wanted_compact and len(wanted_compact) >= 4 and wanted_compact in torrent_compact:
@@ -563,10 +590,6 @@ def match_torrent(
             for variant in series_variants
         ):
             score = 80
-        elif torrent.name and torrent.name.lower() in series.title.lower():
-            score = 40
-        elif series.title.lower() in torrent.name.lower():
-            score = 35
         else:
             score = _title_similarity_score(series.title, torrent)
         if score > best_score or (
