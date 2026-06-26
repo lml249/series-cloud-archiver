@@ -1006,6 +1006,81 @@ def render_mv3_strm_generate_report(report: Dict[str, object], output_format: st
     return "\n".join(lines)
 
 
+def regenerate_mv3_strm_records(
+    base_url: str,
+    token: str,
+    record_ids: List[int],
+    timeout: int = 180,
+) -> Dict[str, object]:
+    warnings: List[str] = []
+    blockers: List[str] = []
+    clean_record_ids = sorted({int(record_id) for record_id in record_ids if int(record_id) > 0})
+    if not clean_record_ids:
+        blockers.append("record_ids_required")
+
+    request_body: Dict[str, object] = {"record_ids": clean_record_ids}
+    regenerate_report: Dict[str, object] = {"skipped": True}
+    if not blockers:
+        client = MV3Client(base_url, token, timeout=timeout)
+        try:
+            status, headers, response_body = client.post_json("/api/v1/strm/records/regenerate", request_body)
+            parsed = _parse_json(response_body.decode("utf-8", "replace"))
+            payload = _unwrap_api_payload(parsed)
+            api_success = _api_success(parsed)
+            regenerate_report = _mv3_api_call_summary(
+                "POST",
+                "/api/v1/strm/records/regenerate",
+                status,
+                headers,
+                request_body,
+                payload,
+                api_success,
+                response_body,
+            )
+        except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+            blockers.append("mv3_strm_records_regenerate_request_failed")
+            warnings.append(f"mv3_strm_records_regenerate_request_failed:{type(exc).__name__}:{exc}")
+            regenerate_report = _mv3_api_error_summary(
+                "POST",
+                "/api/v1/strm/records/regenerate",
+                request_body,
+                exc,
+            )
+
+    return {
+        "mode": "mv3-strm-records-regenerate-result",
+        "ok": bool(regenerate_report.get("ok")) and not blockers,
+        "record_ids": clean_record_ids,
+        "record_count": len(clean_record_ids),
+        "request_summary": _strm_records_regenerate_request_summary(request_body),
+        "regenerate": regenerate_report,
+        "warnings": warnings,
+        "blockers": sorted(set(blockers)),
+        "safety": "approved MV3 STRM record regeneration only; no cloud media move/delete, qBittorrent action, hlink deletion, local filesystem deletion, or MP cleanup is performed",
+    }
+
+
+def render_mv3_strm_records_regenerate_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    regenerate = report.get("regenerate") if isinstance(report.get("regenerate"), dict) else {}
+    lines = [
+        "# MV3 STRM Records Regenerate Result",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Record IDs: `{report.get('record_ids', [])}`",
+        f"- Record count: `{report.get('record_count', 0)}`",
+        f"- Regenerate OK: `{bool(regenerate.get('ok'))}`",
+        f"- Regenerate HTTP status: `{regenerate.get('status', '')}`",
+        "- Safety: one approved MV3 STRM record-regenerate request only; no qB, hlink, local filesystem, or MP cleanup was performed.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    return "\n".join(lines)
+
+
 def render_mv3_organize_transfer_report(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -2483,6 +2558,15 @@ def _strm_generate_request_summary(request_body: Dict[str, object]) -> Dict[str,
         "enable_primary_category": bool(request_body.get("enable_primary_category")),
         "enable_secondary_category": bool(request_body.get("enable_secondary_category")),
         "template_configured": bool(request_body.get("template")),
+    }
+
+
+def _strm_records_regenerate_request_summary(request_body: Dict[str, object]) -> Dict[str, object]:
+    record_ids = request_body.get("record_ids") if isinstance(request_body.get("record_ids"), list) else []
+    return {
+        "endpoint": {"method": "POST", "path": "/api/v1/strm/records/regenerate"},
+        "record_ids": [int(record_id) for record_id in record_ids if isinstance(record_id, int)],
+        "record_count": len(record_ids),
     }
 
 

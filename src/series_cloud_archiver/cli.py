@@ -30,6 +30,7 @@ from .mv3 import (
     inspect_mv3_capabilities,
     inspect_mv3_instances,
     probe_mv3,
+    regenerate_mv3_strm_records,
     render_mv3_capabilities_report,
     render_mv3_cloud_browse_report,
     render_mv3_ensure_path_report,
@@ -43,6 +44,7 @@ from .mv3 import (
     render_mv3_share_receive_report,
     render_mv3_share_preview_report,
     render_mv3_strm_generate_report,
+    render_mv3_strm_records_regenerate_report,
     render_mv3_wrong_root_repair_report,
     preview_mv3_share,
     receive_mv3_share,
@@ -358,6 +360,15 @@ def build_parser() -> argparse.ArgumentParser:
     strm_generate_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     strm_generate_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
+    strm_regenerate_parser = subcommands.add_parser("mv3-strm-records-regenerate", help="Execute one approved MV3 STRM records regenerate request")
+    strm_regenerate_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    strm_regenerate_parser.add_argument("--record-id", action="append", required=True, help="MV3 STRM record id; can be repeated or comma-separated")
+    strm_regenerate_parser.add_argument("--expected-record-id", action="append", default=[], help="Safety check: expected record id; can be repeated or comma-separated")
+    strm_regenerate_parser.add_argument("--timeout", type=int, default=180, help="Per-request timeout in seconds")
+    strm_regenerate_parser.add_argument("--approve-regenerate", action="store_true", help="Required: actually send one MV3 STRM record regenerate request")
+    strm_regenerate_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    strm_regenerate_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
     cloud_browse_parser = subcommands.add_parser("mv3-cloud-browse", help="Readonly MV3 cloud folder browse")
     cloud_browse_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
     cloud_browse_parser.add_argument("--folder-id", default="", help="Cloud folder id to browse")
@@ -421,6 +432,17 @@ def _parse_episode_list(value: str) -> List[int]:
         else:
             episodes.add(int(token))
     return sorted(item for item in episodes if item > 0)
+
+
+def _parse_int_list_args(values: List[str]) -> List[int]:
+    items = set()
+    for value in values:
+        for part in str(value or "").split(","):
+            token = part.strip()
+            if not token:
+                continue
+            items.add(int(token))
+    return sorted(item for item in items if item > 0)
 
 
 def _parse_path_alias_args(values: List[str]) -> dict:
@@ -1042,6 +1064,29 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_strm_generate_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "mv3-strm-records-regenerate":
+        if not args.approve_regenerate:
+            parser.error("mv3-strm-records-regenerate requires --approve-regenerate")
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-strm-records-regenerate requires MV3_BASE_URL and MV3_API_TOKEN")
+        record_ids = _parse_int_list_args(args.record_id)
+        expected_record_ids = _parse_int_list_args(args.expected_record_id)
+        if expected_record_ids and record_ids != expected_record_ids:
+            parser.error(f"record id safety mismatch: got {record_ids}, expected {expected_record_ids}")
+        report = regenerate_mv3_strm_records(
+            config.mv3_base_url,
+            config.mv3_token,
+            record_ids=record_ids,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_strm_records_regenerate_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:
