@@ -12,6 +12,8 @@ from .cloud_cleanup import (
     render_cloud_complete_cleanup_plan,
 )
 from .cleanup_verify import (
+    cleanup_duplicate_strm_root,
+    render_duplicate_strm_cleanup,
     render_mp_cleanup_verification,
     render_strm_verification,
     verify_mp_cleanup_from_services,
@@ -269,6 +271,18 @@ def build_parser() -> argparse.ArgumentParser:
     strm_verify_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
     strm_verify_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     strm_verify_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    strm_duplicate_cleanup_parser = subcommands.add_parser("strm-duplicate-cleanup", help="Delete an approved duplicate STRM root after verification")
+    strm_duplicate_cleanup_parser.add_argument("--title", required=True, help="Series title for reporting")
+    strm_duplicate_cleanup_parser.add_argument("--correct-root", required=True, help="Verified correct STRM root that must remain complete")
+    strm_duplicate_cleanup_parser.add_argument("--duplicate-root", required=True, help="Duplicate STRM root to delete after checks pass")
+    strm_duplicate_cleanup_parser.add_argument("--expected-episode-count", type=int, required=True, help="Expected distinct STRM episode count")
+    strm_duplicate_cleanup_parser.add_argument("--expected-episode-min", type=int, required=True, help="Expected first STRM episode number")
+    strm_duplicate_cleanup_parser.add_argument("--expected-episode-max", type=int, required=True, help="Expected last STRM episode number")
+    strm_duplicate_cleanup_parser.add_argument("--required-target-prefix", required=True, help="Every STRM target must resolve under this cloud prefix")
+    strm_duplicate_cleanup_parser.add_argument("--approve-delete", action="store_true", help="Required: actually delete the duplicate STRM root")
+    strm_duplicate_cleanup_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    strm_duplicate_cleanup_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     emby_refresh_parser = subcommands.add_parser("emby-refresh-verify", help="Trigger Emby library refresh and verify stale local paths are gone")
     emby_refresh_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -997,6 +1011,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             forbidden_target_prefixes=args.forbidden_target_prefix,
         )
         rendered = render_strm_verification(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "strm-duplicate-cleanup":
+        report = cleanup_duplicate_strm_root(
+            title=args.title,
+            correct_root=args.correct_root,
+            duplicate_root=args.duplicate_root,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            required_target_prefix=args.required_target_prefix,
+            approve_delete=args.approve_delete,
+        )
+        rendered = render_duplicate_strm_cleanup(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:

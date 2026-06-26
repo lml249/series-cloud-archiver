@@ -138,6 +138,157 @@ def render_strm_verification(report: Dict[str, object], output_format: str) -> s
     return "\n".join(lines)
 
 
+def cleanup_duplicate_strm_root(
+    title: str,
+    correct_root: str,
+    duplicate_root: str,
+    expected_episode_count: int = 0,
+    expected_episode_min: int = 0,
+    expected_episode_max: int = 0,
+    required_target_prefix: str = "",
+    approve_delete: bool = False,
+) -> Dict[str, object]:
+    blockers: List[str] = []
+    warnings: List[str] = []
+    correct = _strm_root_row(correct_root, required_target_prefix=required_target_prefix)
+    duplicate = _strm_root_row(duplicate_root, required_target_prefix=required_target_prefix)
+
+    if not correct["exists"]:
+        blockers.append("correct_strm_root_missing")
+    if not duplicate["exists"]:
+        blockers.append("duplicate_strm_root_missing")
+    if correct.get("target_prefix_mismatch_count"):
+        blockers.append("correct_strm_target_prefix_mismatch")
+    if duplicate.get("target_prefix_mismatch_count"):
+        blockers.append("duplicate_strm_target_prefix_mismatch")
+
+    correct_episodes = [item for item in correct.get("episodes", []) if isinstance(item, int)]
+    duplicate_episodes = [item for item in duplicate.get("episodes", []) if isinstance(item, int)]
+    if expected_episode_count and len(correct_episodes) != expected_episode_count:
+        blockers.append("correct_strm_episode_count_mismatch")
+    if expected_episode_count and len(duplicate_episodes) != expected_episode_count:
+        blockers.append("duplicate_strm_episode_count_mismatch")
+    if expected_episode_min and (not correct_episodes or min(correct_episodes) != expected_episode_min):
+        blockers.append("correct_strm_episode_min_mismatch")
+    if expected_episode_min and (not duplicate_episodes or min(duplicate_episodes) != expected_episode_min):
+        blockers.append("duplicate_strm_episode_min_mismatch")
+    if expected_episode_max and (not correct_episodes or max(correct_episodes) != expected_episode_max):
+        blockers.append("correct_strm_episode_max_mismatch")
+    if expected_episode_max and (not duplicate_episodes or max(duplicate_episodes) != expected_episode_max):
+        blockers.append("duplicate_strm_episode_max_mismatch")
+    if correct.get("missing_in_range"):
+        blockers.append("correct_strm_episode_gap_detected")
+    if duplicate.get("missing_in_range"):
+        blockers.append("duplicate_strm_episode_gap_detected")
+    if correct_episodes and duplicate_episodes and correct_episodes != duplicate_episodes:
+        blockers.append("duplicate_episode_set_mismatch")
+    if correct.get("duplicate_episodes"):
+        warnings.append("correct_strm_duplicate_episode_files")
+    if duplicate.get("duplicate_episodes"):
+        warnings.append("duplicate_strm_duplicate_episode_files")
+
+    duplicate_path = Path(duplicate_root)
+    non_strm_files = _non_strm_files(duplicate_path) if duplicate_path.exists() else []
+    if non_strm_files:
+        blockers.append("duplicate_root_contains_non_strm_files")
+
+    correct_path = Path(correct_root)
+    if correct_path.exists() and duplicate_path.exists():
+        try:
+            if correct_path.resolve() == duplicate_path.resolve():
+                blockers.append("duplicate_root_same_as_correct_root")
+        except OSError:
+            blockers.append("strm_root_resolution_failed")
+
+    ready = not blockers
+    deleted_files: List[Dict[str, object]] = []
+    deleted_dirs: List[str] = []
+    if ready and approve_delete:
+        files = sorted(item for item in duplicate_path.rglob("*") if item.is_file() and item.suffix.lower() == ".strm")
+        for file_path in files:
+            size = file_path.stat().st_size
+            file_path.unlink()
+            deleted_files.append({"path": str(file_path), "size_bytes": size})
+        deleted_dirs = _remove_empty_dirs(duplicate_path)
+        if duplicate_path.exists():
+            blockers.append("duplicate_root_still_exists_after_delete")
+
+    return {
+        "mode": "strm-duplicate-cleanup",
+        "title": title,
+        "ok": not blockers and (not approve_delete or not duplicate_path.exists()),
+        "ready_for_delete": ready,
+        "delete_executed": bool(approve_delete and ready),
+        "expected": {
+            "episode_count": expected_episode_count,
+            "episode_min": expected_episode_min,
+            "episode_max": expected_episode_max,
+            "required_target_prefix": required_target_prefix,
+        },
+        "correct": correct,
+        "duplicate": duplicate,
+        "filesystem": {
+            "non_strm_files": non_strm_files[:20],
+            "deleted_files": deleted_files,
+            "deleted_dirs": deleted_dirs,
+        },
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "safety": "duplicate STRM cleanup only; verifies the correct STRM root and duplicate STRM root before deleting approved .strm-only duplicate files",
+    }
+
+
+def render_duplicate_strm_cleanup(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+
+    correct = report.get("correct") if isinstance(report.get("correct"), dict) else {}
+    duplicate = report.get("duplicate") if isinstance(report.get("duplicate"), dict) else {}
+    fs = report.get("filesystem") if isinstance(report.get("filesystem"), dict) else {}
+    lines = [
+        "# Duplicate STRM Cleanup",
+        "",
+        f"- Title: `{report.get('title', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Ready for delete: `{bool(report.get('ready_for_delete'))}`",
+        f"- Delete executed: `{bool(report.get('delete_executed'))}`",
+        f"- Correct STRM files: `{correct.get('file_count', 0)}`",
+        f"- Duplicate STRM files: `{duplicate.get('file_count', 0)}`",
+        f"- Deleted files: `{len(fs.get('deleted_files') if isinstance(fs.get('deleted_files'), list) else [])}`",
+        "- Safety: only duplicate `.strm` files are deleted after explicit approval.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    lines.extend(
+        [
+            "",
+            "## Roots",
+            "",
+            "| Role | Path | Exists | Files | Episodes | Missing | Prefix mismatches |",
+            "| --- | --- | --- | ---: | ---: | --- | ---: |",
+        ]
+    )
+    for role, item in (("correct", correct), ("duplicate", duplicate)):
+        lines.append(
+            "| {role} | {path} | {exists} | {files} | {episodes} | {missing} | {mismatches} |".format(
+                role=role,
+                path=_escape(str(item.get("path") or "")),
+                exists=item.get("exists"),
+                files=item.get("file_count", 0),
+                episodes=item.get("episode_count", 0),
+                missing=_escape(str(item.get("missing_in_range", []))),
+                mismatches=item.get("target_prefix_mismatch_count", 0),
+            )
+        )
+    return "\n".join(lines)
+
+
 def verify_mp_cleanup_from_services(
     mp_base_url: str,
     mp_token: str,
@@ -415,6 +566,28 @@ def _matching_qb_torrents(torrents: Sequence[Dict[str, object]], hash_prefix: st
 
 def _path_exists_row(path: str) -> Dict[str, object]:
     return {"path": path, "exists": Path(path).exists()}
+
+
+def _non_strm_files(root: Path) -> List[str]:
+    if not root.exists():
+        return []
+    return sorted(str(item) for item in root.rglob("*") if item.is_file() and item.suffix.lower() != ".strm")
+
+
+def _remove_empty_dirs(root: Path) -> List[str]:
+    deleted: List[str] = []
+    for path in sorted((item for item in root.rglob("*") if item.is_dir()), key=lambda item: len(item.parts), reverse=True):
+        try:
+            path.rmdir()
+            deleted.append(str(path))
+        except OSError:
+            pass
+    try:
+        root.rmdir()
+        deleted.append(str(root))
+    except OSError:
+        pass
+    return deleted
 
 
 def _strm_root_row(

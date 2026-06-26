@@ -7,7 +7,14 @@ from unittest.mock import patch
 
 from series_cloud_archiver.cli import main
 from series_cloud_archiver.config import ScanConfig
-from series_cloud_archiver.cleanup_verify import build_mp_cleanup_verification, render_mp_cleanup_verification, render_strm_verification, verify_strm_paths
+from series_cloud_archiver.cleanup_verify import (
+    build_mp_cleanup_verification,
+    cleanup_duplicate_strm_root,
+    render_duplicate_strm_cleanup,
+    render_mp_cleanup_verification,
+    render_strm_verification,
+    verify_strm_paths,
+)
 from series_cloud_archiver.emby import (
     EmbyClient,
     delete_stale_emby_paths,
@@ -1548,6 +1555,137 @@ class MoviePilotEvidenceTest(unittest.TestCase):
             self.assertFalse(report["ok"])
             self.assertIn("strm_target_prefix_mismatch", report["blockers"])
             self.assertIn("strm_forbidden_target_prefix", report["blockers"])
+
+    def test_duplicate_strm_cleanup_previews_without_deleting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            correct = tmp_path / "strm" / "series" / "岁月有情时 (2026) {tmdbid=272681}" / "Season 1"
+            duplicate = tmp_path / "strm" / "series" / "series" / "岁月有情时 (2026) {tmdbid=272681}" / "Season 1"
+            for root in (correct, duplicate):
+                root.mkdir(parents=True)
+                for index in range(1, 3):
+                    (root / f"岁月有情时 - S01E{index:02d}.strm").write_text(
+                        f"https://mv3.example/redirect?path=/已整理/series/岁月有情时 (2026) {{tmdbid=272681}}/Season 1/E{index:02d}.mkv",
+                        encoding="utf-8",
+                    )
+
+            report = cleanup_duplicate_strm_root(
+                "岁月有情时",
+                str(correct),
+                str(duplicate),
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+                required_target_prefix="/已整理/series/岁月有情时 (2026) {tmdbid=272681}",
+            )
+            rendered = render_duplicate_strm_cleanup(report, "markdown")
+
+            self.assertTrue(report["ok"])
+            self.assertTrue(report["ready_for_delete"])
+            self.assertFalse(report["delete_executed"])
+            self.assertTrue(duplicate.exists())
+            self.assertIn("Ready for delete", rendered)
+
+    def test_duplicate_strm_cleanup_deletes_only_approved_duplicate_strm_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            correct = tmp_path / "strm" / "series" / "岁月有情时 (2026) {tmdbid=272681}" / "Season 1"
+            duplicate = tmp_path / "strm" / "series" / "series" / "岁月有情时 (2026) {tmdbid=272681}" / "Season 1"
+            for root in (correct, duplicate):
+                root.mkdir(parents=True)
+                for index in range(1, 3):
+                    (root / f"岁月有情时 - S01E{index:02d}.strm").write_text(
+                        f"/已整理/series/岁月有情时 (2026) {{tmdbid=272681}}/Season 1/E{index:02d}.mkv",
+                        encoding="utf-8",
+                    )
+
+            report = cleanup_duplicate_strm_root(
+                "岁月有情时",
+                str(correct),
+                str(duplicate),
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+                required_target_prefix="/已整理/series/岁月有情时 (2026) {tmdbid=272681}",
+                approve_delete=True,
+            )
+
+            self.assertTrue(report["ok"])
+            self.assertTrue(report["delete_executed"])
+            self.assertFalse(duplicate.exists())
+            self.assertTrue(correct.exists())
+            self.assertEqual(len(report["filesystem"]["deleted_files"]), 2)
+
+    def test_duplicate_strm_cleanup_blocks_non_strm_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            correct = tmp_path / "strm" / "series" / "岁月有情时 (2026) {tmdbid=272681}" / "Season 1"
+            duplicate = tmp_path / "strm" / "series" / "series" / "岁月有情时 (2026) {tmdbid=272681}" / "Season 1"
+            for root in (correct, duplicate):
+                root.mkdir(parents=True)
+                (root / "岁月有情时 - S01E01.strm").write_text(
+                    "/已整理/series/岁月有情时 (2026) {tmdbid=272681}/Season 1/E01.mkv",
+                    encoding="utf-8",
+                )
+            (duplicate / "poster.jpg").write_bytes(b"image")
+
+            report = cleanup_duplicate_strm_root(
+                "岁月有情时",
+                str(correct),
+                str(duplicate),
+                expected_episode_count=1,
+                expected_episode_min=1,
+                expected_episode_max=1,
+                required_target_prefix="/已整理/series/岁月有情时 (2026) {tmdbid=272681}",
+                approve_delete=True,
+            )
+
+            self.assertFalse(report["ok"])
+            self.assertFalse(report["delete_executed"])
+            self.assertTrue(duplicate.exists())
+            self.assertIn("duplicate_root_contains_non_strm_files", report["blockers"])
+
+    def test_cli_writes_duplicate_strm_cleanup_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output = tmp_path / "duplicate-cleanup.json"
+            correct = tmp_path / "strm" / "series" / "岁月有情时 (2026) {tmdbid=272681}" / "Season 1"
+            duplicate = tmp_path / "strm" / "series" / "series" / "岁月有情时 (2026) {tmdbid=272681}" / "Season 1"
+            for root in (correct, duplicate):
+                root.mkdir(parents=True)
+                (root / "岁月有情时 - S01E01.strm").write_text(
+                    "/已整理/series/岁月有情时 (2026) {tmdbid=272681}/Season 1/E01.mkv",
+                    encoding="utf-8",
+                )
+
+            code = main(
+                [
+                    "strm-duplicate-cleanup",
+                    "--title",
+                    "岁月有情时",
+                    "--correct-root",
+                    str(correct),
+                    "--duplicate-root",
+                    str(duplicate),
+                    "--expected-episode-count",
+                    "1",
+                    "--expected-episode-min",
+                    "1",
+                    "--expected-episode-max",
+                    "1",
+                    "--required-target-prefix",
+                    "/已整理/series/岁月有情时 (2026) {tmdbid=272681}",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ready_for_delete"])
+            self.assertFalse(payload["delete_executed"])
 
     def test_history_match_respects_explicit_season(self) -> None:
         evidence = build_mp_subscription_evidence(
