@@ -247,10 +247,11 @@ def _qb_path_matches(torrents: Sequence[Dict[str, object]], source_roots: Sequen
     source_variants = {variant for root in source_roots for variant in _path_variants(root, path_aliases)}
     matches: List[Dict[str, object]] = []
     for torrent in torrents:
-        torrent_paths = set()
-        for key in ("content_path", "save_path"):
-            torrent_paths.update(_path_variants(str(torrent.get(key) or ""), path_aliases))
-        if any(_paths_overlap(source, torrent_path) for source in source_variants for torrent_path in torrent_paths):
+        content_paths = _path_variants(str(torrent.get("content_path") or ""), path_aliases)
+        save_paths = _path_variants(str(torrent.get("save_path") or ""), path_aliases)
+        content_matches = any(_paths_overlap(source, content_path) for source in source_variants for content_path in content_paths)
+        save_path_matches = any(_path_is_same_or_child(save_path, source) for source in source_variants for save_path in save_paths)
+        if content_matches or save_path_matches:
             matches.append(_qb_row(torrent))
     return matches
 
@@ -269,6 +270,10 @@ def _path_variants(path: str, path_aliases: Dict[str, str]) -> Set[str]:
 
 def _paths_overlap(left: str, right: str) -> bool:
     return bool(left and right and (left == right or left.startswith(right + "/") or right.startswith(left + "/")))
+
+
+def _path_is_same_or_child(path: str, parent: str) -> bool:
+    return bool(path and parent and (path == parent or path.startswith(parent + "/")))
 
 
 def _qb_row(torrent: Dict[str, object]) -> Dict[str, object]:

@@ -131,6 +131,98 @@ class DotqbOrphanCleanupTest(unittest.TestCase):
             rendered = render_dotqb_orphan_cleanup(report, "json")
             self.assertEqual(json.loads(rendered)["expected"]["hash_prefixes"], ["feedface0000"])
 
+    def test_ignores_broad_qb_save_path_when_content_path_is_unrelated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "volume3" / "TV" / "Show.S01"
+            touch(source / "Show.S01E01.mkv.!qB")
+            strm_root = tmp_path / "strm" / "Show" / "Season 01"
+            touch(strm_root / "Show S01E01.strm")
+
+            class FakeMP:
+                def __init__(self, base_url, token, timeout=20):
+                    pass
+
+                def transfer_history(self, title):
+                    return []
+
+            qb_torrents = [
+                {
+                    "name": "Other",
+                    "hash": "abc123",
+                    "state": "stalledUP",
+                    "save_path": str(tmp_path / "volume3" / "TV"),
+                    "content_path": str(tmp_path / "volume3" / "TV" / "Other.S01"),
+                }
+            ]
+            with patch("series_cloud_archiver.dotqb_cleanup.MoviePilotClient", FakeMP), patch(
+                "series_cloud_archiver.dotqb_cleanup.fetch_qb_torrents", return_value=qb_torrents
+            ):
+                report = cleanup_orphan_dotqb_roots(
+                    "http://mp.example",
+                    "token",
+                    "Show",
+                    source_roots=[str(source)],
+                    destination_roots=[str(tmp_path / "missing-hlink")],
+                    strm_roots=[str(strm_root)],
+                    expected_tmdbid=123,
+                    expected_hash_prefixes=["feedface0000"],
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                )
+
+            self.assertTrue(report["ok"])
+            self.assertFalse(source.exists())
+            self.assertEqual(report["qbittorrent"]["path_matches"], [])
+
+    def test_blocks_when_qb_save_path_is_the_source_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "volume3" / "TV" / "Show.S01"
+            touch(source / "Show.S01E01.mkv.!qB")
+            strm_root = tmp_path / "strm" / "Show" / "Season 01"
+            touch(strm_root / "Show S01E01.strm")
+
+            class FakeMP:
+                def __init__(self, base_url, token, timeout=20):
+                    pass
+
+                def transfer_history(self, title):
+                    return []
+
+            qb_torrents = [
+                {
+                    "name": "Show",
+                    "hash": "abc123",
+                    "state": "stalledUP",
+                    "save_path": str(source),
+                    "content_path": "",
+                }
+            ]
+            with patch("series_cloud_archiver.dotqb_cleanup.MoviePilotClient", FakeMP), patch(
+                "series_cloud_archiver.dotqb_cleanup.fetch_qb_torrents", return_value=qb_torrents
+            ):
+                report = cleanup_orphan_dotqb_roots(
+                    "http://mp.example",
+                    "token",
+                    "Show",
+                    source_roots=[str(source)],
+                    destination_roots=[str(tmp_path / "missing-hlink")],
+                    strm_roots=[str(strm_root)],
+                    expected_tmdbid=123,
+                    expected_hash_prefixes=["feedface0000"],
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                )
+
+            self.assertFalse(report["ok"])
+            self.assertTrue((source / "Show.S01E01.mkv.!qB").exists())
+            self.assertIn("qb_torrent_path_still_present", report["blockers"])
+
     def test_cli_requires_approval_before_dotqb_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
