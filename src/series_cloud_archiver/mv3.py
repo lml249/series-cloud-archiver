@@ -578,7 +578,27 @@ def search_mv3_resources(
     if channels:
         body["channels"] = channels
     client = MV3Client(base_url, token, timeout=timeout)
-    status, headers, response_body = client.post_json("/api/v1/resource-search/search", body)
+    try:
+        status, headers, response_body = client.post_json("/api/v1/resource-search/search", body)
+    except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+        return {
+            "mode": "readonly-mv3-resource-search",
+            "endpoint": {"method": "POST", "path": "/api/v1/resource-search/search"},
+            "ok": False,
+            "http_ok": False,
+            "api_success": False,
+            "status": 0,
+            "response_content_type": "",
+            "keyword": keyword,
+            "channels": channels or [],
+            "result_count": 0,
+            "items": [],
+            "response_shape": {},
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "warnings": ["mv3_resource_search_request_failed"],
+            "safety": "resource search only; no share parsing, receive/transfer, offline task, STRM generation, file operation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
+        }
     text = response_body.decode("utf-8", "replace")
     parsed = _parse_json(text)
     payload = _unwrap_api_payload(parsed)

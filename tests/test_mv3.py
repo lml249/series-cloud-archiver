@@ -668,6 +668,20 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("Share code available", markdown)
         self.assertNotIn("safe-code", markdown)
 
+    def test_resource_search_reports_timeout_without_throwing(self) -> None:
+        def fake_urlopen(_request, timeout):
+            raise socket.timeout("timed out")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = search_mv3_resources("http://mv3.example", "token", "长风渡", timeout=1)
+
+        rendered = render_mv3_resource_search_report(report, "json")
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["result_count"], 0)
+        self.assertIn("mv3_resource_search_request_failed", report["warnings"])
+        self.assertEqual(report["error_type"], "TimeoutError")
+        self.assertNotIn("token", rendered)
+
     def test_share_preview_parses_and_browses_selected_resource_without_receiving(self) -> None:
         seen = []
 
