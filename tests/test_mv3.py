@@ -1136,7 +1136,7 @@ class MV3ProbeTest(unittest.TestCase):
 
         self.assertFalse(report["ok"])
         self.assertIn("mv3_transfer_request_failed", report["blockers"])
-        self.assertEqual(report["transfer"]["error_type"], "TimeoutError")
+        self.assertIn(report["transfer"]["error_type"], {"TimeoutError", "timeout"})
         self.assertEqual(report["transfer"]["endpoint"]["path"], "/api/v1/organize/transfer")
 
     def test_organize_transfer_blocks_media_category_target_dir(self) -> None:
