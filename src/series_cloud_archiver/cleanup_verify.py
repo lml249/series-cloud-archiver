@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 import urllib.parse
 
 from .episode import episode_signal
@@ -296,6 +296,7 @@ def verify_mp_cleanup_from_services(
     expected_title: str = "",
     expected_tmdbid: int = 0,
     expected_hash_prefix: str = "",
+    expected_hash_prefixes: Optional[Iterable[str]] = None,
     source_roots: Optional[Sequence[str]] = None,
     destination_roots: Optional[Sequence[str]] = None,
     strm_roots: Optional[Sequence[str]] = None,
@@ -325,7 +326,7 @@ def verify_mp_cleanup_from_services(
         except Exception as exc:  # pragma: no cover - exercised by integration runs
             blockers.append("qb_torrent_check_failed")
             warnings.append(f"qb_error:{type(exc).__name__}:{exc}")
-    elif expected_hash_prefix:
+    elif expected_hash_prefix or _normalize_hash_prefixes(expected_hash_prefixes):
         warnings.append("qb_not_configured")
 
     report = build_mp_cleanup_verification(
@@ -335,6 +336,7 @@ def verify_mp_cleanup_from_services(
         expected_title=expected_title,
         expected_tmdbid=expected_tmdbid,
         expected_hash_prefix=expected_hash_prefix,
+        expected_hash_prefixes=expected_hash_prefixes,
         source_roots=source_roots or [],
         destination_roots=destination_roots or [],
         strm_roots=strm_roots or [],
@@ -355,6 +357,7 @@ def build_mp_cleanup_verification(
     expected_title: str = "",
     expected_tmdbid: int = 0,
     expected_hash_prefix: str = "",
+    expected_hash_prefixes: Optional[Iterable[str]] = None,
     source_roots: Optional[Sequence[str]] = None,
     destination_roots: Optional[Sequence[str]] = None,
     strm_roots: Optional[Sequence[str]] = None,
@@ -368,13 +371,14 @@ def build_mp_cleanup_verification(
     destination_roots = destination_roots or []
     strm_roots = strm_roots or []
     expected_hash_prefix = expected_hash_prefix.lower()
+    normalized_hash_prefixes = _normalize_hash_prefixes(expected_hash_prefixes, expected_hash_prefix)
 
-    matched_mp_records = _filter_mp_records(mp_records, expected_title, expected_tmdbid, expected_hash_prefix)
+    matched_mp_records = _filter_mp_records(mp_records, expected_title, expected_tmdbid, normalized_hash_prefixes)
     if matched_mp_records:
         blockers.append("mp_transfer_history_still_present")
 
-    qb_matches = _matching_qb_torrents(qb_torrents or [], expected_hash_prefix)
-    if expected_hash_prefix and qb_matches:
+    qb_matches = _matching_qb_torrents(qb_torrents or [], normalized_hash_prefixes)
+    if normalized_hash_prefixes and qb_matches:
         blockers.append("qb_torrent_still_present")
 
     source_checks = [_path_exists_row(path) for path in source_roots]
@@ -428,6 +432,7 @@ def build_mp_cleanup_verification(
             "title": expected_title,
             "tmdbid": expected_tmdbid,
             "hash_prefix": expected_hash_prefix,
+            "hash_prefixes": normalized_hash_prefixes,
             "episode_count": expected_episode_count,
             "episode_min": expected_episode_min,
             "episode_max": expected_episode_max,
@@ -530,7 +535,7 @@ def _filter_mp_records(
     records: Sequence[MPTransferHistoryRecord],
     expected_title: str,
     expected_tmdbid: int,
-    expected_hash_prefix: str,
+    expected_hash_prefixes: Sequence[str],
 ) -> List[MPTransferHistoryRecord]:
     filtered: List[MPTransferHistoryRecord] = []
     for record in records:
@@ -538,19 +543,19 @@ def _filter_mp_records(
             continue
         if expected_tmdbid and record.tmdbid and record.tmdbid != expected_tmdbid:
             continue
-        if expected_hash_prefix and not record.download_hash.lower().startswith(expected_hash_prefix):
+        if expected_hash_prefixes and not _hash_matches_any_prefix(record.download_hash, expected_hash_prefixes):
             continue
         filtered.append(record)
     return filtered
 
 
-def _matching_qb_torrents(torrents: Sequence[Dict[str, object]], hash_prefix: str) -> List[Dict[str, object]]:
-    if not hash_prefix:
+def _matching_qb_torrents(torrents: Sequence[Dict[str, object]], hash_prefixes: Sequence[str]) -> List[Dict[str, object]]:
+    if not hash_prefixes:
         return []
     matches: List[Dict[str, object]] = []
     for item in torrents:
         torrent_hash = str(item.get("hash") or "").lower()
-        if not torrent_hash.startswith(hash_prefix):
+        if not _hash_matches_any_prefix(torrent_hash, hash_prefixes):
             continue
         matches.append(
             {
@@ -562,6 +567,38 @@ def _matching_qb_torrents(torrents: Sequence[Dict[str, object]], hash_prefix: st
             }
         )
     return matches
+
+
+def _normalize_hash_prefixes(prefixes: Optional[Iterable[str]], fallback: str = "") -> List[str]:
+    values: List[str] = []
+    if prefixes is None:
+        values = []
+    elif isinstance(prefixes, str):
+        values = [prefixes]
+    else:
+        values = [str(item) for item in prefixes]
+    if fallback:
+        values.append(fallback)
+
+    normalized: List[str] = []
+    seen = set()
+    for value in values:
+        for part in str(value or "").split(","):
+            token = part.strip().lower()
+            if token and token not in seen:
+                normalized.append(token)
+                seen.add(token)
+    return normalized
+
+
+def _hash_prefix_match(left: str, right: str) -> bool:
+    left = str(left or "").lower()
+    right = str(right or "").lower()
+    return bool(left and right and (left.startswith(right) or right.startswith(left)))
+
+
+def _hash_matches_any_prefix(value: str, prefixes: Iterable[str]) -> bool:
+    return any(_hash_prefix_match(value, prefix) for prefix in prefixes)
 
 
 def _path_exists_row(path: str) -> Dict[str, object]:

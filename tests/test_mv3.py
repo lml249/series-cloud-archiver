@@ -2463,7 +2463,7 @@ class MV3ProbeTest(unittest.TestCase):
                                 "episodes": "E03",
                                 "episode_number": 3,
                                 "status": True,
-                                "hash_prefix": "feedface0000",
+                                "hash_prefix": "beadfeed1111",
                             },
                             {
                                 "id": 23,
@@ -2472,7 +2472,7 @@ class MV3ProbeTest(unittest.TestCase):
                                 "episodes": "E21",
                                 "episode_number": 21,
                                 "status": True,
-                                "hash_prefix": "feedface0000",
+                                "hash_prefix": "beadfeed1111",
                             },
                         ],
                         "warnings": ["episode_gap_detected"],
@@ -2496,6 +2496,8 @@ class MV3ProbeTest(unittest.TestCase):
                         "254486",
                         "--expected-hash-prefix",
                         "feedface0000",
+                        "--expected-hash-prefix",
+                        "beadfeed1111",
                         "--expected-record-count",
                         "3",
                         "--expected-episode-count",
@@ -2517,6 +2519,7 @@ class MV3ProbeTest(unittest.TestCase):
             report = json.loads(output.read_text(encoding="utf-8"))
             self.assertTrue(report["ok"])
             self.assertEqual(report["expected"]["episodes"], [1, 3, 21])
+            self.assertEqual(report["expected"]["hash_prefixes"], ["feedface0000", "beadfeed1111"])
 
     def test_cli_writes_offline_status_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

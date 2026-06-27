@@ -284,6 +284,7 @@ def execute_mp_cleanup_from_preview_report(
     expected_episode_count: int,
     expected_episode_min: int,
     expected_episode_max: int,
+    expected_hash_prefixes: Optional[Iterable[str]] = None,
     expected_episodes: Optional[Iterable[int]] = None,
     include_deletesrc: bool = True,
     include_deletedest: bool = True,
@@ -299,6 +300,7 @@ def execute_mp_cleanup_from_preview_report(
         expected_title=expected_title,
         expected_tmdbid=expected_tmdbid,
         expected_hash_prefix=expected_hash_prefix,
+        expected_hash_prefixes=expected_hash_prefixes,
         expected_record_count=expected_record_count,
         expected_episode_count=expected_episode_count,
         expected_episode_min=expected_episode_min,
@@ -322,6 +324,7 @@ def execute_mp_cleanup_from_preview(
     expected_episode_count: int,
     expected_episode_min: int,
     expected_episode_max: int,
+    expected_hash_prefixes: Optional[Iterable[str]] = None,
     expected_episodes: Optional[Iterable[int]] = None,
     include_deletesrc: bool = True,
     include_deletedest: bool = True,
@@ -335,6 +338,7 @@ def execute_mp_cleanup_from_preview(
         expected_title=expected_title,
         expected_tmdbid=expected_tmdbid,
         expected_hash_prefix=expected_hash_prefix,
+        expected_hash_prefixes=expected_hash_prefixes,
         expected_record_count=expected_record_count,
         expected_episode_count=expected_episode_count,
         expected_episode_min=expected_episode_min,
@@ -346,6 +350,7 @@ def execute_mp_cleanup_from_preview(
         allow_multiple_source_roots=allow_multiple_source_roots,
     )
     records = preview.get("records") if isinstance(preview.get("records"), list) else []
+    normalized_hash_prefixes = _normalize_hash_prefixes(expected_hash_prefixes, expected_hash_prefix)
     result: Dict[str, object] = {
         "mode": "mp-cleanup-execute-result",
         "title": preview.get("title", ""),
@@ -356,7 +361,8 @@ def execute_mp_cleanup_from_preview(
         "expected": {
             "title": expected_title,
             "tmdbid": expected_tmdbid,
-            "hash_prefix": expected_hash_prefix,
+            "hash_prefix": expected_hash_prefix.lower(),
+            "hash_prefixes": normalized_hash_prefixes,
             "record_count": expected_record_count,
             "episode_count": expected_episode_count,
             "episode_min": expected_episode_min,
@@ -604,6 +610,7 @@ def _mp_cleanup_execution_blockers(
     expected_episode_count: int,
     expected_episode_min: int,
     expected_episode_max: int,
+    expected_hash_prefixes: Optional[Iterable[str]],
     expected_episodes: Optional[Iterable[int]],
     include_deletesrc: bool,
     include_deletedest: bool,
@@ -613,6 +620,7 @@ def _mp_cleanup_execution_blockers(
     blockers: List[str] = []
     expected_episode_list = _normalize_expected_episodes(expected_episodes)
     expected_episode_set = set(expected_episode_list)
+    normalized_hash_prefixes = _normalize_hash_prefixes(expected_hash_prefixes, expected_hash_prefix)
     allowed_warnings = {"episode_gap_detected"} if expected_episode_set else set()
     if allow_multiple_hashes:
         allowed_warnings.add("multiple_download_hashes")
@@ -632,7 +640,8 @@ def _mp_cleanup_execution_blockers(
         blockers.append("expected_title_mismatch")
     if expected_tmdbid and int(preview.get("expected_tmdbid") or 0) not in {0, expected_tmdbid}:
         blockers.append("expected_tmdbid_mismatch")
-    if expected_hash_prefix and str(preview.get("expected_hash_prefix") or "").lower() not in {"", expected_hash_prefix.lower()}:
+    preview_hash_prefixes = _normalize_hash_prefixes(None, str(preview.get("expected_hash_prefix") or ""))
+    if normalized_hash_prefixes and preview_hash_prefixes and not _all_hash_prefixes_covered(preview_hash_prefixes, normalized_hash_prefixes):
         blockers.append("expected_hash_prefix_mismatch")
     if not include_deletesrc and not include_deletedest:
         blockers.append("no_mp_delete_scope_selected")
@@ -668,9 +677,9 @@ def _mp_cleanup_execution_blockers(
     if bool(query.get("deletedest")) != include_deletedest:
         blockers.append("deletedest_scope_mismatch")
 
-    expected_hash_prefix = expected_hash_prefix.lower()
     ids: Set[int] = set()
     episodes: Set[int] = set()
+    record_hash_prefixes: List[str] = []
     for item in records:
         if not isinstance(item, dict):
             blockers.append("invalid_record_shape")
@@ -687,7 +696,10 @@ def _mp_cleanup_execution_blockers(
         if episode in episodes:
             blockers.append("duplicate_episode_number")
         episodes.add(episode)
-        if expected_hash_prefix and not str(item.get("hash_prefix") or "").lower().startswith(expected_hash_prefix):
+        record_hash_prefix = str(item.get("hash_prefix") or "").lower()
+        if record_hash_prefix:
+            record_hash_prefixes.append(record_hash_prefix)
+        if normalized_hash_prefixes and not _hash_matches_any_prefix(record_hash_prefix, normalized_hash_prefixes):
             blockers.append("record_hash_prefix_mismatch")
         if expected_title and str(item.get("title") or "") != expected_title:
             blockers.append("record_title_mismatch")
@@ -702,6 +714,8 @@ def _mp_cleanup_execution_blockers(
         expected_episodes = set(range(expected_episode_min, expected_episode_max + 1))
         if episodes != expected_episodes:
             blockers.append("record_episode_range_mismatch")
+    if normalized_hash_prefixes and not _all_hash_prefixes_covered(normalized_hash_prefixes, record_hash_prefixes):
+        blockers.append("expected_hash_prefix_not_found")
     return sorted(set(blockers))
 
 
@@ -730,6 +744,43 @@ def _filter_transfer_records(
             continue
         filtered.append(record)
     return filtered
+
+
+def _normalize_hash_prefixes(prefixes: Optional[Iterable[str]], fallback: str = "") -> List[str]:
+    values: List[str] = []
+    if prefixes is None:
+        values = []
+    elif isinstance(prefixes, str):
+        values = [prefixes]
+    else:
+        values = [str(item) for item in prefixes]
+    if fallback:
+        values.append(fallback)
+
+    normalized: List[str] = []
+    seen: Set[str] = set()
+    for value in values:
+        for part in str(value or "").split(","):
+            token = part.strip().lower()
+            if token and token not in seen:
+                normalized.append(token)
+                seen.add(token)
+    return normalized
+
+
+def _hash_prefix_match(left: str, right: str) -> bool:
+    left = str(left or "").lower()
+    right = str(right or "").lower()
+    return bool(left and right and (left.startswith(right) or right.startswith(left)))
+
+
+def _hash_matches_any_prefix(value: str, prefixes: Iterable[str]) -> bool:
+    return any(_hash_prefix_match(value, prefix) for prefix in prefixes)
+
+
+def _all_hash_prefixes_covered(expected: Iterable[str], actual: Iterable[str]) -> bool:
+    actual_list = [str(item or "").lower() for item in actual if str(item or "")]
+    return all(_hash_matches_any_prefix(prefix, actual_list) for prefix in expected)
 
 
 def _normalize_expected_episodes(episodes: Optional[Iterable[int]]) -> List[int]:

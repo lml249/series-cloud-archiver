@@ -175,7 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
     mp_cleanup_exec_parser.add_argument("--preview-report", required=True, help="JSON report from mp-cleanup-preview")
     mp_cleanup_exec_parser.add_argument("--expected-title", required=True, help="Safety check: exact title expected")
     mp_cleanup_exec_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Safety check: expected TMDB ID")
-    mp_cleanup_exec_parser.add_argument("--expected-hash-prefix", required=True, help="Safety check: qB hash prefix")
+    mp_cleanup_exec_parser.add_argument("--expected-hash-prefix", action="append", required=True, help="Safety check: expected qB hash prefix; can be repeated or comma-separated")
     mp_cleanup_exec_parser.add_argument("--expected-record-count", type=int, required=True, help="Safety check: exact MP history record count")
     mp_cleanup_exec_parser.add_argument("--expected-episode-count", type=int, required=True, help="Safety check: exact episode count")
     mp_cleanup_exec_parser.add_argument("--expected-episode-min", type=int, required=True, help="Safety check: first episode number")
@@ -201,7 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
     mp_cleanup_verify_parser.add_argument("--title", required=True, help="MoviePilot transfer history title to query")
     mp_cleanup_verify_parser.add_argument("--expected-title", default="", help="Safety filter: exact MP title expected")
     mp_cleanup_verify_parser.add_argument("--expected-tmdbid", type=int, default=0, help="Safety filter: expected TMDB ID when present in MP")
-    mp_cleanup_verify_parser.add_argument("--expected-hash-prefix", default="", help="Safety filter: qB hash prefix that should be gone")
+    mp_cleanup_verify_parser.add_argument("--expected-hash-prefix", action="append", default=[], help="Safety filter: qB hash prefix that should be gone; can be repeated or comma-separated")
     mp_cleanup_verify_parser.add_argument("--source-root", action="append", default=[], help="Local source root that should no longer exist; can be repeated")
     mp_cleanup_verify_parser.add_argument("--destination-root", action="append", default=[], help="hlink/destination root that should no longer exist; can be repeated")
     mp_cleanup_verify_parser.add_argument("--strm-root", action="append", default=[], help="STRM root that should contain complete episodes; can be repeated")
@@ -617,6 +617,15 @@ def _parse_int_list_args(values: List[str]) -> List[int]:
     return sorted(item for item in items if item > 0)
 
 
+def _first_string_arg(values: List[str]) -> str:
+    for value in values:
+        for part in str(value or "").split(","):
+            token = part.strip()
+            if token:
+                return token
+    return ""
+
+
 def _parse_path_alias_args(values: List[str]) -> dict:
     aliases = {}
     for value in values:
@@ -851,7 +860,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             preview,
             expected_title=args.expected_title,
             expected_tmdbid=args.expected_tmdbid,
-            expected_hash_prefix=args.expected_hash_prefix,
+            expected_hash_prefix=_first_string_arg(args.expected_hash_prefix),
+            expected_hash_prefixes=args.expected_hash_prefix,
             expected_record_count=args.expected_record_count,
             expected_episode_count=args.expected_episode_count,
             expected_episode_min=args.expected_episode_min,
@@ -881,7 +891,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             title=args.title,
             expected_title=args.expected_title,
             expected_tmdbid=args.expected_tmdbid,
-            expected_hash_prefix=args.expected_hash_prefix,
+            expected_hash_prefix=_first_string_arg(args.expected_hash_prefix),
+            expected_hash_prefixes=args.expected_hash_prefix,
             source_roots=args.source_root,
             destination_roots=args.destination_root,
             strm_roots=args.strm_root,

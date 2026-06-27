@@ -1316,6 +1316,41 @@ class MoviePilotEvidenceTest(unittest.TestCase):
         self.assertEqual(client.calls, [(10, True, True), (11, True, True)])
         self.assertTrue(report["expected"]["allow_multiple_hashes"])
         self.assertTrue(report["expected"]["allow_multiple_source_roots"])
+        self.assertEqual(report["expected"]["hash_prefixes"], [])
+
+        missing_hash = execute_mp_cleanup_from_preview(
+            FakeClient(),
+            preview,
+            expected_title="八千里路云和月",
+            expected_tmdbid=289624,
+            expected_hash_prefix="",
+            expected_hash_prefixes=["aaaabbbbcccc", "feedface0000"],
+            expected_record_count=2,
+            expected_episode_count=2,
+            expected_episode_min=1,
+            expected_episode_max=2,
+            allow_multiple_hashes=True,
+            allow_multiple_source_roots=True,
+        )
+        self.assertFalse(missing_hash["ok"])
+        self.assertIn("expected_hash_prefix_not_found", missing_hash["blockers"])
+
+        exact_hashes = execute_mp_cleanup_from_preview(
+            client,
+            preview,
+            expected_title="八千里路云和月",
+            expected_tmdbid=289624,
+            expected_hash_prefix="",
+            expected_hash_prefixes=["aaaabbbbcccc", "ddddffffeeee"],
+            expected_record_count=2,
+            expected_episode_count=2,
+            expected_episode_min=1,
+            expected_episode_max=2,
+            allow_multiple_hashes=True,
+            allow_multiple_source_roots=True,
+        )
+        self.assertTrue(exact_hashes["ok"])
+        self.assertEqual(exact_hashes["expected"]["hash_prefixes"], ["aaaabbbbcccc", "ddddffffeeee"])
 
     def test_mp_cleanup_execute_blocks_multiple_destination_roots_even_with_allowances(self) -> None:
         preview = build_mp_cleanup_preview(
