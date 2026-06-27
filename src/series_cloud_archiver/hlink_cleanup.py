@@ -59,11 +59,21 @@ def preview_cloud_hlink_cleanup(
         try:
             torrents = fetch_qb_evidence(qb_base_url, qb_user, qb_pass)
             fs_series = _filesystem_series_from_hlink(title, hlink_root, hlink_check)
+            seen_hashes: Set[str] = set()
             best = match_torrent(fs_series, torrents, aliases)
             if best:
-                qb_matches.append(_qb_evidence_row(best, hlink_root, aliases))
+                best_row = _qb_evidence_row(best, hlink_root, aliases)
+                qb_matches.append(best_row)
+                if best_row.get("hash"):
+                    seen_hashes.add(str(best_row.get("hash")))
             candidates = _candidate_torrents_for_inode_check(torrents, fs_series)
-            qb_matches.extend(_inode_qb_matches(candidates, hlink_check, aliases, {row["hash"] for row in qb_matches}))
+            qb_matches.extend(_inode_qb_matches(candidates, hlink_check, aliases, seen_hashes))
+            if qb_matches and not _matches_cover_hlink(qb_matches, hlink_check):
+                # Title matching can choose the wrong season when the real qB task uses
+                # an English release name. Fall back to inode matching across qB roots,
+                # then discard title-only matches that do not link to this hlink root.
+                qb_matches.extend(_inode_qb_matches(torrents, hlink_check, aliases, seen_hashes))
+                qb_matches = _prefer_linked_qb_matches(qb_matches, hlink_check)
         except Exception as exc:  # pragma: no cover - exercised by integration
             qb_error = f"{type(exc).__name__}:{exc}"
             blockers.append("qb_torrent_check_failed")
@@ -329,6 +339,30 @@ def _inode_qb_matches(
         except OSError:
             continue
     return rows
+
+
+def _matches_cover_hlink(matches: Sequence[Dict[str, object]], hlink_check: Dict[str, object]) -> bool:
+    if not matches:
+        return False
+    source_checks = [_source_match_check(row, hlink_check) for row in matches]
+    return bool(_hlink_source_coverage(source_checks, hlink_check).get("complete"))
+
+
+def _prefer_linked_qb_matches(matches: Sequence[Dict[str, object]], hlink_check: Dict[str, object]) -> List[Dict[str, object]]:
+    pairs = [(row, _source_match_check(row, hlink_check)) for row in matches]
+    linked = [(row, check) for row, check in pairs if _linked_hlink_video_count(check) > 0]
+    if not linked:
+        return list(matches)
+    return [row for row, _check in linked]
+
+
+def _linked_hlink_video_count(check: Dict[str, object]) -> int:
+    if check.get("linked_hlink_video_count") is not None:
+        return int(check.get("linked_hlink_video_count") or 0)
+    linked_inodes = check.get("linked_hlink_inodes")
+    if isinstance(linked_inodes, list):
+        return len([inode for inode in linked_inodes if inode])
+    return 0
 
 
 def _candidate_torrents_for_inode_check(torrents: Iterable[object], series: FileSystemSeries) -> List[object]:

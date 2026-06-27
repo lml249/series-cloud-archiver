@@ -224,6 +224,61 @@ class CloudHlinkCleanupTest(unittest.TestCase):
         self.assertIn("source_hlink_coverage_incomplete", report["blockers"])
         self.assertEqual(report["filesystem"]["hlink_coverage"]["missing_hlink_inode_count"], 1)
 
+    def test_preview_prefers_inode_match_when_title_match_is_wrong_season(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            season1_source = tmp_path / "qb" / "TV" / "庆余年.Joy.of.Life.S01"
+            season2_source = tmp_path / "qb" / "TV" / "Joy.of.Life.S02"
+            write(season1_source / "Joy.of.Life.S01E01.mp4")
+            season2_file = season2_source / "Joy.of.Life.S02E01.mkv"
+            write(season2_file)
+            hlink_root = tmp_path / "hlink" / "TV" / "庆余年 (2019)" / "Season 2"
+            hlink_file = hlink_root / "庆余年 - S02E01.mkv"
+            hlink_file.parent.mkdir(parents=True)
+            os.link(season2_file, hlink_file)
+            strm_root = tmp_path / "strm" / "series" / "庆余年 (2019) {tmdbid=95842}" / "Season 02"
+            write(strm_root / "庆余年 S02E01.strm", "/已整理/series/庆余年1-2/庆余年 第二季 (2024) 杜比视界/庆余年 S02E01.mp4")
+            wrong_title_match = QBTorrentEvidence(
+                name="庆余年.Joy.of.Life.S01",
+                hash="1111111111111111111111111111111111111111",
+                state="stalledUP",
+                save_path=str(tmp_path / "qb" / "TV"),
+                content_path=str(season1_source),
+                progress=1.0,
+                seeding_time_seconds=86400 * 30,
+                seed_days=30.0,
+                size_bytes=1,
+            )
+            right_inode_match = QBTorrentEvidence(
+                name="Joy.of.Life.S02",
+                hash="2222222222222222222222222222222222222222",
+                state="stalledUP",
+                save_path=str(tmp_path / "qb" / "TV"),
+                content_path=str(season2_source),
+                progress=1.0,
+                seeding_time_seconds=86400 * 30,
+                seed_days=30.0,
+                size_bytes=1,
+            )
+
+            with patch("series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[wrong_title_match, right_inode_match]):
+                report = preview_cloud_hlink_cleanup(
+                    "庆余年",
+                    str(hlink_root),
+                    str(strm_root),
+                    expected_tmdbid=95842,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                    min_seed_days=7,
+                    required_target_prefix="/已整理/series/庆余年1-2/庆余年 第二季 (2024) 杜比视界",
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["qbittorrent"]["hashes"], ["2222222222222222222222222222222222222222"])
+        self.assertEqual(report["filesystem"]["hlink_coverage"]["missing_hlink_inode_count"], 0)
+
     def test_execute_deletes_approved_qb_hash_and_explicit_hlink_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
