@@ -36,6 +36,7 @@ from .emby import (
     render_emby_task_status_report,
 )
 from .hlink_cleanup import (
+    cleanup_empty_hlink_root,
     execute_cloud_hlink_cleanup,
     preview_cloud_hlink_cleanup,
     render_cloud_hlink_cleanup,
@@ -273,6 +274,14 @@ def build_parser() -> argparse.ArgumentParser:
     hlink_cleanup_exec_parser.add_argument("--approve-delete", action="store_true", help="Required: actually delete qB torrents/files and the explicit hlink root")
     hlink_cleanup_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     hlink_cleanup_exec_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    hlink_empty_root_parser = subcommands.add_parser("hlink-empty-root-cleanup", help="Delete one approved hlink root only when it contains no video files")
+    hlink_empty_root_parser.add_argument("--title", required=True, help="Series title for reporting")
+    hlink_empty_root_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Expected TMDB ID")
+    hlink_empty_root_parser.add_argument("--hlink-root", required=True, help="Explicit hlink root to remove after all media files are gone")
+    hlink_empty_root_parser.add_argument("--approve-delete", action="store_true", help="Required: actually delete the explicit empty-media hlink root")
+    hlink_empty_root_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    hlink_empty_root_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     strm_verify_parser = subcommands.add_parser("strm-verify", help="Readonly STRM episode and target-path verification")
     strm_verify_parser.add_argument("--title", required=True, help="Series title for reporting")
@@ -1093,6 +1102,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             config.qb_pass,
             path_aliases=config.path_aliases,
             timeout=args.timeout,
+        )
+        rendered = render_cloud_hlink_cleanup(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "hlink-empty-root-cleanup":
+        report = cleanup_empty_hlink_root(
+            title=args.title,
+            hlink_root=args.hlink_root,
+            expected_tmdbid=args.expected_tmdbid,
+            approve_delete=args.approve_delete,
         )
         rendered = render_cloud_hlink_cleanup(report, args.format)
         if args.output:

@@ -189,6 +189,36 @@ def execute_cloud_hlink_cleanup(
     }
 
 
+def cleanup_empty_hlink_root(title: str, hlink_root: str, expected_tmdbid: int = 0, approve_delete: bool = False) -> Dict[str, object]:
+    blockers: List[str] = []
+    hlink_check = _hlink_root_check(hlink_root)
+    if not hlink_check.get("exists"):
+        blockers.append("hlink_root_missing")
+    if int(hlink_check.get("video_count") or 0) > 0:
+        blockers.append("hlink_root_contains_video_files")
+    if not approve_delete:
+        blockers.append("approval_required")
+
+    delete_result: Dict[str, object] = {}
+    if not blockers:
+        delete_result = _remove_hlink_root(hlink_root)
+        if not delete_result.get("ok"):
+            blockers.append("hlink_delete_failed")
+
+    return {
+        "mode": "hlink-empty-root-cleanup",
+        "title": title,
+        "expected": {"tmdbid": expected_tmdbid},
+        "ok": not blockers,
+        "approved": approve_delete,
+        "hlink": hlink_check,
+        "delete": delete_result,
+        "blockers": sorted(set(blockers)),
+        "warnings": [],
+        "safety": "approved cleanup only for one explicit hlink root that contains no video files; qBittorrent, STRM, cloud files, and Emby are not modified",
+    }
+
+
 def render_cloud_hlink_cleanup(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)

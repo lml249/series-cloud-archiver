@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from series_cloud_archiver.cli import main
-from series_cloud_archiver.hlink_cleanup import execute_cloud_hlink_cleanup, preview_cloud_hlink_cleanup
+from series_cloud_archiver.hlink_cleanup import cleanup_empty_hlink_root, execute_cloud_hlink_cleanup, preview_cloud_hlink_cleanup
 from series_cloud_archiver.models import QBTorrentEvidence
 
 
@@ -357,6 +357,92 @@ class CloudHlinkCleanupTest(unittest.TestCase):
                         "feedface00001234567890",
                     ]
                 )
+
+    def test_empty_root_cleanup_deletes_root_with_only_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "庆余年 (2019)"
+            write(hlink_root / "tvshow.nfo", "<tvshow />")
+            write(hlink_root / "poster.jpg", "jpg")
+            write(hlink_root / "Season 01" / "season01-poster.jpg", "jpg")
+
+            report = cleanup_empty_hlink_root(
+                "庆余年",
+                str(hlink_root),
+                expected_tmdbid=95842,
+                approve_delete=True,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertFalse(hlink_root.exists())
+        self.assertEqual(report["hlink"]["video_count"], 0)
+        self.assertEqual(report["hlink"]["non_video_count"], 3)
+        self.assertEqual(report["delete"]["ok"], True)
+
+    def test_empty_root_cleanup_blocks_when_videos_remain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "庆余年 (2019)"
+            write(hlink_root / "Season 02" / "庆余年 - S02E01.mkv")
+            write(hlink_root / "poster.jpg", "jpg")
+
+            report = cleanup_empty_hlink_root(
+                "庆余年",
+                str(hlink_root),
+                expected_tmdbid=95842,
+                approve_delete=True,
+            )
+
+            self.assertFalse(report["ok"])
+            self.assertTrue(hlink_root.exists())
+            self.assertIn("hlink_root_contains_video_files", report["blockers"])
+            self.assertEqual(report["hlink"]["video_count"], 1)
+
+    def test_empty_root_cleanup_requires_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "庆余年 (2019)"
+            write(hlink_root / "tvshow.nfo", "<tvshow />")
+
+            report = cleanup_empty_hlink_root(
+                "庆余年",
+                str(hlink_root),
+                expected_tmdbid=95842,
+                approve_delete=False,
+            )
+
+            self.assertFalse(report["ok"])
+            self.assertTrue(hlink_root.exists())
+            self.assertIn("approval_required", report["blockers"])
+            self.assertEqual(report["delete"], {})
+
+    def test_cli_empty_root_cleanup_returns_nonzero_without_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "庆余年 (2019)"
+            report_file = tmp_path / "empty-root.json"
+            write(hlink_root / "tvshow.nfo", "<tvshow />")
+
+            status = main(
+                [
+                    "hlink-empty-root-cleanup",
+                    "--title",
+                    "庆余年",
+                    "--expected-tmdbid",
+                    "95842",
+                    "--hlink-root",
+                    str(hlink_root),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(report_file),
+                ]
+            )
+            report = json.loads(report_file.read_text(encoding="utf-8"))
+
+            self.assertEqual(status, 1)
+            self.assertTrue(hlink_root.exists())
+            self.assertIn("approval_required", report["blockers"])
 
 
 if __name__ == "__main__":
