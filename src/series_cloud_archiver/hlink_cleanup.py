@@ -830,11 +830,21 @@ def _host_content_root(torrent: object, aliases: Dict[str, str]) -> str:
     save_path = str(getattr(torrent, "save_path", "") or "").rstrip("/")
     name = str(getattr(torrent, "name", "") or "").strip("/")
     root = content_path
-    if root and Path(_map_path(root, aliases)).suffix:
+    host_root = _map_path(root, aliases) if root else ""
+    if root and _looks_like_single_video_content(host_root):
         root = str(PurePosixPath(root).parent)
     if not root and save_path and name:
         root = str(PurePosixPath(save_path) / name)
     return _map_path(root, aliases) if root else ""
+
+
+def _looks_like_single_video_content(host_path: str) -> bool:
+    path = Path(host_path)
+    if path.is_file():
+        return is_video_file(path)
+    if path.exists():
+        return False
+    return path.suffix.lower() in {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".ts", ".m2ts", ".wmv", ".flv", ".webm", ".rmvb"}
 
 
 def _remove_hlink_root(hlink_root: str) -> Dict[str, object]:

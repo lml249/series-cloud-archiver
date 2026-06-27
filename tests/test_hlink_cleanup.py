@@ -285,6 +285,100 @@ class CloudHlinkCleanupTest(unittest.TestCase):
         self.assertEqual(report["qbittorrent"]["hashes"], ["2222222222222222222222222222222222222222"])
         self.assertEqual(report["filesystem"]["hlink_coverage"]["missing_hlink_inode_count"], 0)
 
+    def test_preview_does_not_scan_parent_when_release_folder_contains_dots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "qb" / "TV" / "Evil.Hunter.S01.2026.2160p.WEB-DL"
+            source_file = source / "Evil.Hunter.S01E01.mkv"
+            write(source_file)
+            unrelated = tmp_path / "qb" / "TV" / "Other.Show.S01.2026.2160p.WEB-DL"
+            unrelated_file = unrelated / "Other.Show.S01E01.mkv"
+            write(unrelated_file)
+            hlink_root = tmp_path / "hlink" / "TV" / "除恶 (2026) {tmdbid=281495}"
+            hlink_file = hlink_root / "Season 01" / "除恶 - S01E01.mkv"
+            hlink_file.parent.mkdir(parents=True)
+            os.link(source_file, hlink_file)
+            strm_root = tmp_path / "strm" / "series" / "除恶 (2026) {tmdbid=281495}" / "Season 01"
+            write(strm_root / "除恶 S01E01.strm", "/已整理/series/除恶 (2026) {tmdbid=281495}/Season 01/E01.mkv")
+            right_match = QBTorrentEvidence(
+                name="除恶.Evil.Hunter.S01.2026.2160p.WEB-DL",
+                hash="1111111111111111111111111111111111111111",
+                state="stalledUP",
+                save_path=str(tmp_path / "qb" / "TV"),
+                content_path=str(source),
+                progress=1.0,
+                seeding_time_seconds=86400 * 30,
+                seed_days=30.0,
+                size_bytes=source_file.stat().st_size,
+            )
+            unrelated_match = QBTorrentEvidence(
+                name="Other.Show.S01.2026.2160p.WEB-DL",
+                hash="2222222222222222222222222222222222222222",
+                state="stalledUP",
+                save_path=str(tmp_path / "qb" / "TV"),
+                content_path=str(unrelated),
+                progress=1.0,
+                seeding_time_seconds=86400 * 30,
+                seed_days=30.0,
+                size_bytes=unrelated_file.stat().st_size,
+            )
+
+            with patch("series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[right_match, unrelated_match]):
+                report = preview_cloud_hlink_cleanup(
+                    "除恶 (2026) {tmdbid=281495}",
+                    str(hlink_root),
+                    str(strm_root),
+                    expected_tmdbid=281495,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                    min_seed_days=7,
+                    required_target_prefix="/已整理/series",
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["qbittorrent"]["hashes"], ["1111111111111111111111111111111111111111"])
+
+    def test_preview_still_supports_single_file_torrent_content_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_file = tmp_path / "qb" / "TV" / "Show.S01E01.mkv"
+            write(source_file)
+            hlink_root = tmp_path / "hlink" / "TV" / "Show"
+            hlink_file = hlink_root / "Show S01E01.mkv"
+            hlink_file.parent.mkdir(parents=True)
+            os.link(source_file, hlink_file)
+            strm_root = tmp_path / "strm" / "Show" / "Season 01"
+            write(strm_root / "Show S01E01.strm")
+            torrent = QBTorrentEvidence(
+                name="Show.S01E01",
+                hash="feedface00001234567890",
+                state="stalledUP",
+                save_path=str(tmp_path / "qb" / "TV"),
+                content_path=str(source_file),
+                progress=1.0,
+                seeding_time_seconds=86400 * 8,
+                seed_days=8.0,
+                size_bytes=source_file.stat().st_size,
+            )
+
+            with patch("series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[torrent]):
+                report = preview_cloud_hlink_cleanup(
+                    "Show",
+                    str(hlink_root),
+                    str(strm_root),
+                    expected_tmdbid=1,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                    min_seed_days=7,
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["qbittorrent"]["hashes"], ["feedface00001234567890"])
+
     def test_execute_deletes_approved_qb_hash_and_explicit_hlink_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
