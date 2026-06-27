@@ -152,6 +152,42 @@ class CliEntrypointTest(unittest.TestCase):
             self.assertEqual(output_payload["planned_items"], 2)
             self.assertEqual(output_payload["ready_items"], 2)
 
+    def test_cli_output_creates_parent_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output = tmp_path / "new" / "date" / "preview.json"
+
+            class FakeConfig:
+                mv3_base_url = "http://mv3.example"
+                mv3_token = "token"
+
+            from series_cloud_archiver import cli
+
+            with patch.object(cli, "config_from_env", return_value=FakeConfig()), patch.object(
+                cli,
+                "preview_mv3_share",
+                return_value={"mode": "readonly-mv3-share-preview", "ok": True, "warnings": []},
+            ):
+                code = cli.main(
+                    [
+                        "mv3-share-preview",
+                        "--env-file",
+                        str(tmp_path / ".env"),
+                        "--keyword",
+                        "Demo",
+                        "--expected-title-contains",
+                        "Demo",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            self.assertTrue(output.exists())
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["ok"], True)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -770,7 +770,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         report = scan(config)
         rendered = render_report(report, config.output_format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -781,7 +781,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         report = evaluate(config, db_path)
         rendered = render_report(report, config.output_format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -855,7 +855,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_dotqb_audit_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -889,7 +889,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_dotqb_orphan_cleanup(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -912,7 +912,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mp_cleanup_preview(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -949,7 +949,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mp_cleanup_execute_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -980,7 +980,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mp_cleanup_verification(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1004,7 +1004,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_cloud_complete_cleanup_plan(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1032,7 +1032,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_cloud_complete_cleanup_execute(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1059,7 +1059,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_cloud_hlink_cleanup(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1096,7 +1096,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_cloud_hlink_cleanup(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1113,7 +1113,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_strm_verification(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1131,7 +1131,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_duplicate_strm_cleanup(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1159,7 +1159,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_emby_refresh_verify_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1185,7 +1185,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_emby_media_updated_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1215,7 +1215,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_emby_item_refresh_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1242,7 +1242,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_emby_delete_stale_paths_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1259,7 +1259,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_emby_task_status_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1279,7 +1279,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_emby_task_cancel_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1298,7 +1298,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         report = cloud_check_from_scan_report(load_scan_report(args.scan_report), roots, top=top, identity_file=identity_file)
         rendered = render_cloud_check_report(report, output_format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1324,7 +1324,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         plan = plan_mv3_transfers_from_cloud_report(load_cloud_check_report(args.cloud_report), statuses=statuses, top=args.top)
         rendered = render_mv3_transfer_plan(plan, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1340,7 +1340,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_preview_manifest(manifest, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1366,7 +1366,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_offline_manifest(manifest, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1397,7 +1397,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_offline_add_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1418,7 +1418,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_ensure_path_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1439,7 +1439,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_offline_status_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1457,7 +1457,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_resource_search_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1535,7 +1535,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_share_preview_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1565,7 +1565,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_share_receive_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1586,7 +1586,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_organize_scan_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1619,7 +1619,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_organize_transfer_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1648,7 +1648,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_strm_generate_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1672,7 +1672,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_strm_records_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1702,7 +1702,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_strm_records_materialize_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1731,7 +1731,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_strm_records_redirect_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1754,7 +1754,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_strm_records_regenerate_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1774,7 +1774,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_cloud_browse_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1799,7 +1799,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_wrong_root_repair_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
@@ -1809,7 +1809,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         report = probe_mv3(config.mv3_base_url, config.mv3_token, paths=args.path or None)
         rendered = render_mv3_probe_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1819,7 +1819,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         report = inspect_mv3_capabilities(config.mv3_base_url, config.mv3_token, include_all=args.include_all)
         rendered = render_mv3_capabilities_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
@@ -1835,7 +1835,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         rendered = render_mv3_instances_report(report, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
