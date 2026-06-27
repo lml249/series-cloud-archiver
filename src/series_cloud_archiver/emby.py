@@ -155,6 +155,9 @@ class EmbyClient:
         payload = self._get("/emby/ScheduledTasks", {})
         return list(payload) if isinstance(payload, list) else []
 
+    def cancel_running_task(self, task_id: object) -> Dict[str, object]:
+        return self._delete_empty(f"/emby/ScheduledTasks/Running/{urllib.parse.quote(str(task_id), safe='')}")
+
     def task_by_key(self, key: str) -> Dict[str, object]:
         for task in self.scheduled_tasks():
             if task.get("Key") == key:
@@ -296,6 +299,134 @@ def refresh_and_verify_emby_library(
         "safety": "Emby library refresh trigger and readonly verification only; no filesystem deletion, qBittorrent action, MoviePilot cleanup, or direct Emby database write is performed",
     }
     return report
+
+
+def inspect_emby_task_status(
+    base_url: str,
+    api_key: str,
+    task_key: str = REFRESH_LIBRARY_TASK_KEY,
+    timeout: int = 20,
+) -> Dict[str, object]:
+    client = EmbyClient(base_url, api_key, timeout=timeout)
+    tasks = client.scheduled_tasks()
+    matches = _matching_tasks(tasks, task_key)
+    blockers: List[str] = []
+    if not matches:
+        blockers.append("emby_task_not_found")
+    return {
+        "mode": "emby-task-status",
+        "task_key": task_key,
+        "ok": not blockers,
+        "tasks": [_task_summary(task) for task in matches],
+        "blockers": blockers,
+        "warnings": [],
+        "safety": "readonly Emby scheduled task status only; no refresh, cancel, filesystem, qBittorrent, MoviePilot, or Emby database write is performed",
+    }
+
+
+def cancel_emby_running_task(
+    base_url: str,
+    api_key: str,
+    task_id: str = "",
+    task_key: str = REFRESH_LIBRARY_TASK_KEY,
+    timeout: int = 20,
+) -> Dict[str, object]:
+    client = EmbyClient(base_url, api_key, timeout=timeout)
+    before_tasks = client.scheduled_tasks()
+    matches = _matching_tasks(before_tasks, task_key)
+    blockers: List[str] = []
+    warnings: List[str] = []
+    selected = _select_task_to_cancel(matches, task_id)
+    if not matches:
+        blockers.append("emby_task_not_found")
+    if not selected:
+        blockers.append("emby_running_task_not_found")
+    elif str(selected.get("State") or "") != "Running":
+        blockers.append("emby_task_not_running")
+    if task_id:
+        task_id_matches = [task for task in before_tasks if str(task.get("Id") or "") == str(task_id)]
+        if not task_id_matches:
+            blockers.append("emby_task_id_not_found")
+        elif matches and selected and str(selected.get("Key") or "") != task_key:
+            blockers.append("emby_task_key_mismatch")
+
+    cancel_result: Dict[str, object] = {}
+    after_tasks: List[Dict[str, object]] = []
+    if not blockers and selected:
+        cancel_result = client.cancel_running_task(selected.get("Id"))
+        if not cancel_result.get("ok"):
+            blockers.append("emby_cancel_task_failed")
+        try:
+            after_tasks = client.scheduled_tasks()
+        except Exception as exc:  # pragma: no cover - defensive for live Emby API failures
+            warnings.append(f"emby_task_status_after_cancel_failed:{type(exc).__name__}:{exc}")
+
+    return {
+        "mode": "emby-task-cancel",
+        "task_key": task_key,
+        "task_id": task_id,
+        "ok": not blockers and bool(cancel_result),
+        "selected_task": _task_summary(selected) if selected else {},
+        "cancel": cancel_result,
+        "before": [_task_summary(task) for task in matches],
+        "after": [_task_summary(task) for task in _matching_tasks(after_tasks, task_key)] if after_tasks else [],
+        "blockers": sorted(set(blockers)),
+        "warnings": warnings,
+        "safety": "approved Emby scheduled task cancel only; no filesystem, qBittorrent, MoviePilot, or direct Emby database write is performed",
+    }
+
+
+def render_emby_task_status_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# Emby Task Status",
+        "",
+        f"- Task key: `{report.get('task_key', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        "- Safety: readonly scheduled task status only.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    tasks = report.get("tasks")
+    if isinstance(tasks, list) and tasks:
+        lines.extend(["", "## Tasks", "", "| Name | Id | State | Progress | Last status |", "| --- | --- | --- | ---: | --- |"])
+        for task in tasks:
+            if isinstance(task, dict):
+                lines.append(
+                    "| {name} | {task_id} | {state} | {progress} | {last_status} |".format(
+                        name=_escape(str(task.get("name") or "")),
+                        task_id=_escape(str(task.get("id") or "")),
+                        state=_escape(str(task.get("state") or "")),
+                        progress=task.get("progress") if task.get("progress") is not None else "",
+                        last_status=_escape(str(task.get("last_status") or "")),
+                    )
+                )
+    return "\n".join(lines)
+
+
+def render_emby_task_cancel_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    selected = report.get("selected_task") if isinstance(report.get("selected_task"), dict) else {}
+    cancel = report.get("cancel") if isinstance(report.get("cancel"), dict) else {}
+    lines = [
+        "# Emby Task Cancel",
+        "",
+        f"- Task key: `{report.get('task_key', '')}`",
+        f"- Selected id: `{selected.get('id', '')}`",
+        f"- Selected state: `{selected.get('state', '')}`",
+        f"- Cancel HTTP status: `{cancel.get('http_status', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        "- Safety: approved scheduled task cancel only.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    return "\n".join(lines)
 
 
 def notify_and_verify_emby_media_updated(
@@ -992,6 +1123,36 @@ def _stale_host_check(stale_prefix: str, stale_path_prefixes: Sequence[str], sta
         "host_path": host_prefix,
         "exists": os.path.exists(host_prefix),
         "blocked": False,
+    }
+
+
+def _matching_tasks(tasks: Sequence[Dict[str, object]], task_key: str) -> List[Dict[str, object]]:
+    if not task_key:
+        return list(tasks)
+    return [task for task in tasks if str(task.get("Key") or "") == task_key]
+
+
+def _select_task_to_cancel(tasks: Sequence[Dict[str, object]], task_id: str = "") -> Dict[str, object]:
+    if task_id:
+        for task in tasks:
+            if str(task.get("Id") or "") == str(task_id):
+                return task
+        return {}
+    running = [task for task in tasks if str(task.get("State") or "") == "Running"]
+    return running[0] if len(running) == 1 else {}
+
+
+def _task_summary(task: Dict[str, object]) -> Dict[str, object]:
+    last = task.get("LastExecutionResult") if isinstance(task.get("LastExecutionResult"), dict) else {}
+    return {
+        "id": task.get("Id"),
+        "key": task.get("Key"),
+        "name": task.get("Name"),
+        "state": task.get("State"),
+        "progress": task.get("CurrentProgressPercentage"),
+        "last_status": last.get("Status"),
+        "last_start_utc": last.get("StartTimeUtc"),
+        "last_end_utc": last.get("EndTimeUtc"),
     }
 
 

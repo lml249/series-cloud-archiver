@@ -17,13 +17,17 @@ from series_cloud_archiver.cleanup_verify import (
 )
 from series_cloud_archiver.emby import (
     EmbyClient,
+    cancel_emby_running_task,
     delete_stale_emby_paths,
+    inspect_emby_task_status,
     notify_and_verify_emby_media_updated,
     refresh_and_verify_emby_item,
     refresh_and_verify_emby_library,
     render_emby_item_refresh_report,
     render_emby_media_updated_report,
     render_emby_refresh_verify_report,
+    render_emby_task_cancel_report,
+    render_emby_task_status_report,
     verify_emby_library_paths,
 )
 from series_cloud_archiver.episode import episode_signal
@@ -1085,6 +1089,139 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
                 "ReplaceAllImages": False,
             },
         )
+
+    def test_emby_client_cancels_running_task_with_token_header(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            status = 204
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self):
+                return b""
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["headers"] = request.headers
+            seen["method"] = request.get_method()
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            result = EmbyClient("http://emby.example", "secret-key", timeout=7).cancel_running_task("task id")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(seen["method"], "DELETE")
+        self.assertEqual(seen["url"], "http://emby.example/emby/ScheduledTasks/Running/task%20id")
+        self.assertNotIn("secret-key", seen["url"])
+        self.assertEqual(seen["headers"].get("X-emby-token"), "secret-key")
+        self.assertEqual(seen["timeout"], 7)
+
+    def test_emby_task_status_reports_matching_task(self) -> None:
+        class FakeClient:
+            def __init__(self, base_url, api_key, timeout=20):
+                self.base_url = base_url
+                self.api_key = api_key
+                self.timeout = timeout
+
+            def scheduled_tasks(self):
+                return [
+                    {
+                        "Id": "refresh-id",
+                        "Key": "RefreshLibrary",
+                        "Name": "Scan media library",
+                        "State": "Running",
+                        "CurrentProgressPercentage": 90,
+                        "LastExecutionResult": {"Status": "Cancelled"},
+                    }
+                ]
+
+        with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+            report = inspect_emby_task_status("http://emby.example", "token")
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["tasks"][0]["id"], "refresh-id")
+        self.assertEqual(report["tasks"][0]["state"], "Running")
+        self.assertIn("readonly scheduled task status", render_emby_task_status_report(report, "markdown"))
+
+    def test_emby_task_cancel_only_cancels_running_matching_task(self) -> None:
+        calls = []
+
+        class FakeClient:
+            def __init__(self, base_url, api_key, timeout=20):
+                pass
+
+            def scheduled_tasks(self):
+                if calls:
+                    return [{"Id": "refresh-id", "Key": "RefreshLibrary", "Name": "Scan media library", "State": "Idle"}]
+                return [{"Id": "refresh-id", "Key": "RefreshLibrary", "Name": "Scan media library", "State": "Running"}]
+
+            def cancel_running_task(self, task_id):
+                calls.append(task_id)
+                return {"http_status": 204, "ok": True, "response": {}}
+
+        with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+            report = cancel_emby_running_task("http://emby.example", "token", task_key="RefreshLibrary")
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(calls, ["refresh-id"])
+        self.assertEqual(report["selected_task"]["id"], "refresh-id")
+        self.assertEqual(report["after"][0]["state"], "Idle")
+        self.assertIn("approved scheduled task cancel", render_emby_task_cancel_report(report, "markdown"))
+
+    def test_emby_task_cancel_blocks_idle_task(self) -> None:
+        class FakeClient:
+            def __init__(self, base_url, api_key, timeout=20):
+                pass
+
+            def scheduled_tasks(self):
+                return [{"Id": "refresh-id", "Key": "RefreshLibrary", "Name": "Scan media library", "State": "Idle"}]
+
+            def cancel_running_task(self, task_id):
+                raise AssertionError("idle tasks must not be cancelled")
+
+        with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+            report = cancel_emby_running_task("http://emby.example", "token", task_key="RefreshLibrary")
+
+        self.assertFalse(report["ok"])
+        self.assertIn("emby_running_task_not_found", report["blockers"])
+
+    def test_emby_task_status_cli_writes_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "emby-task-status.json"
+            env_file.write_text("EMBY_BASE_URL=http://emby.example\nEMBY_API_KEY=token\n", encoding="utf-8")
+
+            class FakeClient:
+                def __init__(self, base_url, api_key, timeout=20):
+                    pass
+
+                def scheduled_tasks(self):
+                    return [{"Id": "refresh-id", "Key": "RefreshLibrary", "Name": "Scan media library", "State": "Running"}]
+
+            with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+                code = main(
+                    [
+                        "emby-task-status",
+                        "--env-file",
+                        str(env_file),
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["tasks"][0]["id"], "refresh-id")
 
     def test_emby_refresh_error_redacts_echoed_api_key(self) -> None:
         class FakeHTTPError(Exception):

@@ -22,7 +22,9 @@ from .cleanup_verify import (
 from .config import config_from_env, db_path_from_env
 from .dotqb_cleanup import cleanup_orphan_dotqb_roots, render_dotqb_orphan_cleanup
 from .emby import (
+    cancel_emby_running_task,
     delete_stale_emby_paths,
+    inspect_emby_task_status,
     notify_and_verify_emby_media_updated,
     refresh_and_verify_emby_item,
     refresh_and_verify_emby_library,
@@ -30,6 +32,8 @@ from .emby import (
     render_emby_item_refresh_report,
     render_emby_media_updated_report,
     render_emby_refresh_verify_report,
+    render_emby_task_cancel_report,
+    render_emby_task_status_report,
 )
 from .hlink_cleanup import (
     execute_cloud_hlink_cleanup,
@@ -358,6 +362,22 @@ def build_parser() -> argparse.ArgumentParser:
     emby_delete_parser.add_argument("--approve-delete", action="store_true", help="Required: actually call Emby delete for stale root item ids")
     emby_delete_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     emby_delete_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    emby_task_status_parser = subcommands.add_parser("emby-task-status", help="Readonly Emby scheduled task status")
+    emby_task_status_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    emby_task_status_parser.add_argument("--task-key", default="RefreshLibrary", help="Emby scheduled task key")
+    emby_task_status_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    emby_task_status_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    emby_task_status_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    emby_task_cancel_parser = subcommands.add_parser("emby-task-cancel", help="Cancel one approved running Emby scheduled task")
+    emby_task_cancel_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    emby_task_cancel_parser.add_argument("--task-key", default="RefreshLibrary", help="Emby scheduled task key")
+    emby_task_cancel_parser.add_argument("--task-id", default="", help="Optional exact Emby scheduled task id to cancel")
+    emby_task_cancel_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    emby_task_cancel_parser.add_argument("--approve-cancel", action="store_true", help="Required: actually cancel the running task")
+    emby_task_cancel_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    emby_task_cancel_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     cloud_parser = subcommands.add_parser("cloud-check", help="Readonly STRM coverage check for cloud candidates")
     cloud_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -1206,6 +1226,43 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_emby_delete_stale_paths_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "emby-task-status":
+        config = config_from_env(args.env_file, [])
+        if not config.emby_base_url or not config.emby_key:
+            parser.error("emby-task-status requires EMBY_BASE_URL and EMBY_API_KEY")
+        report = inspect_emby_task_status(
+            config.emby_base_url,
+            config.emby_key,
+            task_key=args.task_key,
+            timeout=args.timeout,
+        )
+        rendered = render_emby_task_status_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "emby-task-cancel":
+        if not args.approve_cancel:
+            parser.error("emby-task-cancel requires --approve-cancel")
+        config = config_from_env(args.env_file, [])
+        if not config.emby_base_url or not config.emby_key:
+            parser.error("emby-task-cancel requires EMBY_BASE_URL and EMBY_API_KEY")
+        report = cancel_emby_running_task(
+            config.emby_base_url,
+            config.emby_key,
+            task_id=args.task_id,
+            task_key=args.task_key,
+            timeout=args.timeout,
+        )
+        rendered = render_emby_task_cancel_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:
