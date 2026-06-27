@@ -933,6 +933,17 @@ def execute_mv3_organize_transfer_from_browse_report(
         "background": background,
     }
     transfer_report: Dict[str, object] = {"skipped": True}
+    completion_verification = _organize_completion_verification_hint(
+        normalized_target_dir,
+        normalized_strm_dir,
+        tmdb_id,
+        expected_episode_count,
+        expected_episode_min,
+        expected_episode_max,
+        expected_episode_list,
+        episode_numbers,
+        transfer_report,
+    )
     if not blockers:
         client = MV3Client(base_url, token, timeout=timeout)
         try:
@@ -959,6 +970,17 @@ def execute_mv3_organize_transfer_from_browse_report(
                 request_body,
                 exc,
             )
+        completion_verification = _organize_completion_verification_hint(
+            normalized_target_dir,
+            normalized_strm_dir,
+            tmdb_id,
+            expected_episode_count,
+            expected_episode_min,
+            expected_episode_max,
+            expected_episode_list,
+            episode_numbers,
+            transfer_report,
+        )
 
     return {
         "mode": "mv3-organize-transfer-result",
@@ -983,6 +1005,7 @@ def execute_mv3_organize_transfer_from_browse_report(
         "file_count": len(files),
         "request_summary": _organize_transfer_request_summary(request_body),
         "transfer": transfer_report,
+        "completion_verification": completion_verification,
         "warnings": warnings,
         "blockers": sorted(set(blockers)),
         "safety": "approved MV3 organize transfer; request is built only from a complete readonly cloud browse report and sends one /api/v1/organize/transfer call; no qBittorrent action, hlink deletion, local filesystem deletion, or MP cleanup is performed",
@@ -1593,6 +1616,7 @@ def render_mv3_organize_transfer_report(report: Dict[str, object], output_format
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
     transfer = report.get("transfer") if isinstance(report.get("transfer"), dict) else {}
+    completion = report.get("completion_verification") if isinstance(report.get("completion_verification"), dict) else {}
     lines = [
         "# MV3 Organize Transfer Result",
         "",
@@ -1607,8 +1631,13 @@ def render_mv3_organize_transfer_report(report: Dict[str, object], output_format
         f"- Missing expected: `{report.get('missing_expected', [])}`",
         f"- Transfer OK: `{bool(transfer.get('ok'))}`",
         f"- Transfer HTTP status: `{transfer.get('status', '')}`",
+        f"- Completion status: `{completion.get('status', '')}`",
         "- Safety: one approved MV3 organize transfer only; no qB, hlink, local filesystem, or MP cleanup was performed.",
     ]
+    next_steps = completion.get("required_followup")
+    if isinstance(next_steps, list) and next_steps:
+        lines.extend(["", "## Required Follow-up", ""])
+        lines.extend(f"- `{step}`" for step in next_steps)
     blockers = report.get("blockers")
     if isinstance(blockers, list) and blockers:
         lines.extend(["", "## Blockers", ""])
@@ -3065,6 +3094,45 @@ def _organize_transfer_request_summary(request_body: Dict[str, object]) -> Dict[
             for file in files[:100]
             if isinstance(file, dict)
         ],
+    }
+
+
+def _organize_completion_verification_hint(
+    target_dir: str,
+    strm_dir: str,
+    tmdb_id: int,
+    expected_episode_count: int,
+    expected_episode_min: int,
+    expected_episode_max: int,
+    expected_episodes: List[int],
+    episodes: List[int],
+    transfer_report: Dict[str, object],
+) -> Dict[str, object]:
+    if transfer_report.get("skipped"):
+        status = "not_submitted"
+        required_followup: List[str] = []
+    elif transfer_report.get("ok"):
+        status = "confirmed_success"
+        required_followup = ["mv3-cloud-browse organized season", "strm-verify"]
+    elif transfer_report.get("error_type") in {"TimeoutError", "timeout"}:
+        status = "unverified_after_timeout"
+        required_followup = ["mv3-cloud-browse organized season", "strm-verify before any cleanup"]
+    else:
+        status = "failed"
+        required_followup = []
+    return {
+        "status": status,
+        "target_dir": target_dir,
+        "strm_dir": strm_dir,
+        "tmdb_id": tmdb_id,
+        "expected_episode_count": expected_episode_count,
+        "expected_episode_min": expected_episode_min,
+        "expected_episode_max": expected_episode_max,
+        "expected_episodes": expected_episodes,
+        "request_episodes": episodes,
+        "required_followup": required_followup,
+        "requires_followup_before_cleanup": bool(required_followup),
+        "note": "A timeout means the HTTP client stopped waiting; MV3 may still complete the organize job. Treat it as unverified until cloud browse and STRM verification pass.",
     }
 
 
