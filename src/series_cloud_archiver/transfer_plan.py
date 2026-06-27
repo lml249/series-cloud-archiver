@@ -430,6 +430,8 @@ def _share_search_candidate(row: Dict[str, object], transfer_item: Dict[str, obj
     if normalized_title and normalized_title in normalized_remote:
         score += 35
         reasons.append("title_contains")
+        if _has_chinese_subtitle_drift(str(transfer_item.get("title") or ""), title):
+            blockers.append("possible_chinese_subtitle_mismatch")
     elif _search_keyword_matches(row, normalized_remote):
         score += 30
         reasons.append("search_keyword_contains")
@@ -501,6 +503,28 @@ def _search_keyword_matches(row: Dict[str, object], normalized_remote: str) -> b
     keyword = str(row.get("search_keyword") or "")
     normalized_keyword = _compact(keyword)
     return bool(normalized_keyword and normalized_keyword in normalized_remote)
+
+
+def _has_chinese_subtitle_drift(expected_title: str, remote_title: str) -> bool:
+    expected = _first_chinese_run(expected_title)
+    if len(expected) < 2:
+        return False
+    remote = re.sub(r"\s+", "", remote_title or "")
+    index = remote.find(expected)
+    if index < 0:
+        return False
+    suffix = remote[index + len(expected) :]
+    suffix = re.sub(r"^[\s:：,，\-—_【】\[\]（）()]+", "", suffix)
+    if not suffix:
+        return False
+    if re.match(r"(?i)^(第?\d|S\d|E\d|全\d|更新|完结|Complete|\(|（|\[|【)", suffix):
+        return False
+    return bool(re.match(r"[\u4e00-\u9fff]{1,12}", suffix))
+
+
+def _first_chinese_run(value: str) -> str:
+    match = re.search(r"[\u4e00-\u9fff]{2,}", value or "")
+    return match.group(0) if match else ""
 
 
 def _keyword_variants_from_path(path: str) -> List[str]:

@@ -651,6 +651,41 @@ class TransferPlanTest(unittest.TestCase):
         self.assertEqual(recommended["search_keyword"], "The Vendetta of An")
         self.assertIn("episode_count_covers_expected", recommended["reasons"])
 
+    def test_share_search_plan_blocks_possible_chinese_subtitle_mismatch(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "唐朝诡事录",
+                    "tmdbid": 211089,
+                    "season": 1,
+                    "size_bytes": int(100 * 1024**3),
+                    "expected_count": 40,
+                    "search_keywords": ["唐朝诡事录", "Horror Stories of Tang Dynasty"],
+                }
+            ],
+        }
+        search_reports = {
+            "唐朝诡事录": {
+                "ok": True,
+                "result_count": 1,
+                "items": [
+                    {
+                        "index": 1,
+                        "title": "🎬 唐朝诡事录之长安（完结）",
+                        "size": "",
+                        "share_code_available": True,
+                        "search_keyword": "唐朝诡事录",
+                    }
+                ],
+            }
+        }
+
+        plan = plan_mv3_share_search_from_transfer_plan(transfer_plan, search_reports, limit=1)
+
+        self.assertEqual(plan["ready_items"], 0)
+        self.assertIn("possible_chinese_subtitle_mismatch", plan["items"][0]["candidates"][0]["blockers"])
+
     def test_cli_share_search_uses_all_search_keywords(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
