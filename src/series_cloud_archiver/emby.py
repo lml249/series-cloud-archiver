@@ -56,6 +56,31 @@ class EmbyClient:
                 "response": _parse_json_object(text),
             }
 
+    def _post_json(self, path: str, body: Dict[str, object], query: Optional[Dict[str, str]] = None) -> Dict[str, object]:
+        url = _url_with_query(f"{self.base_url}{path}", query or {})
+        headers = {**self._auth_headers(), "Content-Type": "application/json"}
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                text = response.read().decode("utf-8", "replace")
+                return {
+                    "http_status": response.status,
+                    "ok": 200 <= response.status < 300,
+                    "response": _parse_json_object(text),
+                }
+        except urllib.error.HTTPError as exc:
+            text = exc.read().decode("utf-8", "replace")
+            return {
+                "http_status": exc.code,
+                "ok": False,
+                "response": _parse_json_object(text),
+            }
+
     def _delete_empty(self, path: str, query: Optional[Dict[str, str]] = None) -> Dict[str, object]:
         url = _url_with_query(f"{self.base_url}{path}", query or {})
         request = urllib.request.Request(url, data=b"", headers=self._auth_headers(), method="DELETE")
@@ -90,6 +115,10 @@ class EmbyClient:
 
     def refresh_library(self) -> Dict[str, object]:
         return self._post_empty("/emby/Library/Refresh")
+
+    def notify_media_updated(self, paths: Sequence[str], update_type: str = "Created") -> Dict[str, object]:
+        updates = [{"Path": path, "UpdateType": update_type} for path in paths if path]
+        return self._post_json("/emby/Library/Media/Updated", {"Updates": updates})
 
     def delete_item(self, item_id: object) -> Dict[str, object]:
         return self._delete_empty(f"/emby/Items/{urllib.parse.quote(str(item_id), safe='')}")
@@ -241,6 +270,61 @@ def refresh_and_verify_emby_library(
     return report
 
 
+def notify_and_verify_emby_media_updated(
+    base_url: str,
+    api_key: str,
+    title: str,
+    updated_paths: Sequence[str],
+    stale_path_prefixes: Sequence[str],
+    strm_path_prefixes: Sequence[str],
+    update_type: str = "Created",
+    expected_strm_records: int = 0,
+    expected_episode_count: int = 0,
+    expected_episode_min: int = 0,
+    expected_episode_max: int = 0,
+    library_db_path: str = "",
+    timeout: int = 20,
+) -> Dict[str, object]:
+    client = EmbyClient(base_url, api_key, timeout=timeout)
+    blockers: List[str] = []
+    warnings: List[str] = []
+    normalized_updated_paths = _normalize_prefixes(updated_paths)
+    if not normalized_updated_paths:
+        blockers.append("emby_updated_path_required")
+    notify = {"requested": bool(normalized_updated_paths), "update_type": update_type, "paths": normalized_updated_paths}
+    if normalized_updated_paths:
+        result = client.notify_media_updated(normalized_updated_paths, update_type=update_type)
+        notify["request"] = result
+        if not result.get("ok"):
+            blockers.append("emby_media_updated_request_failed")
+    else:
+        notify["request"] = {"skipped": True}
+
+    verification = verify_emby_library_paths(
+        client,
+        title=title,
+        stale_path_prefixes=stale_path_prefixes,
+        strm_path_prefixes=strm_path_prefixes,
+        expected_strm_records=expected_strm_records,
+        expected_episode_count=expected_episode_count,
+        expected_episode_min=expected_episode_min,
+        expected_episode_max=expected_episode_max,
+        library_db_path=library_db_path,
+    )
+    blockers.extend(verification.get("blockers", []))
+    warnings.extend(verification.get("warnings", []))
+    return {
+        "mode": "emby-media-updated",
+        "title": title,
+        "ok": not blockers,
+        "notify": notify,
+        "verification": verification,
+        "blockers": sorted(set(blockers)),
+        "warnings": warnings,
+        "safety": "Emby media-updated notification and readonly verification only; no filesystem deletion, qBittorrent action, MoviePilot cleanup, full-library scan request, or direct Emby database write is performed",
+    }
+
+
 def verify_emby_library_paths(
     client: EmbyClient,
     title: str,
@@ -278,6 +362,41 @@ def verify_emby_library_paths(
     )
     report["warnings"].append("emby_api_search_may_hide_duplicate_versions; set EMBY_LIBRARY_DB_PATH for exact local verification")
     return report
+
+
+def render_emby_media_updated_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    notify = report.get("notify") if isinstance(report.get("notify"), dict) else {}
+    request = notify.get("request") if isinstance(notify.get("request"), dict) else {}
+    verification = report.get("verification") if isinstance(report.get("verification"), dict) else {}
+    totals = verification.get("totals") if isinstance(verification.get("totals"), dict) else {}
+    strm = verification.get("strm") if isinstance(verification.get("strm"), dict) else {}
+    lines = [
+        "# Emby Media Updated",
+        "",
+        f"- Title: `{report.get('title', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Update type: `{notify.get('update_type', '')}`",
+        f"- Updated paths: `{len(notify.get('paths') or [])}`",
+        f"- Notify HTTP status: `{request.get('http_status', '')}`",
+        f"- Verification method: `{verification.get('method', '')}`",
+        f"- Stale path records: `{totals.get('stale_records', 0)}`",
+        f"- STRM records: `{totals.get('strm_records', 0)}`",
+        f"- STRM episode count: `{strm.get('episode_count', 0)}`",
+        f"- STRM episode range: `{strm.get('episode_min', '')}-{strm.get('episode_max', '')}`",
+        f"- STRM missing: `{strm.get('missing_in_range', [])}`",
+        "- Safety: Emby media-updated notification and readonly verification only; no full-library scan or deletion is requested.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    return "\n".join(lines)
 
 
 def render_emby_refresh_verify_report(report: Dict[str, object], output_format: str) -> str:
