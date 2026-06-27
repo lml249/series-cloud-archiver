@@ -331,7 +331,8 @@ def browse_mv3_cloud_folder(
         folder_payload, browse_status, browse_content_type = _read_cloud_folder_status(client, folder_id, storage, limit)
     rows = _cloud_rows(folder_payload)
     items = [_cloud_browse_item_summary(row, index) for index, row in enumerate(rows[:200], start=1)]
-    episode_numbers = _episode_numbers_from_scan_items([{"name": item.get("name")} for item in items if isinstance(item, dict)])
+    media_items = [item for item in items if isinstance(item, dict) and str(item.get("media_kind") or "video") == "video"]
+    episode_numbers = _episode_numbers_from_scan_items([{"name": item.get("name")} for item in media_items])
     if not rows and folder_id:
         warnings.append("no_cloud_items_found")
     if episode_numbers and _missing_episode_numbers(episode_numbers):
@@ -356,6 +357,8 @@ def browse_mv3_cloud_folder(
             "item_count": len(rows),
             "folder_count": sum(1 for row in rows if _cloud_item_kind(row) == "folder"),
             "file_count": sum(1 for row in rows if _cloud_item_kind(row) == "file"),
+            "video_file_count": sum(1 for item in items if isinstance(item, dict) and str(item.get("media_kind") or "") == "video"),
+            "sidecar_file_count": sum(1 for item in items if isinstance(item, dict) and str(item.get("media_kind") or "") == "sidecar"),
             "episode_count": len(episode_numbers),
             "episode_min": min(episode_numbers) if episode_numbers else None,
             "episode_max": max(episode_numbers) if episode_numbers else None,
@@ -2692,6 +2695,7 @@ def _cloud_browse_item_summary(item: Dict[str, object], index: int) -> Dict[str,
         "index": index,
         "name": name,
         "kind": _cloud_item_kind(item),
+        "media_kind": _cloud_item_media_kind(item),
         "episode": _episode_number_from_text(name),
         "size": _format_size_value(_first_raw_present(item, ["size", "size_text", "file_size", "file_size_text", "s"])),
         "file_id": _first_present(item, ["fid", "file_id", "id", "cid", "folder_id"]),
@@ -2718,6 +2722,18 @@ def _cloud_item_kind(item: Dict[str, object]) -> str:
     if str(item.get("cid") or item.get("folder_id") or ""):
         return "folder"
     return raw_type or "unknown"
+
+
+def _cloud_item_media_kind(item: Dict[str, object]) -> str:
+    kind = _cloud_item_kind(item)
+    if kind != "file":
+        return kind
+    suffix = Path(_cloud_name(item)).suffix.lower()
+    if suffix in MEDIA_EXTENSIONS:
+        return "video"
+    if suffix in SIDECAR_EXTENSIONS:
+        return "sidecar"
+    return "file"
 
 
 def _cloud_info_summary(info: Dict[str, object]) -> Dict[str, object]:

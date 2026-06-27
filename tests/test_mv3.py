@@ -525,6 +525,56 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertNotIn("private-user-id", json_report)
         self.assertNotIn("private-file-user-id", json_report)
 
+    def test_cloud_browse_marks_sidecar_subtitles_and_counts_video_episodes(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            if "/api/v1/files/cloud/info?" in request.full_url:
+                return FakeResponse({"success": True, "data": {"file_name": "DearX", "file_id": "folder-1", "is_dir": True}})
+            if "/api/v1/files/cloud/browse?" in request.full_url:
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {"name": "Dear.X.S01E01.mkv", "fid": "video-1", "is_dir": False, "s": 1000},
+                                {"name": "Dear.X.S01E01.ass", "fid": "sub-1", "is_dir": False, "s": 10},
+                                {"name": "Dear.X.S01E02.mkv", "fid": "video-2", "is_dir": False, "s": 1000},
+                                {"name": "Dear.X.S01E02.ass", "fid": "sub-2", "is_dir": False, "s": 10},
+                            ]
+                        },
+                    }
+                )
+            raise AssertionError(f"unexpected url: {request.full_url}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = browse_mv3_cloud_folder("http://mv3.example", "token", path="/未整理/DearX")
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["summary"]["file_count"], 4)
+        self.assertEqual(report["summary"]["video_file_count"], 2)
+        self.assertEqual(report["summary"]["sidecar_file_count"], 2)
+        self.assertEqual(report["summary"]["episode_count"], 2)
+        self.assertEqual([item["media_kind"] for item in report["items"]], ["video", "sidecar", "video", "sidecar"])
+        self.assertEqual(report["summary"]["missing_in_range"], [])
+
     def test_offline_status_reports_not_ready_until_task_done_and_folder_has_files(self) -> None:
         class FakeResponse:
             status = 200
