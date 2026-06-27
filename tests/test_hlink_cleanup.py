@@ -6,7 +6,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from series_cloud_archiver.cli import main
-from series_cloud_archiver.hlink_cleanup import cleanup_empty_hlink_root, execute_cloud_hlink_cleanup, preview_cloud_hlink_cleanup
+from series_cloud_archiver.hlink_cleanup import (
+    cleanup_empty_hlink_root,
+    execute_cloud_hlink_orphan_cleanup,
+    execute_cloud_hlink_cleanup,
+    preview_cloud_hlink_orphan_cleanup,
+    preview_cloud_hlink_cleanup,
+)
 from series_cloud_archiver.models import QBTorrentEvidence
 
 
@@ -443,6 +449,144 @@ class CloudHlinkCleanupTest(unittest.TestCase):
             self.assertEqual(status, 1)
             self.assertTrue(hlink_root.exists())
             self.assertIn("approval_required", report["blockers"])
+
+    def test_orphan_preview_allows_hlink_when_qb_has_no_linked_torrent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "人民的名义 (2017)"
+            write(hlink_root / "Season 01" / "人民的名义 - S01E01.mp4")
+            write(hlink_root / "poster.jpg", "jpg")
+            strm_root = tmp_path / "volume4" / "mv3" / "strm" / "series" / "人民的名义 (2017) {tmdbid=71100}" / "Season 01"
+            write(strm_root / "人民的名义.S01E01.strm", "https://mv3/redirect?path=/已整理/series/人民的名义/人民的名义.S01E01.mp4")
+
+            with patch("series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[]):
+                report = preview_cloud_hlink_orphan_cleanup(
+                    "人民的名义",
+                    str(hlink_root),
+                    str(strm_root),
+                    expected_tmdbid=71100,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                    required_target_prefix="/已整理/series",
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["ready_for_execute"])
+        self.assertEqual(report["qbittorrent"]["linked_count"], 0)
+        self.assertEqual(report["hlink"]["video_count"], 1)
+
+    def test_orphan_preview_blocks_when_qb_still_links_hlink_inode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "qb" / "TV" / "Show"
+            source_file = source / "Show.S01E01.mkv"
+            write(source_file)
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "Show"
+            hlink_file = hlink_root / "Season 01" / "Show - S01E01.mkv"
+            hlink_file.parent.mkdir(parents=True)
+            os.link(source_file, hlink_file)
+            strm_root = tmp_path / "strm" / "series" / "Show" / "Season 01"
+            write(strm_root / "Show.S01E01.strm", "/已整理/series/Show/Show.S01E01.mkv")
+            torrent = QBTorrentEvidence(
+                name="Unrelated.Release.Name",
+                hash="3333333333333333333333333333333333333333",
+                state="stalledUP",
+                save_path=str(tmp_path / "qb" / "TV"),
+                content_path=str(source),
+                progress=1.0,
+                seeding_time_seconds=86400 * 30,
+                seed_days=30.0,
+                size_bytes=source_file.stat().st_size,
+            )
+
+            with patch("series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[torrent]):
+                report = preview_cloud_hlink_orphan_cleanup(
+                    "Show",
+                    str(hlink_root),
+                    str(strm_root),
+                    expected_tmdbid=1,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                    required_target_prefix="/已整理/series",
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("qb_linked_torrent_present", report["blockers"])
+        self.assertEqual(report["qbittorrent"]["hashes"], ["3333333333333333333333333333333333333333"])
+
+    def test_orphan_execute_rechecks_qb_and_deletes_explicit_hlink_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "人民的名义 (2017)"
+            write(hlink_root / "Season 01" / "人民的名义 - S01E01.mp4")
+            strm_root = tmp_path / "strm" / "series" / "人民的名义 (2017) {tmdbid=71100}" / "Season 01"
+            write(strm_root / "人民的名义.S01E01.strm", "/已整理/series/人民的名义/人民的名义.S01E01.mp4")
+            preview = {
+                "mode": "cloud-hlink-orphan-cleanup-preview",
+                "title": "人民的名义",
+                "ready_for_execute": True,
+                "blockers": [],
+                "warnings": [],
+                "expected": {
+                    "tmdbid": 71100,
+                    "episode_count": 1,
+                    "episode_min": 1,
+                    "episode_max": 1,
+                    "required_target_prefix": "/已整理/series",
+                    "forbidden_target_prefixes": [],
+                },
+                "hlink": {"path": str(hlink_root)},
+                "strm": {"strm": {"roots": [{"path": str(strm_root)}]}},
+                "qbittorrent": {"hashes": [], "linked_count": 0},
+            }
+
+            with patch("series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[]):
+                report = execute_cloud_hlink_orphan_cleanup(preview, "http://qb.example")
+
+        self.assertTrue(report["ok"])
+        self.assertFalse(hlink_root.exists())
+        self.assertTrue(report["current_precheck"]["ok"])
+        self.assertTrue(report["verification"]["ok"])
+
+    def test_cli_requires_approval_before_orphan_hlink_cleanup_execute(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            preview_file = tmp_path / "orphan-preview.json"
+            env_file.write_text("QB_BASE_URL=http://qb.example\n", encoding="utf-8")
+            preview_file.write_text(
+                json.dumps(
+                    {
+                        "mode": "cloud-hlink-orphan-cleanup-preview",
+                        "title": "Show",
+                        "expected": {"tmdbid": 1},
+                        "hlink": {"path": "/example/hlink/Show"},
+                        "qbittorrent": {"hashes": [], "linked_count": 0},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(SystemExit):
+                main(
+                    [
+                        "cloud-hlink-orphan-cleanup-execute",
+                        "--env-file",
+                        str(env_file),
+                        "--preview-report",
+                        str(preview_file),
+                        "--expected-title",
+                        "Show",
+                        "--expected-tmdbid",
+                        "1",
+                        "--expected-hlink-root",
+                        "/example/hlink/Show",
+                    ]
+                )
 
 
 if __name__ == "__main__":

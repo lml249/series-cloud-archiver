@@ -125,6 +125,97 @@ def preview_cloud_hlink_cleanup(
     }
 
 
+def preview_cloud_hlink_orphan_cleanup(
+    title: str,
+    hlink_root: str,
+    strm_root: str,
+    expected_tmdbid: int = 0,
+    expected_episode_count: int = 0,
+    expected_episode_min: int = 0,
+    expected_episode_max: int = 0,
+    qb_base_url: str = "",
+    qb_user: str = "",
+    qb_pass: str = "",
+    path_aliases: Optional[Dict[str, str]] = None,
+    required_target_prefix: str = "",
+    forbidden_target_prefixes: Optional[Sequence[str]] = None,
+) -> Dict[str, object]:
+    aliases = _normalize_aliases(path_aliases or {})
+    blockers: List[str] = []
+    warnings: List[str] = []
+    hlink_check = _hlink_root_check(hlink_root)
+    if not hlink_check.get("exists"):
+        blockers.append("hlink_root_missing")
+    if hlink_check.get("non_video_count"):
+        warnings.append("hlink_root_contains_non_video_files")
+    if hlink_check.get("video_count") != expected_episode_count and expected_episode_count:
+        blockers.append("hlink_video_count_mismatch")
+
+    strm_report = verify_strm_paths(
+        title,
+        [strm_root],
+        expected_episode_count=expected_episode_count,
+        expected_episode_min=expected_episode_min,
+        expected_episode_max=expected_episode_max,
+        required_target_prefix=required_target_prefix,
+        forbidden_target_prefixes=forbidden_target_prefixes or [],
+    )
+    if not strm_report.get("ok"):
+        blockers.extend(str(blocker) for blocker in strm_report.get("blockers", []) if blocker)
+    warnings.extend(str(warning) for warning in strm_report.get("warnings", []) if warning)
+
+    qb_matches: List[Dict[str, object]] = []
+    qb_error = ""
+    qb_scanned_count = 0
+    if not qb_base_url:
+        blockers.append("qb_base_url_required")
+    else:
+        try:
+            torrents = fetch_qb_evidence(qb_base_url, qb_user, qb_pass)
+            qb_scanned_count = len(torrents)
+            qb_matches = _inode_qb_matches(torrents, hlink_check, aliases, set())
+        except Exception as exc:  # pragma: no cover - exercised by integration
+            qb_error = f"{type(exc).__name__}:{exc}"
+            blockers.append("qb_torrent_check_failed")
+    if qb_matches:
+        blockers.append("qb_linked_torrent_present")
+
+    source_checks = [_source_match_check(row, hlink_check) for row in qb_matches]
+    hlink_coverage = _hlink_source_coverage(source_checks, hlink_check)
+
+    return {
+        "mode": "cloud-hlink-orphan-cleanup-preview",
+        "title": title,
+        "expected": {
+            "tmdbid": expected_tmdbid,
+            "episode_count": expected_episode_count,
+            "episode_min": expected_episode_min,
+            "episode_max": expected_episode_max,
+            "required_target_prefix": required_target_prefix,
+            "forbidden_target_prefixes": list(forbidden_target_prefixes or []),
+        },
+        "ok": not blockers,
+        "ready_for_execute": not blockers,
+        "hlink": hlink_check,
+        "strm": strm_report,
+        "qbittorrent": {
+            "configured": bool(qb_base_url),
+            "error": qb_error,
+            "scanned_count": qb_scanned_count,
+            "linked_count": len(qb_matches),
+            "hashes": sorted({str(row.get("hash") or "") for row in qb_matches if row.get("hash")}),
+            "matches": qb_matches,
+        },
+        "filesystem": {
+            "source_roots": source_checks,
+            "hlink_coverage": hlink_coverage,
+        },
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "safety": "readonly preview only; verifies STRM replacement and scans all qBittorrent content roots by inode before allowing hlink-only cleanup",
+    }
+
+
 def execute_cloud_hlink_cleanup(
     preview: Dict[str, object],
     qb_base_url: str,
@@ -189,6 +280,80 @@ def execute_cloud_hlink_cleanup(
     }
 
 
+def execute_cloud_hlink_orphan_cleanup(
+    preview: Dict[str, object],
+    qb_base_url: str,
+    qb_user: str = "",
+    qb_pass: str = "",
+    path_aliases: Optional[Dict[str, str]] = None,
+) -> Dict[str, object]:
+    blockers: List[str] = []
+    if preview.get("mode") != "cloud-hlink-orphan-cleanup-preview":
+        blockers.append("preview_mode_not_supported")
+    if not preview.get("ready_for_execute"):
+        blockers.append("preview_not_ready_for_execute")
+    if preview.get("blockers"):
+        blockers.append("preview_has_blockers")
+    if not qb_base_url:
+        blockers.append("qb_base_url_required")
+
+    hlink = preview.get("hlink") if isinstance(preview.get("hlink"), dict) else {}
+    expected = preview.get("expected") if isinstance(preview.get("expected"), dict) else {}
+    strm_report = preview.get("strm") if isinstance(preview.get("strm"), dict) else {}
+    strm_roots = [root.get("path") for root in strm_report.get("strm", {}).get("roots", [])] if isinstance(strm_report.get("strm"), dict) else []
+    hlink_root = str(hlink.get("path") or "")
+    strm_root = str(strm_roots[0] or "") if strm_roots else ""
+    if not hlink_root:
+        blockers.append("hlink_root_required")
+    if not strm_root:
+        blockers.append("strm_root_required")
+
+    current_precheck: Dict[str, object] = {}
+    removed_hlink: Dict[str, object] = {}
+    verification: Dict[str, object] = {}
+    if not blockers:
+        current_precheck = preview_cloud_hlink_orphan_cleanup(
+            str(preview.get("title") or ""),
+            hlink_root,
+            strm_root,
+            expected_tmdbid=int(expected.get("tmdbid") or 0),
+            expected_episode_count=int(expected.get("episode_count") or 0),
+            expected_episode_min=int(expected.get("episode_min") or 0),
+            expected_episode_max=int(expected.get("episode_max") or 0),
+            qb_base_url=qb_base_url,
+            qb_user=qb_user,
+            qb_pass=qb_pass,
+            path_aliases=path_aliases,
+            required_target_prefix=str(expected.get("required_target_prefix") or ""),
+            forbidden_target_prefixes=expected.get("forbidden_target_prefixes") if isinstance(expected.get("forbidden_target_prefixes"), list) else [],
+        )
+        if not current_precheck.get("ready_for_execute"):
+            blockers.append("current_precheck_not_ready_for_execute")
+
+    if not blockers:
+        removed_hlink = _remove_hlink_root(hlink_root)
+        if not removed_hlink.get("ok"):
+            blockers.append("hlink_delete_failed")
+
+    if not blockers:
+        verification = _verify_after_orphan_execute(preview)
+        if not verification.get("ok"):
+            blockers.extend(str(blocker) for blocker in verification.get("blockers", []) if blocker)
+
+    return {
+        "mode": "cloud-hlink-orphan-cleanup-execute",
+        "title": preview.get("title", ""),
+        "ok": not blockers,
+        "approved": True,
+        "current_precheck": current_precheck,
+        "hlink_delete": removed_hlink,
+        "verification": verification,
+        "blockers": sorted(set(blockers)),
+        "warnings": preview.get("warnings", []) if isinstance(preview.get("warnings"), list) else [],
+        "safety": "approved hlink-only cleanup; qBittorrent is scanned by inode immediately before deleting only the explicit hlink root",
+    }
+
+
 def cleanup_empty_hlink_root(title: str, hlink_root: str, expected_tmdbid: int = 0, approve_delete: bool = False) -> Dict[str, object]:
     blockers: List[str] = []
     hlink_check = _hlink_root_check(hlink_root)
@@ -216,6 +381,34 @@ def cleanup_empty_hlink_root(title: str, hlink_root: str, expected_tmdbid: int =
         "blockers": sorted(set(blockers)),
         "warnings": [],
         "safety": "approved cleanup only for one explicit hlink root that contains no video files; qBittorrent, STRM, cloud files, and Emby are not modified",
+    }
+
+
+def _verify_after_orphan_execute(preview: Dict[str, object]) -> Dict[str, object]:
+    blockers: List[str] = []
+    hlink = preview.get("hlink") if isinstance(preview.get("hlink"), dict) else {}
+    expected = preview.get("expected") if isinstance(preview.get("expected"), dict) else {}
+    strm_report = preview.get("strm") if isinstance(preview.get("strm"), dict) else {}
+    strm_roots = [root.get("path") for root in strm_report.get("strm", {}).get("roots", [])] if isinstance(strm_report.get("strm"), dict) else []
+    strm_verify = verify_strm_paths(
+        str(preview.get("title") or ""),
+        [str(path) for path in strm_roots if path],
+        expected_episode_count=int(expected.get("episode_count") or 0),
+        expected_episode_min=int(expected.get("episode_min") or 0),
+        expected_episode_max=int(expected.get("episode_max") or 0),
+        required_target_prefix=str(expected.get("required_target_prefix") or ""),
+        forbidden_target_prefixes=expected.get("forbidden_target_prefixes") if isinstance(expected.get("forbidden_target_prefixes"), list) else [],
+    )
+    if not strm_verify.get("ok"):
+        blockers.extend(str(blocker) for blocker in strm_verify.get("blockers", []) if blocker)
+    hlink_exists = Path(str(hlink.get("path") or "")).exists()
+    if hlink_exists:
+        blockers.append("hlink_root_still_exists")
+    return {
+        "ok": not blockers,
+        "strm": strm_verify,
+        "hlink_exists": hlink_exists,
+        "blockers": sorted(set(blockers)),
     }
 
 
