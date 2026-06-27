@@ -459,7 +459,17 @@ class CloudHlinkCleanupTest(unittest.TestCase):
             strm_root = tmp_path / "volume4" / "mv3" / "strm" / "series" / "人民的名义 (2017) {tmdbid=71100}" / "Season 01"
             write(strm_root / "人民的名义.S01E01.strm", "https://mv3/redirect?path=/已整理/series/人民的名义/人民的名义.S01E01.mp4")
 
-            with patch("series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[]):
+            class EmptyClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", EmptyClient):
                 report = preview_cloud_hlink_orphan_cleanup(
                     "人民的名义",
                     str(hlink_root),
@@ -501,7 +511,31 @@ class CloudHlinkCleanupTest(unittest.TestCase):
                 size_bytes=source_file.stat().st_size,
             )
 
-            with patch("series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[torrent]):
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return [
+                        {
+                            "name": torrent.name,
+                            "hash": torrent.hash,
+                            "state": torrent.state,
+                            "save_path": str(tmp_path / "qb" / "TV"),
+                            "content_path": str(source),
+                            "progress": torrent.progress,
+                            "seeding_time": torrent.seeding_time_seconds,
+                            "size": torrent.size_bytes,
+                        }
+                    ]
+
+                def torrent_files(self, _torrent_hash):
+                    return [{"name": "Show/Show.S01E01.mkv", "size": source_file.stat().st_size}]
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", FakeClient):
                 report = preview_cloud_hlink_orphan_cleanup(
                     "Show",
                     str(hlink_root),
@@ -517,6 +551,57 @@ class CloudHlinkCleanupTest(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertIn("qb_linked_torrent_present", report["blockers"])
         self.assertEqual(report["qbittorrent"]["hashes"], ["3333333333333333333333333333333333333333"])
+
+    def test_orphan_preview_ignores_broad_qb_content_path_when_file_list_is_unlinked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            qb_root = tmp_path / "volume3" / "TV"
+            other_file = qb_root / "Other.Show" / "Other.S01E01.mkv"
+            write(other_file)
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "Show"
+            write(hlink_root / "Season 01" / "Show - S01E01.mkv")
+            strm_root = tmp_path / "strm" / "series" / "Show" / "Season 01"
+            write(strm_root / "Show.S01E01.strm", "/已整理/series/Show/Show.S01E01.mkv")
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return [
+                        {
+                            "name": "Other.Show.S01",
+                            "hash": "4444444444444444444444444444444444444444",
+                            "state": "stalledUP",
+                            "save_path": str(qb_root),
+                            "content_path": str(qb_root),
+                            "progress": 1.0,
+                            "seeding_time": 86400 * 30,
+                            "size": other_file.stat().st_size,
+                        }
+                    ]
+
+                def torrent_files(self, _torrent_hash):
+                    return [{"name": "Other.Show/Other.S01E01.mkv", "size": other_file.stat().st_size}]
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", FakeClient):
+                report = preview_cloud_hlink_orphan_cleanup(
+                    "Show",
+                    str(hlink_root),
+                    str(strm_root),
+                    expected_tmdbid=1,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                    required_target_prefix="/已整理/series",
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["qbittorrent"]["linked_count"], 0)
 
     def test_orphan_execute_rechecks_qb_and_deletes_explicit_hlink_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -544,7 +629,17 @@ class CloudHlinkCleanupTest(unittest.TestCase):
                 "qbittorrent": {"hashes": [], "linked_count": 0},
             }
 
-            with patch("series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[]):
+            class EmptyClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", EmptyClient):
                 report = execute_cloud_hlink_orphan_cleanup(preview, "http://qb.example")
 
         self.assertTrue(report["ok"])

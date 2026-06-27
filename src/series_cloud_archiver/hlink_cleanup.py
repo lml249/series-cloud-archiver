@@ -171,16 +171,16 @@ def preview_cloud_hlink_orphan_cleanup(
         blockers.append("qb_base_url_required")
     else:
         try:
-            torrents = fetch_qb_evidence(qb_base_url, qb_user, qb_pass)
-            qb_scanned_count = len(torrents)
-            qb_matches = _inode_qb_matches(torrents, hlink_check, aliases, set())
+            qb_scan = _precise_qb_file_inode_matches(qb_base_url, qb_user, qb_pass, hlink_check, aliases)
+            qb_scanned_count = int(qb_scan.get("scanned_count") or 0)
+            qb_matches = qb_scan.get("matches", []) if isinstance(qb_scan.get("matches"), list) else []
         except Exception as exc:  # pragma: no cover - exercised by integration
             qb_error = f"{type(exc).__name__}:{exc}"
             blockers.append("qb_torrent_check_failed")
     if qb_matches:
         blockers.append("qb_linked_torrent_present")
 
-    source_checks = [_source_match_check(row, hlink_check) for row in qb_matches]
+    source_checks = [_precise_qb_source_check(row) for row in qb_matches]
     hlink_coverage = _hlink_source_coverage(source_checks, hlink_check)
 
     return {
@@ -212,7 +212,7 @@ def preview_cloud_hlink_orphan_cleanup(
         },
         "blockers": sorted(set(blockers)),
         "warnings": sorted(set(warnings)),
-        "safety": "readonly preview only; verifies STRM replacement and scans all qBittorrent content roots by inode before allowing hlink-only cleanup",
+        "safety": "readonly preview only; verifies STRM replacement and scans qBittorrent's per-torrent file lists by inode before allowing hlink-only cleanup",
     }
 
 
@@ -350,7 +350,7 @@ def execute_cloud_hlink_orphan_cleanup(
         "verification": verification,
         "blockers": sorted(set(blockers)),
         "warnings": preview.get("warnings", []) if isinstance(preview.get("warnings"), list) else [],
-        "safety": "approved hlink-only cleanup; qBittorrent is scanned by inode immediately before deleting only the explicit hlink root",
+        "safety": "approved hlink-only cleanup; qBittorrent file lists are scanned by inode immediately before deleting only the explicit hlink root",
     }
 
 
@@ -586,6 +586,107 @@ def _linked_hlink_video_count(check: Dict[str, object]) -> int:
     if isinstance(linked_inodes, list):
         return len([inode for inode in linked_inodes if inode])
     return 0
+
+
+def _precise_qb_file_inode_matches(
+    qb_base_url: str,
+    qb_user: str,
+    qb_pass: str,
+    hlink_check: Dict[str, object],
+    aliases: Dict[str, str],
+) -> Dict[str, object]:
+    wanted = {
+        (int(row.get("device") or 0), int(row.get("inode") or 0))
+        for row in hlink_check.get("inodes", [])
+        if isinstance(row, dict)
+    }
+    if not wanted:
+        return {"scanned_count": 0, "matches": []}
+    client = QBClient(qb_base_url, qb_user, qb_pass)
+    client.login()
+    torrents = client.torrents()
+    rows: List[Dict[str, object]] = []
+    for torrent in torrents:
+        linked_files: List[Dict[str, object]] = []
+        torrent_hash = str(torrent.get("hash") or "")
+        try:
+            files = client.torrent_files(torrent_hash)
+        except Exception:
+            files = []
+        for host_path in _qb_file_host_paths(torrent, files, aliases):
+            path = Path(host_path)
+            if not path.is_file() or not is_video_file(path):
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if (stat.st_dev, stat.st_ino) not in wanted:
+                continue
+            linked_files.append(
+                {
+                    "path": str(path),
+                    "inode": _inode_key(stat.st_dev, stat.st_ino),
+                    "size_bytes": stat.st_size,
+                }
+            )
+        if not linked_files:
+            continue
+        rows.append(_precise_qb_match_row(torrent, linked_files))
+    return {"scanned_count": len(torrents), "matches": rows}
+
+
+def _qb_file_host_paths(torrent: Dict[str, object], files: Sequence[Dict[str, object]], aliases: Dict[str, str]) -> List[str]:
+    save_path = str(torrent.get("save_path") or "").rstrip("/")
+    content_path = str(torrent.get("content_path") or "").rstrip("/")
+    paths: List[str] = []
+    if files:
+        for item in files:
+            rel_path = str(item.get("name") or "").strip("/")
+            if not rel_path:
+                continue
+            paths.append(_map_path(str(PurePosixPath(save_path) / rel_path) if save_path else rel_path, aliases))
+        return paths
+    if content_path and Path(_map_path(content_path, aliases)).suffix:
+        paths.append(_map_path(content_path, aliases))
+    return paths
+
+
+def _precise_qb_match_row(torrent: Dict[str, object], linked_files: Sequence[Dict[str, object]]) -> Dict[str, object]:
+    seeding_seconds = int(torrent.get("seeding_time") or 0)
+    torrent_hash = str(torrent.get("hash") or "")
+    return {
+        "name": str(torrent.get("name") or ""),
+        "hash": torrent_hash,
+        "hash_prefix": torrent_hash[:12],
+        "state": str(torrent.get("state") or ""),
+        "progress": float(torrent.get("progress") or 0.0),
+        "seed_days": seeding_seconds / 86400.0,
+        "size_bytes": int(torrent.get("size") or torrent.get("total_size") or 0),
+        "save_path": str(torrent.get("save_path") or ""),
+        "content_path": str(torrent.get("content_path") or ""),
+        "host_content_path": "",
+        "host_content_root": "",
+        "linked_hlink_video_count": len(linked_files),
+        "linked_hlink_inodes": sorted({str(item.get("inode") or "") for item in linked_files if item.get("inode")}),
+        "linked_files_sample": list(linked_files[:10]),
+    }
+
+
+def _precise_qb_source_check(match: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "path": str(match.get("content_path") or match.get("save_path") or ""),
+        "hash_prefix": match.get("hash_prefix", ""),
+        "exists": True,
+        "kind": "qb_file_list",
+        "blocked": True,
+        "reason": "qb_file_list_contains_hlink_inode",
+        "video_count": int(match.get("linked_hlink_video_count") or 0),
+        "linked_hlink_video_count": int(match.get("linked_hlink_video_count") or 0),
+        "linked_hlink_inodes": match.get("linked_hlink_inodes", []) if isinstance(match.get("linked_hlink_inodes"), list) else [],
+        "linked_files_sample": match.get("linked_files_sample", []) if isinstance(match.get("linked_files_sample"), list) else [],
+        "unlinked_video_sample": [],
+    }
 
 
 def _candidate_torrents_for_inode_check(torrents: Iterable[object], series: FileSystemSeries) -> List[object]:
