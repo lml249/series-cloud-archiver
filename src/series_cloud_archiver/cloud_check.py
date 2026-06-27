@@ -160,6 +160,7 @@ def _candidate_groups(
                 "size_bytes": 0,
                 "titles": set(),
                 "source_paths": set(),
+                "search_keywords": [],
                 "expected_episodes": set(),
                 "expected_count": 0,
                 "candidate_count": 0,
@@ -171,6 +172,10 @@ def _candidate_groups(
         path_value = str(candidate.get("path") or "")
         if path_value:
             group["source_paths"].add(path_value)
+        group["search_keywords"] = _merge_keywords(
+            group.get("search_keywords", []),
+            _candidate_search_keywords(candidate, identity),
+        )
         if tmdbid and not group["tmdbid"]:
             group["tmdbid"] = tmdbid
         if season and not group["season"]:
@@ -250,6 +255,7 @@ def _check_group(
         blockers=blockers,
         titles=sorted(title for title in group["titles"] if title),
         source_paths=sorted(path for path in group["source_paths"] if path),
+        search_keywords=_merge_keywords([str(group.get("title") or "")], group.get("search_keywords", [])),
         strm_paths_sample=strm_paths_sample,
     )
 
@@ -321,6 +327,101 @@ def _total_episode(candidate: Dict[str, object], identity: Optional[Dict[str, ob
     identity = identity or {}
     expected = identity.get("expected_episodes") if isinstance(identity.get("expected_episodes"), list) else []
     return int((mp or {}).get("total_episode") or len(expected) or 0)
+
+
+def _candidate_search_keywords(candidate: Dict[str, object], identity: Optional[Dict[str, object]] = None) -> List[str]:
+    identity = identity or {}
+    keywords: List[str] = []
+    for value in (
+        candidate.get("title"),
+        identity.get("title"),
+        identity.get("name"),
+        _nested_value(candidate, "mp", "name"),
+        _nested_value(candidate, "qb", "name"),
+        _path_name(str(candidate.get("path") or "")),
+        _path_name(str(_nested_value(candidate, "qb", "content_path") or "")),
+    ):
+        keywords.extend(_keyword_variants(str(value or "")))
+    return _merge_keywords([], keywords)
+
+
+def _nested_value(source: Dict[str, object], outer: str, key: str) -> object:
+    value = source.get(outer)
+    return value.get(key) if isinstance(value, dict) else ""
+
+
+def _path_name(path: str) -> str:
+    return Path(path).name if path else ""
+
+
+def _keyword_variants(value: str) -> List[str]:
+    cleaned = _clean_keyword(value)
+    variants = [cleaned] if cleaned else []
+    dotted = re.sub(r"[._]+", " ", value or "").strip()
+    cleaned_dotted = _clean_keyword(dotted)
+    if cleaned_dotted:
+        variants.append(cleaned_dotted)
+    english = _english_title_guess(dotted)
+    if english:
+        variants.append(english)
+    return variants
+
+
+def _clean_keyword(value: str) -> str:
+    text = TMDBID_PATTERN.sub("", value or "")
+    text = re.sub(r"[\[\]【】（）(){}]", " ", text)
+    text = re.sub(r"[._]+", " ", text)
+    text = re.sub(r"(?i)\bS\d{1,2}(?:E\d{1,3})?\b", " ", text)
+    text = re.sub(r"(?<!\d)(?:19|20)\d{2}(?!\d)", " ", text)
+    tokens = [
+        token
+        for token in re.split(r"[\s\-]+", text)
+        if token and token.lower() not in TECHNICAL_TOKENS and not re.fullmatch(r"(?i)\d+p|fps|\d+bit", token)
+    ]
+    return " ".join(tokens).strip()
+
+
+def _english_title_guess(value: str) -> str:
+    tokens: List[str] = []
+    for token in re.split(r"[\s\-]+", value or ""):
+        if not token:
+            continue
+        lowered = token.lower()
+        if lowered in TECHNICAL_TOKENS:
+            continue
+        if re.fullmatch(r"(?i)S\d{1,2}(?:E\d{1,3})?", token):
+            break
+        if re.fullmatch(r"(?<!\d)(?:19|20)\d{2}(?!\d)", token):
+            break
+        if re.search(r"[A-Za-z]", token):
+            tokens.append(token)
+            continue
+        if tokens:
+            break
+    if len(tokens) < 2:
+        return ""
+    return " ".join(tokens).strip()
+
+
+def _merge_keywords(existing: object, new_values: object, limit: int = 8) -> List[str]:
+    merged: List[str] = []
+    for values in (existing, new_values):
+        if isinstance(values, str):
+            iterable = [values]
+        elif isinstance(values, list):
+            iterable = values
+        else:
+            iterable = []
+        for value in iterable:
+            text = re.sub(r"\s+", " ", str(value or "")).strip()
+            if len(text) < 2:
+                continue
+            if any(text.lower() == item.lower() for item in merged):
+                continue
+            merged.append(text)
+            if len(merged) >= limit:
+                return merged
+    return merged
 
 
 def _display_title(candidate: Dict[str, object], identity: Optional[Dict[str, object]] = None) -> str:

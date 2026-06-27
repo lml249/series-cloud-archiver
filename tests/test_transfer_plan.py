@@ -2,8 +2,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from series_cloud_archiver.cli import main
+from series_cloud_archiver.cloud_check import cloud_check_from_scan_report
 from series_cloud_archiver.transfer_plan import (
     plan_mv3_offline_manifest,
     plan_mv3_preview_manifest,
@@ -70,6 +72,34 @@ class TransferPlanTest(unittest.TestCase):
         self.assertEqual(plan["total_planned"], 2)
         self.assertEqual([item["title"] for item in plan["items"]], ["Big Show", "Small Show"])
         self.assertEqual(plan["total_size_bytes"], 300)
+
+    def test_cloud_check_carries_search_keywords_from_qb_release_name(self) -> None:
+        report = {
+            "mode": "dry-run",
+            "candidates": [
+                {
+                    "status": "candidate_for_cloud_check",
+                    "title": "长安二十四计 (2025) {tmdbid=254482}",
+                    "path": "/media/长安二十四计 (2025) {tmdbid=254482}",
+                    "size_bytes": 100,
+                    "video_count": 28,
+                    "seasons": [1],
+                    "episode_numbers": list(range(1, 29)),
+                    "mp": {"name": "长安二十四计", "tmdbid": 254482, "season": 1, "total_episode": 0},
+                    "qb": {
+                        "name": "长安二十四计.The.Vendetta.of.An.S01.2025.2160p.WEB-DL.H265.AAC-HHWEB",
+                        "content_path": "/volume3/TV/长安二十四计.The.Vendetta.of.An.S01.2025.2160p.WEB-DL.H265.AAC-HHWEB",
+                    },
+                }
+            ],
+        }
+
+        cloud = cloud_check_from_scan_report(report, [])
+        plan = plan_mv3_transfers_from_cloud_report(cloud.to_dict())
+        keywords = plan["items"][0]["search_keywords"]
+
+        self.assertIn("长安二十四计", keywords)
+        self.assertIn("The Vendetta of An", keywords)
 
     def test_renders_markdown_with_safety_note(self) -> None:
         plan = {
@@ -583,6 +613,107 @@ class TransferPlanTest(unittest.TestCase):
         self.assertEqual(recommended["search_index"], 1)
         self.assertIn("complete_marker", recommended["reasons"])
         self.assertIn("size_similar", recommended["reasons"])
+
+    def test_share_search_plan_records_keyword_for_english_result(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "长安二十四计",
+                    "tmdbid": 254482,
+                    "season": 1,
+                    "size_bytes": int(190 * 1024**3),
+                    "expected_count": 28,
+                    "search_keywords": ["长安二十四计", "The Vendetta of An"],
+                    "source_paths": ["/example/长安二十四计"],
+                }
+            ],
+        }
+        search_reports = {
+            "长安二十四计": {
+                "ok": True,
+                "result_count": 1,
+                "items": [
+                    {
+                        "index": 1,
+                        "title": "The Vendetta of An S01E01-E28 Complete 190GB",
+                        "size": "190GB",
+                        "share_code_available": True,
+                        "search_keyword": "The Vendetta of An",
+                    }
+                ],
+            }
+        }
+
+        plan = plan_mv3_share_search_from_transfer_plan(transfer_plan, search_reports, limit=1)
+
+        recommended = plan["items"][0]["recommended_candidate"]
+        self.assertEqual(recommended["search_keyword"], "The Vendetta of An")
+        self.assertIn("episode_count_covers_expected", recommended["reasons"])
+
+    def test_cli_share_search_uses_all_search_keywords(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            plan_file = tmp_path / "plan.json"
+            output_file = tmp_path / "share-search.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=secret\n", encoding="utf-8")
+            plan_file.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-mv3-transfer-plan",
+                        "items": [
+                            {
+                                "title": "长安二十四计",
+                                "tmdbid": 254482,
+                                "season": 1,
+                                "size_bytes": int(190 * 1024**3),
+                                "expected_count": 28,
+                                "search_keywords": ["长安二十四计", "The Vendetta of An"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calls = []
+
+            def fake_search(_base_url, _token, keyword, channels=None, timeout=60):
+                calls.append(keyword)
+                return {
+                    "ok": True,
+                    "result_count": 1,
+                    "items": [
+                        {
+                            "index": len(calls),
+                            "title": "The Vendetta of An S01E01-E28 Complete 190GB" if "Vendetta" in keyword else "unrelated",
+                            "size": "190GB" if "Vendetta" in keyword else "",
+                            "share_code_available": "Vendetta" in keyword,
+                        }
+                    ],
+                }
+
+            with patch("series_cloud_archiver.cli.search_mv3_resources", side_effect=fake_search):
+                status = main(
+                    [
+                        "plan-mv3-share-search",
+                        "--env-file",
+                        str(env_file),
+                        "--transfer-plan",
+                        str(plan_file),
+                        "--limit",
+                        "1",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output_file),
+                    ]
+                )
+
+            payload = json.loads(output_file.read_text(encoding="utf-8"))
+            self.assertEqual(status, 0)
+            self.assertEqual(calls, ["长安二十四计", "The Vendetta of An"])
+            self.assertEqual(payload["items"][0]["recommended_candidate"]["search_keyword"], "The Vendetta of An")
 
     def test_renders_share_search_plan_markdown(self) -> None:
         plan = {

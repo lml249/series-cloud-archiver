@@ -252,6 +252,7 @@ def _transfer_item(item: Dict[str, object]) -> Dict[str, object]:
         "missing_episodes": _int_list(item.get("missing_episodes")),
         "titles": _string_list(item.get("titles")),
         "source_paths": _string_list(item.get("source_paths")),
+        "search_keywords": _search_keywords_for_item(item),
         "blockers": _string_list(item.get("blockers")),
     }
 
@@ -407,6 +408,7 @@ def _share_search_plan_item(index: int, item: Dict[str, object], search_report: 
         "expected_count": int(item.get("expected_count") or 0),
         "size_bytes": int(item.get("size_bytes") or 0),
         "source_paths": _string_list(item.get("source_paths")),
+        "search_keywords": _search_keywords_for_item(item),
         "search_ok": bool(search_report.get("ok")),
         "search_result_count": int(search_report.get("result_count") or len(search_report.get("items", [])) if isinstance(search_report.get("items"), list) else 0),
         "recommended_candidate": recommended,
@@ -428,6 +430,9 @@ def _share_search_candidate(row: Dict[str, object], transfer_item: Dict[str, obj
     if normalized_title and normalized_title in normalized_remote:
         score += 35
         reasons.append("title_contains")
+    elif _search_keyword_matches(row, normalized_remote):
+        score += 30
+        reasons.append("search_keyword_contains")
     elif normalized_title and _title_token_overlap(str(transfer_item.get("title") or ""), title) >= 0.6:
         score += 25
         reasons.append("title_token_overlap")
@@ -477,8 +482,48 @@ def _share_search_candidate(row: Dict[str, object], transfer_item: Dict[str, obj
         "score": score,
         "reasons": reasons,
         "blockers": blockers,
+        "search_keyword": str(row.get("search_keyword") or ""),
         "share_code_available": bool(row.get("share_code_available")),
     }
+
+
+def _search_keywords_for_item(item: Dict[str, object], limit: int = 8) -> List[str]:
+    values: List[str] = []
+    values.append(str(item.get("title") or ""))
+    values.extend(_string_list(item.get("search_keywords")))
+    values.extend(_string_list(item.get("titles")))
+    for path in _string_list(item.get("source_paths")):
+        values.extend(_keyword_variants_from_path(path))
+    return _merge_keywords(values, limit=limit)
+
+
+def _search_keyword_matches(row: Dict[str, object], normalized_remote: str) -> bool:
+    keyword = str(row.get("search_keyword") or "")
+    normalized_keyword = _compact(keyword)
+    return bool(normalized_keyword and normalized_keyword in normalized_remote)
+
+
+def _keyword_variants_from_path(path: str) -> List[str]:
+    name = Path(path).name
+    if not name:
+        return []
+    without_identity = TMDBID_PATTERN.sub("", YEAR_SUFFIX_PATTERN.sub("", name))
+    dotted = re.sub(r"[._]+", " ", without_identity)
+    return [without_identity.strip(), dotted.strip()]
+
+
+def _merge_keywords(values: List[str], limit: int = 8) -> List[str]:
+    merged: List[str] = []
+    for value in values:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if len(text) < 2:
+            continue
+        if any(text.lower() == item.lower() for item in merged):
+            continue
+        merged.append(text)
+        if len(merged) >= limit:
+            break
+    return merged
 
 
 def _parse_size_bytes(value: object) -> int:

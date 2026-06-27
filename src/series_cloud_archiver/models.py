@@ -134,6 +134,7 @@ class CloudCheckItem:
     blockers: List[str]
     titles: List[str]
     source_paths: List[str]
+    search_keywords: List[str]
     strm_paths_sample: List[str]
 
 

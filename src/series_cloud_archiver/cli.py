@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
 from .cloud_cleanup import (
@@ -711,6 +711,68 @@ def _parse_episode_list(value: str) -> List[int]:
 def _write_text_output(path: str, text: str) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(text + "\n", encoding="utf-8")
+
+
+def _share_search_keywords(item: Dict[str, object]) -> List[str]:
+    values: List[str] = []
+    title = str(item.get("title") or "").strip()
+    if title:
+        values.append(title)
+    for key in ("search_keywords", "titles"):
+        raw = item.get(key)
+        if isinstance(raw, list):
+            values.extend(str(value).strip() for value in raw if str(value).strip())
+    merged: List[str] = []
+    for value in values:
+        if not value or any(value.lower() == existing.lower() for existing in merged):
+            continue
+        merged.append(value)
+        if len(merged) >= 8:
+            break
+    return merged
+
+
+def _combined_mv3_search_report(
+    mv3_base_url: str,
+    mv3_token: str,
+    keywords: Sequence[str],
+    channels: Optional[List[str]] = None,
+    timeout: int = 60,
+) -> Dict[str, object]:
+    keyword_reports: List[Dict[str, object]] = []
+    merged_items: List[Dict[str, object]] = []
+    seen = set()
+    for keyword in keywords:
+        keyword = str(keyword or "").strip()
+        if not keyword:
+            continue
+        report = search_mv3_resources(mv3_base_url, mv3_token, keyword, channels=channels or [], timeout=timeout)
+        keyword_reports.append(
+            {
+                "keyword": keyword,
+                "ok": bool(report.get("ok")),
+                "result_count": int(report.get("result_count") or 0),
+                "warnings": report.get("warnings", []) if isinstance(report.get("warnings"), list) else [],
+            }
+        )
+        for row in report.get("items", []) if isinstance(report.get("items"), list) else []:
+            if not isinstance(row, dict):
+                continue
+            key = (str(row.get("title") or ""), str(row.get("channel") or ""), str(row.get("size") or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged = dict(row)
+            merged["search_keyword"] = keyword
+            merged_items.append(merged)
+    return {
+        "ok": any(report.get("ok") for report in keyword_reports),
+        "result_count": len(merged_items),
+        "items": merged_items,
+        "keywords": [report["keyword"] for report in keyword_reports],
+        "keyword_reports": keyword_reports,
+        "warnings": [],
+    }
 
 
 def _parse_int_list_args(values: List[str]) -> List[int]:
@@ -1584,10 +1646,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             title = str(item.get("title") or "")
             if not title:
                 continue
-            search_reports[title] = search_mv3_resources(
+            search_reports[title] = _combined_mv3_search_report(
                 config.mv3_base_url,
                 config.mv3_token,
-                title,
+                _share_search_keywords(item),
                 channels=args.channel,
                 timeout=args.timeout,
             )
