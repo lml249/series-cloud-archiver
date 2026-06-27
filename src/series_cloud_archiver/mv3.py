@@ -90,6 +90,15 @@ MEDIA_EXTENSIONS = {
     ".webm",
     ".wmv",
 }
+SIDECAR_EXTENSIONS = {
+    ".ass",
+    ".idx",
+    ".srt",
+    ".ssa",
+    ".sub",
+    ".sup",
+    ".vtt",
+}
 
 
 class MV3Client:
@@ -687,10 +696,11 @@ def receive_mv3_share(
     file_ids = [item for item in file_ids if item]
     if not file_ids:
         warnings.append("browse_selection_file_id_not_found")
+    video_items = [item for item in selected_items if _share_item_is_video(item)]
     episode_numbers = sorted(
         {
             episode
-            for episode in (_episode_number_from_text(_share_item_name(item)) for item in selected_items)
+            for episode in (_episode_number_from_text(_share_item_name(item)) for item in video_items)
             if episode is not None
         }
     )
@@ -703,8 +713,8 @@ def receive_mv3_share(
         warnings.append("episode_count_mismatch")
     if missing_expected:
         warnings.append("episode_range_incomplete")
-    if receive_all_files and expected_episode_count and len(selected_items) != expected_episode_count:
-        warnings.append("file_count_mismatch")
+    if receive_all_files and expected_episode_count and len(video_items) != expected_episode_count:
+        warnings.append("video_file_count_mismatch")
 
     share_code = str(raw.get("share_code") or "")
     receive_code = str(raw.get("receive_code") or "")
@@ -719,7 +729,7 @@ def receive_mv3_share(
         "share_code_not_available_for_receive",
         "episode_count_mismatch",
         "episode_range_incomplete",
-        "file_count_mismatch",
+        "video_file_count_mismatch",
     }
     if normalized_target_path and file_ids and share_code and not (set(warnings) & blocking_warnings):
         receive_body: Dict[str, object] = {
@@ -752,6 +762,9 @@ def receive_mv3_share(
     report["browse_cid"] = browse_cid
     report["receive_all_files"] = receive_all_files
     report["file_id_count"] = len(file_ids)
+    report["selected_item_count"] = len(selected_items)
+    report["video_file_count"] = len(video_items)
+    report["sidecar_file_count"] = sum(1 for item in selected_items if _share_item_is_sidecar(item))
     report["episode_count"] = len(episode_numbers)
     report["episode_min"] = min(episode_numbers) if episode_numbers else None
     report["episode_max"] = max(episode_numbers) if episode_numbers else None
@@ -872,7 +885,8 @@ def execute_mv3_organize_transfer_from_browse_report(
 
     items = [item for item in browse_report.get("items", []) if isinstance(item, dict)]
     file_items = [item for item in items if str(item.get("kind") or "") == "file"]
-    files = _transfer_files_from_cloud_browse_items(file_items, source_path)
+    media_items = [item for item in file_items if str(item.get("media_kind") or "video") == "video"]
+    files = _transfer_files_from_cloud_browse_items(media_items, source_path)
     episode_numbers = _episode_numbers_from_scan_items(files)
     expected_episode_list = sorted({int(item) for item in (expected_episodes or []) if int(item) > 0})
     expected_episode_set = set(expected_episode_list)
@@ -894,7 +908,7 @@ def execute_mv3_organize_transfer_from_browse_report(
     if extra_episodes:
         blockers.append("unexpected_episodes_present")
     if len(files) != expected_episode_count:
-        blockers.append("file_count_mismatch")
+        blockers.append("video_file_count_mismatch")
     if not files:
         blockers.append("no_transfer_files")
     if any(not str(file.get("source_file_id") or "") for file in files):
@@ -3417,12 +3431,21 @@ def _share_item_name(item: Dict[str, object]) -> str:
     return _first_present(item, ["name", "file_name", "filename", "n", "title"])
 
 
+def _share_item_is_video(item: Dict[str, object]) -> bool:
+    return Path(_share_item_name(item)).suffix.lower() in MEDIA_EXTENSIONS
+
+
+def _share_item_is_sidecar(item: Dict[str, object]) -> bool:
+    return Path(_share_item_name(item)).suffix.lower() in SIDECAR_EXTENSIONS
+
+
 def _share_browse_item_summary(item: Dict[str, object], index: int) -> Dict[str, object]:
     name = _share_item_name(item)
     return {
         "index": index,
         "name": name,
         "kind": _share_item_kind(item),
+        "media_kind": _share_item_media_kind(item),
         "episode": _episode_number_from_text(name),
         "size": _format_size_value(_first_raw_present(item, ["size", "size_text", "file_size", "file_size_text", "s"])),
         "file_id": _share_item_file_id(item),
@@ -3447,6 +3470,16 @@ def _share_item_kind(item: Dict[str, object]) -> str:
     if str(item.get("cid") or item.get("folder_id") or ""):
         return "folder"
     return raw_type or "unknown"
+
+
+def _share_item_media_kind(item: Dict[str, object]) -> str:
+    if _share_item_kind(item) != "file":
+        return _share_item_kind(item)
+    if _share_item_is_video(item):
+        return "video"
+    if _share_item_is_sidecar(item):
+        return "sidecar"
+    return "file"
 
 
 def _share_item_file_id(item: Dict[str, object]) -> str:

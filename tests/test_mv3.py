@@ -1056,6 +1056,83 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["missing_expected"], [])
         self.assertTrue(report["ok"])
 
+    def test_share_receive_all_files_allows_sidecar_subtitles(self) -> None:
+        seen = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.replace("http://mv3.example", "")
+            body = json.loads(request.data.decode("utf-8"))
+            seen.append((path, body))
+            if path == "/api/v1/resource-search/search":
+                return FakeResponse({"success": True, "data": {"items": [{"title": "亲爱的X", "share_link": "https://example.test/s/private"}]}})
+            if path == "/api/v1/share-transfer/parse":
+                return FakeResponse({"success": True, "data": {"share_code": "parsed-code", "receive_code": "abcd"}})
+            if path == "/api/v1/share-transfer/browse":
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {"name": "Dear.X.S01E01.mkv", "fid": "video-1", "s": 1000},
+                                {"name": "Dear.X.S01E01.ass", "fid": "sub-1", "s": 10},
+                                {"name": "Dear.X.S01E02.mkv", "fid": "video-2", "s": 1000},
+                                {"name": "Dear.X.S01E02.ass", "fid": "sub-2", "s": 10},
+                                {"name": "Dear.X.S01E03.mkv", "fid": "video-3", "s": 1000},
+                                {"name": "Dear.X.S01E03.ass", "fid": "sub-3", "s": 10},
+                            ]
+                        },
+                    }
+                )
+            if path == "/api/v1/share-transfer/receive":
+                return FakeResponse({"success": True, "data": {"record_id": "record-1"}})
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = receive_mv3_share(
+                "http://mv3.example",
+                "token",
+                "亲爱的X",
+                selection_index=1,
+                browse_cid="folder-1",
+                receive_all_files=True,
+                expected_episode_count=3,
+                expected_episode_min=1,
+                expected_episode_max=3,
+                expected_title_contains="亲爱的X",
+                target_path="/未整理",
+                storage="115-default",
+            )
+
+        receive_body = seen[-1][1]
+        self.assertEqual(receive_body["file_ids"], ["video-1", "sub-1", "video-2", "sub-2", "video-3", "sub-3"])
+        self.assertEqual(report["file_id_count"], 6)
+        self.assertEqual(report["selected_item_count"], 6)
+        self.assertEqual(report["video_file_count"], 3)
+        self.assertEqual(report["sidecar_file_count"], 3)
+        self.assertEqual(report["episodes"], [1, 2, 3])
+        self.assertEqual(report["missing_expected"], [])
+        self.assertNotIn("video_file_count_mismatch", report["warnings"])
+        self.assertTrue(report["ok"])
+
     def test_share_receive_all_files_blocks_incomplete_episode_set(self) -> None:
         seen = []
 
@@ -1272,6 +1349,55 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(seen["body"]["mode"], "move")
         self.assertEqual([item["source_file_id"] for item in seen["body"]["files"]], ["file-1", "file-2"])
         self.assertNotIn("token", rendered)
+
+    def test_organize_transfer_from_browse_report_ignores_sidecar_subtitles_for_episode_gate(self) -> None:
+        seen = {}
+        browse_report = {
+            "path": "/未整理/DearX",
+            "items": [
+                {"name": "Dear.X.S01E01.mkv", "kind": "file", "media_kind": "video", "episode": 1, "file_id": "video-1"},
+                {"name": "Dear.X.S01E01.ass", "kind": "file", "media_kind": "sidecar", "episode": 1, "file_id": "sub-1"},
+                {"name": "Dear.X.S01E02.mkv", "kind": "file", "media_kind": "video", "episode": 2, "file_id": "video-2"},
+                {"name": "Dear.X.S01E02.ass", "kind": "file", "media_kind": "sidecar", "episode": 2, "file_id": "sub-2"},
+            ],
+        }
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return b'{"success":true,"data":{"task_id":"task-1"}}'
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = execute_mv3_organize_transfer_from_browse_report(
+                "http://mv3.example",
+                "token",
+                browse_report,
+                target_dir="/已整理",
+                strm_dir="/strm",
+                tmdb_id=256226,
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual([item["source_file_id"] for item in seen["body"]["files"]], ["video-1", "video-2"])
 
     def test_organize_transfer_reports_timeout_without_throwing(self) -> None:
         browse_report = {
