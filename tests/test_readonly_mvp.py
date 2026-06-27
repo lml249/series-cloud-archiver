@@ -1383,7 +1383,7 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
                 rows = [
                     ("local-series", "Series", "唐朝诡事录", None, "/example/hlink/TV/唐朝诡事录 (2022) {tmdbid=211089}", None, None),
                     ("local-season-1", "Season", "Season 01", None, "/example/hlink/TV/唐朝诡事录 (2022) {tmdbid=211089}/Season 01", None, None),
-                    ("local-season-3", "Season", "Season 03", None, "/example/hlink/TV/唐朝诡事录 (2022) {tmdbid=211089}/Season 03", None, None),
+                    ("local-season-3", 7, "Season 03", None, "/example/hlink/TV/唐朝诡事录 (2022) {tmdbid=211089}/Season 03", None, None),
                     ("local-episode-3-1", "Episode", "第1集", "唐朝诡事录", "/example/hlink/TV/唐朝诡事录 (2022) {tmdbid=211089}/Season 03/Tang S03E01.mkv", 1, 3),
                     ("strm-series", "Series", "唐朝诡事录", None, "/example/strm/series/唐朝诡事录 (2022) {tmdbid=211089}", None, None),
                     ("strm-season-3", "Season", "Season 03", None, "/example/strm/series/唐朝诡事录 (2022) {tmdbid=211089}/Season 03", None, None),

@@ -775,7 +775,7 @@ def delete_stale_emby_paths(
     if normalized_delete_scope == "season":
         if any(not _is_season_path_prefix(prefix) for prefix in _normalize_prefixes(stale_path_prefixes)):
             blockers.append("season_stale_path_prefix_required")
-        if any(str(row.get("type") or "").lower() == "series" for row in root_rows):
+        if any(_looks_like_series_row(row) for row in root_rows):
             blockers.append("season_scope_refuses_series_root")
     if len(root_rows) != len({str(row.get("path") or "").rstrip("/") for row in root_rows}):
         blockers.append("duplicate_stale_root_items")
@@ -1126,7 +1126,7 @@ def _stale_season_rows(rows: Sequence[Dict[str, object]], stale_path_prefixes: S
         path = str(row.get("path") or "").rstrip("/")
         if path not in prefixes:
             continue
-        if str(row.get("type") or "").lower() != "season":
+        if not _looks_like_season_row(row):
             continue
         roots.append(
             {
@@ -1141,6 +1141,19 @@ def _stale_season_rows(rows: Sequence[Dict[str, object]], stale_path_prefixes: S
 
 def _is_season_path_prefix(prefix: str) -> bool:
     return bool(Path(prefix.rstrip("/")).name.lower().replace(" ", "").startswith("season"))
+
+
+def _looks_like_season_row(row: Dict[str, object]) -> bool:
+    row_type = row.get("type")
+    if row_type == 7 or str(row_type).lower() == "season":
+        return True
+    path = str(row.get("path") or "")
+    return _is_season_path_prefix(path)
+
+
+def _looks_like_series_row(row: Dict[str, object]) -> bool:
+    row_type = row.get("type")
+    return row_type == 6 or str(row_type).lower() == "series"
 
 
 def _stale_host_check(stale_prefix: str, stale_path_prefixes: Sequence[str], stale_host_prefix: str) -> Dict[str, object]:
