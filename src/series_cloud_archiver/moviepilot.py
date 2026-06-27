@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+from .episode import VIDEO_EXTENSIONS
 from .models import FileSystemSeries, MPSubscriptionEvidence
 from .redaction import redact_sensitive_text
 
@@ -207,6 +208,7 @@ def build_mp_cleanup_preview(
     hashes = sorted({record.download_hash for record in filtered if record.download_hash})
     downloaders = sorted({record.downloader for record in filtered if record.downloader})
     source_roots = sorted({_parent_dir(record.src) for record in filtered if record.src})
+    source_check_paths = sorted({_source_check_path(record.src) for record in filtered if record.src})
     destination_roots = sorted({_destination_root_from_dest(record.dest, expected_season) for record in filtered if record.dest})
     episodes = sorted({_episode_number(record.episodes) for record in filtered if _episode_number(record.episodes)})
     duplicate_episodes = _duplicate_episode_numbers(filtered)
@@ -249,6 +251,7 @@ def build_mp_cleanup_preview(
             "download_hash_count": len(hashes),
             "downloader_count": len(downloaders),
             "source_root_count": len(source_roots),
+            "source_check_path_count": len(source_check_paths),
             "destination_root_count": len(destination_roots),
         },
         "mp_delete_plan": {
@@ -270,6 +273,7 @@ def build_mp_cleanup_preview(
             for item in hashes
         ],
         "source_roots": source_roots,
+        "source_check_paths": source_check_paths,
         "destination_roots": destination_roots,
         "records": rows,
         "warnings": warnings,
@@ -862,6 +866,16 @@ def _parent_dir(path: str) -> str:
     if "/" not in path:
         return path
     return path.rsplit("/", 1)[0]
+
+
+def _source_check_path(path: str) -> str:
+    path = path.rstrip("/")
+    if not path:
+        return ""
+    suffix = PurePosixPath(path).suffix.lower()
+    if suffix in VIDEO_EXTENSIONS:
+        return path
+    return _parent_dir(path)
 
 
 def _series_root_from_dest(path: str) -> str:

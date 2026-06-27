@@ -274,8 +274,10 @@ def _plan_cleanup_item(
         blockers.append("mp_single_destination_root_required")
 
     source_roots_service = _string_list(preview.get("source_roots"))
+    source_check_paths_service = _string_list(preview.get("source_check_paths")) or source_roots_service
     destination_roots_service = _string_list(preview.get("destination_roots"))
     source_roots_host = [_service_to_host_path(path, path_aliases) for path in source_roots_service]
+    source_check_paths_host = [_service_to_host_path(path, path_aliases) for path in source_check_paths_service]
     destination_roots_host = [_service_to_host_path(path, path_aliases) for path in destination_roots_service]
     cloud_source_paths = _string_list(item.get("source_paths"))
     if cloud_source_paths and destination_roots_host and not set(_normalize_paths(destination_roots_host)).intersection(_normalize_paths(cloud_source_paths)):
@@ -301,8 +303,10 @@ def _plan_cleanup_item(
         "expected_hash_prefix": expected_hash_prefix,
         "expected_hash_prefixes": expected_hash_prefixes,
         "source_roots_service": source_roots_service,
+        "source_check_paths_service": source_check_paths_service,
         "destination_roots_service": destination_roots_service,
         "source_roots_host": source_roots_host,
+        "source_check_paths_host": source_check_paths_host,
         "destination_roots_host": destination_roots_host,
         "ready_for_execute": not blockers,
         "execution_blockers": sorted(set(blockers)),
@@ -371,7 +375,7 @@ def _execute_cleanup_item(
         expected_hash_prefix=str(item.get("expected_hash_prefix") or ""),
         expected_hash_prefixes=_string_list(item.get("expected_hash_prefixes")),
         expected_season=int(item.get("season") or 0),
-        source_roots=_string_list(item.get("source_roots_host")),
+        source_roots=_string_list(item.get("source_check_paths_host")) or _string_list(item.get("source_roots_host")),
         destination_roots=_string_list(item.get("destination_roots_host")),
         strm_roots=[str(item.get("strm_root") or "")],
         expected_episode_count=int(item.get("expected_episode_count") or 0),

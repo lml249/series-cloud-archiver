@@ -58,6 +58,10 @@ def ready_preview() -> dict:
         "mp_delete_plan": {"query": {"deletesrc": True, "deletedest": True}},
         "qb_targets": [{"hash_prefix": "feedface0000", "downloader": "20099"}],
         "source_roots": ["/example-service/TV/Silent.Honor.S01"],
+        "source_check_paths": [
+            "/example-service/TV/Silent.Honor.S01/Silent.Honor.S01E01.mkv",
+            "/example-service/TV/Silent.Honor.S01/Silent.Honor.S01E02.mkv",
+        ],
         "destination_roots": ["/example-service/hlink/TV/沉默的荣耀 (2025) {tmdbid=281538}"],
         "records": [
             {"id": 10, "title": "沉默的荣耀", "tmdbid": 281538, "episodes": "E01", "episode_number": 1, "hash_prefix": "feedface0000", "status": True},
@@ -110,6 +114,13 @@ class CloudCompleteCleanupTest(unittest.TestCase):
         self.assertEqual(plan["ready_items"], 1)
         self.assertTrue(plan["items"][0]["ready_for_execute"])
         self.assertEqual(plan["items"][0]["source_roots_host"], ["/example-host/TV/Silent.Honor.S01"])
+        self.assertEqual(
+            plan["items"][0]["source_check_paths_host"],
+            [
+                "/example-host/TV/Silent.Honor.S01/Silent.Honor.S01E01.mkv",
+                "/example-host/TV/Silent.Honor.S01/Silent.Honor.S01E02.mkv",
+            ],
+        )
         self.assertEqual(plan["items"][0]["destination_roots_host"], ["/example-host/hlink/TV/沉默的荣耀 (2025) {tmdbid=281538}"])
         self.assertEqual(preview.call_count, 1)
         self.assertEqual(preview.call_args.kwargs["expected_season"], 1)
@@ -185,6 +196,10 @@ class CloudCompleteCleanupTest(unittest.TestCase):
                     "expected_episode_max": 2,
                     "expected_episodes": [1, 2],
                     "source_roots_host": ["/example-host/TV/Silent.Honor.S01"],
+                    "source_check_paths_host": [
+                        "/example-host/TV/Silent.Honor.S01/Silent.Honor.S01E01.mkv",
+                        "/example-host/TV/Silent.Honor.S01/Silent.Honor.S01E02.mkv",
+                    ],
                     "destination_roots_host": ["/example-host/hlink/TV/沉默的荣耀 (2025) {tmdbid=281538}"],
                     "strm_root": "/example-cloud/mv3/strm/series/沉默的荣耀 (2025) {tmdbid=281538}/Season 1",
                 }
@@ -201,6 +216,13 @@ class CloudCompleteCleanupTest(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(execute.call_count, 1)
         self.assertEqual(verify.call_count, 1)
+        self.assertEqual(
+            verify.call_args.kwargs["source_roots"],
+            [
+                "/example-host/TV/Silent.Honor.S01/Silent.Honor.S01E01.mkv",
+                "/example-host/TV/Silent.Honor.S01/Silent.Honor.S01E02.mkv",
+            ],
+        )
         self.assertTrue(report["results"][0]["ok"])
         self.assertIn("approved batch MoviePilot cleanup", render_cloud_complete_cleanup_execute(report, "markdown"))
 

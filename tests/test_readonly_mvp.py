@@ -1584,6 +1584,7 @@ class MoviePilotEvidenceTest(unittest.TestCase):
         self.assertEqual(report["summary"]["episode_count"], 2)
         self.assertEqual(report["summary"]["missing_in_range"], [])
         self.assertEqual(report["source_roots"], ["/example/source/King.War"])
+        self.assertEqual(report["source_check_paths"], ["/example/source/King.War/King.War.S01E01.mkv", "/example/source/King.War/King.War.S01E02.mkv"])
         self.assertEqual(report["destination_roots"], ["/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}"])
         self.assertEqual(report["qb_targets"][0]["hash_prefix"], "feedface0000")
         self.assertIn("DELETE /api/v1/history/transfer?deletesrc=true&deletedest=true", rendered)
