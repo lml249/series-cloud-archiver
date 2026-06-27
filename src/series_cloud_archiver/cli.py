@@ -172,6 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     mp_cleanup_parser.add_argument("--expected-title", default="", help="Safety filter: exact MP title expected")
     mp_cleanup_parser.add_argument("--expected-tmdbid", type=int, default=0, help="Safety filter: expected TMDB ID when present in MP")
     mp_cleanup_parser.add_argument("--expected-hash-prefix", default="", help="Safety filter: expected qB hash prefix")
+    mp_cleanup_parser.add_argument("--expected-season", type=int, default=0, help="Safety filter: expected season number, e.g. 3 for S03")
     mp_cleanup_parser.add_argument("--keep-source", action="store_true", help="Preview without deletesrc=true")
     mp_cleanup_parser.add_argument("--keep-dest", action="store_true", help="Preview without deletedest=true")
     mp_cleanup_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
@@ -184,6 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     mp_cleanup_exec_parser.add_argument("--expected-title", required=True, help="Safety check: exact title expected")
     mp_cleanup_exec_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Safety check: expected TMDB ID")
     mp_cleanup_exec_parser.add_argument("--expected-hash-prefix", action="append", required=True, help="Safety check: expected qB hash prefix; can be repeated or comma-separated")
+    mp_cleanup_exec_parser.add_argument("--expected-season", type=int, default=0, help="Safety check: expected season number, e.g. 3 for S03")
     mp_cleanup_exec_parser.add_argument("--expected-record-count", type=int, required=True, help="Safety check: exact MP history record count")
     mp_cleanup_exec_parser.add_argument("--expected-episode-count", type=int, required=True, help="Safety check: exact episode count")
     mp_cleanup_exec_parser.add_argument("--expected-episode-min", type=int, required=True, help="Safety check: first episode number")
@@ -210,6 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     mp_cleanup_verify_parser.add_argument("--expected-title", default="", help="Safety filter: exact MP title expected")
     mp_cleanup_verify_parser.add_argument("--expected-tmdbid", type=int, default=0, help="Safety filter: expected TMDB ID when present in MP")
     mp_cleanup_verify_parser.add_argument("--expected-hash-prefix", action="append", default=[], help="Safety filter: qB hash prefix that should be gone; can be repeated or comma-separated")
+    mp_cleanup_verify_parser.add_argument("--expected-season", type=int, default=0, help="Safety filter: expected season number, e.g. 3 for S03")
     mp_cleanup_verify_parser.add_argument("--source-root", action="append", default=[], help="Local source root that should no longer exist; can be repeated")
     mp_cleanup_verify_parser.add_argument("--destination-root", action="append", default=[], help="hlink/destination root that should no longer exist; can be repeated")
     mp_cleanup_verify_parser.add_argument("--strm-root", action="append", default=[], help="STRM root that should contain complete episodes; can be repeated")
@@ -354,6 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
     emby_delete_parser.add_argument("--stale-path-prefix", action="append", required=True, help="Old Emby/container path prefix that should be removed; can be repeated")
     emby_delete_parser.add_argument("--stale-host-prefix", required=True, help="Host path for the same stale root; must no longer exist. Comma-separated when multiple stale prefixes are used")
     emby_delete_parser.add_argument("--strm-path-prefix", action="append", required=True, help="Replacement STRM Emby/container path prefix; can be repeated")
+    emby_delete_parser.add_argument("--delete-scope", choices=["root", "season"], default="root", help="Delete a stale series root or one stale season item")
     emby_delete_parser.add_argument("--expected-episode-count", type=int, required=True, help="Expected distinct STRM episode count")
     emby_delete_parser.add_argument("--expected-episode-min", type=int, required=True, help="Expected first STRM episode number")
     emby_delete_parser.add_argument("--expected-episode-max", type=int, required=True, help="Expected last STRM episode number")
@@ -894,6 +898,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             expected_title=args.expected_title,
             expected_tmdbid=args.expected_tmdbid,
             expected_hash_prefix=args.expected_hash_prefix,
+            expected_season=args.expected_season,
             include_deletesrc=not args.keep_source,
             include_deletedest=not args.keep_dest,
             timeout=args.timeout,
@@ -921,6 +926,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             expected_title=args.expected_title,
             expected_tmdbid=args.expected_tmdbid,
             expected_hash_prefix=_first_string_arg(args.expected_hash_prefix),
+            expected_season=args.expected_season,
             expected_hash_prefixes=args.expected_hash_prefix,
             expected_record_count=args.expected_record_count,
             expected_episode_count=args.expected_episode_count,
@@ -953,6 +959,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             expected_tmdbid=args.expected_tmdbid,
             expected_hash_prefix=_first_string_arg(args.expected_hash_prefix),
             expected_hash_prefixes=args.expected_hash_prefix,
+            expected_season=args.expected_season,
             source_roots=args.source_root,
             destination_roots=args.destination_root,
             strm_roots=args.strm_root,
@@ -1218,6 +1225,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             title=args.title,
             stale_path_prefixes=args.stale_path_prefix,
             stale_host_prefix=args.stale_host_prefix,
+            delete_scope=args.delete_scope,
             strm_path_prefixes=args.strm_path_prefix,
             expected_episode_count=args.expected_episode_count,
             expected_episode_min=args.expected_episode_min,

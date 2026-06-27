@@ -1360,6 +1360,75 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
         self.assertEqual(report["stale_rows_count"], 3)
         self.assertEqual(report["delete_results"][0]["id"], "local-series")
 
+    def test_delete_stale_emby_paths_can_delete_one_missing_stale_season(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "library.db"
+            stale_host = tmp_path / "missing" / "唐朝诡事录 (2022) {tmdbid=211089}" / "Season 03"
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE MediaItems (
+                        Id TEXT,
+                        type TEXT,
+                        Name TEXT,
+                        SeriesName TEXT,
+                        Path TEXT,
+                        IndexNumber INTEGER,
+                        ParentIndexNumber INTEGER
+                    )
+                    """
+                )
+                rows = [
+                    ("local-series", "Series", "唐朝诡事录", None, "/example/hlink/TV/唐朝诡事录 (2022) {tmdbid=211089}", None, None),
+                    ("local-season-1", "Season", "Season 01", None, "/example/hlink/TV/唐朝诡事录 (2022) {tmdbid=211089}/Season 01", None, None),
+                    ("local-season-3", "Season", "Season 03", None, "/example/hlink/TV/唐朝诡事录 (2022) {tmdbid=211089}/Season 03", None, None),
+                    ("local-episode-3-1", "Episode", "第1集", "唐朝诡事录", "/example/hlink/TV/唐朝诡事录 (2022) {tmdbid=211089}/Season 03/Tang S03E01.mkv", 1, 3),
+                    ("strm-series", "Series", "唐朝诡事录", None, "/example/strm/series/唐朝诡事录 (2022) {tmdbid=211089}", None, None),
+                    ("strm-season-3", "Season", "Season 03", None, "/example/strm/series/唐朝诡事录 (2022) {tmdbid=211089}/Season 03", None, None),
+                    ("strm-episode-3-1", "Episode", "第1集", "唐朝诡事录", "/example/strm/series/唐朝诡事录 (2022) {tmdbid=211089}/Season 03/Tang S03E01.strm", 1, 3),
+                    ("strm-episode-3-2", "Episode", "第2集", "唐朝诡事录", "/example/strm/series/唐朝诡事录 (2022) {tmdbid=211089}/Season 03/Tang S03E02.strm", 2, 3),
+                ]
+                connection.executemany("INSERT INTO MediaItems VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+                connection.commit()
+            finally:
+                connection.close()
+
+            calls = []
+
+            class FakeClient:
+                def __init__(self, base_url, api_key, timeout=20):
+                    pass
+
+                def items_by_search(self, _search_term):
+                    raise AssertionError("sqlite path should be used")
+
+                def delete_item(self, item_id):
+                    calls.append(item_id)
+                    return {"http_status": 204, "ok": True, "response": {}}
+
+            with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+                report = delete_stale_emby_paths(
+                    "http://emby.example",
+                    "token",
+                    title="唐朝诡事录",
+                    stale_path_prefixes=["/example/hlink/TV/唐朝诡事录 (2022) {tmdbid=211089}/Season 03"],
+                    stale_host_prefix=str(stale_host),
+                    delete_scope="season",
+                    strm_path_prefixes=["/example/strm/series/唐朝诡事录 (2022) {tmdbid=211089}/Season 03"],
+                    expected_episode_count=2,
+                    expected_episode_min=1,
+                    expected_episode_max=2,
+                    library_db_path=str(db_path),
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["delete_scope"], "season")
+        self.assertEqual(calls, ["local-season-3"])
+        self.assertEqual(report["stale_rows_count"], 2)
+        self.assertEqual(report["root_items"][0]["id"], "local-season-3")
+
     def test_delete_stale_emby_paths_blocks_when_host_path_still_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -1518,6 +1587,68 @@ class MoviePilotEvidenceTest(unittest.TestCase):
         self.assertEqual(report["destination_roots"], ["/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}"])
         self.assertEqual(report["qb_targets"][0]["hash_prefix"], "feedface0000")
         self.assertIn("DELETE /api/v1/history/transfer?deletesrc=true&deletedest=true", rendered)
+
+    def test_mp_cleanup_preview_can_filter_one_season(self) -> None:
+        records = [
+            MPTransferHistoryRecord(
+                id=1,
+                title="唐朝诡事录",
+                media_type="电视剧",
+                seasons="S01",
+                episodes="E01",
+                src="/example/source/Tang.S01/Tang.S01E01.mkv",
+                dest="/example/hlink/TV/唐朝诡事录 (2022) {tmdbid=211089}/Season 01/Tang S01E01.mkv",
+                mode="link",
+                status=True,
+                downloader="20099",
+                download_hash="aaaabbbbcccc1111",
+                tmdbid=211089,
+            ),
+            MPTransferHistoryRecord(
+                id=31,
+                title="唐朝诡事录",
+                media_type="电视剧",
+                seasons="S03",
+                episodes="E01",
+                src="/example/source/Tang.S03/Tang.S03E01.mkv",
+                dest="/example/hlink/TV/唐朝诡事录 (2022) {tmdbid=211089}/Season 03/Tang S03E01.mkv",
+                mode="link",
+                status=True,
+                downloader="20099",
+                download_hash="feedface00001111",
+                tmdbid=211089,
+            ),
+            MPTransferHistoryRecord(
+                id=32,
+                title="唐朝诡事录",
+                media_type="电视剧",
+                seasons="S03",
+                episodes="E02",
+                src="/example/source/Tang.S03/Tang.S03E02.mkv",
+                dest="/example/hlink/TV/唐朝诡事录 (2022) {tmdbid=211089}/Season 03/Tang S03E02.mkv",
+                mode="link",
+                status=True,
+                downloader="20099",
+                download_hash="feedface00001111",
+                tmdbid=211089,
+            ),
+        ]
+
+        report = build_mp_cleanup_preview(
+            "唐朝诡事录",
+            records,
+            expected_title="唐朝诡事录",
+            expected_tmdbid=211089,
+            expected_season=3,
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["expected_season"], 3)
+        self.assertEqual(report["mp_delete_plan"]["record_ids"], [31, 32])
+        self.assertEqual(report["summary"]["records_found"], 3)
+        self.assertEqual(report["summary"]["records_matched"], 2)
+        self.assertEqual(report["destination_roots"], ["/example/hlink/TV/唐朝诡事录 (2022) {tmdbid=211089}/Season 03"])
+        self.assertEqual([item["season_numbers"] for item in report["records"]], [[3], [3]])
 
     def test_mp_cleanup_preview_blocks_when_expected_hash_is_absent(self) -> None:
         report = build_mp_cleanup_preview(

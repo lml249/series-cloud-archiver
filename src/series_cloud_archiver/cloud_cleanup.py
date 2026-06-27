@@ -248,6 +248,7 @@ def _plan_cleanup_item(
         title=title,
         expected_title=title,
         expected_tmdbid=tmdbid,
+        expected_season=season,
         timeout=timeout,
     )
     if not preview.get("ok"):
@@ -346,6 +347,7 @@ def _execute_cleanup_item(
         expected_tmdbid=int(item.get("tmdbid") or 0),
         expected_hash_prefix=str(item.get("expected_hash_prefix") or ""),
         expected_hash_prefixes=_string_list(item.get("expected_hash_prefixes")),
+        expected_season=int(item.get("season") or 0),
         expected_record_count=int(item.get("expected_episode_count") or 0),
         expected_episode_count=int(item.get("expected_episode_count") or 0),
         expected_episode_min=int(item.get("expected_episode_min") or 0),
@@ -368,6 +370,7 @@ def _execute_cleanup_item(
         expected_tmdbid=int(item.get("tmdbid") or 0),
         expected_hash_prefix=str(item.get("expected_hash_prefix") or ""),
         expected_hash_prefixes=_string_list(item.get("expected_hash_prefixes")),
+        expected_season=int(item.get("season") or 0),
         source_roots=_string_list(item.get("source_roots_host")),
         destination_roots=_string_list(item.get("destination_roots_host")),
         strm_roots=[str(item.get("strm_root") or "")],

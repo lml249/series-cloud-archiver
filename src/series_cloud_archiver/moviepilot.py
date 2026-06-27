@@ -6,6 +6,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from .models import FileSystemSeries, MPSubscriptionEvidence
@@ -156,6 +157,7 @@ def mp_cleanup_preview_from_transfer_history(
     expected_title: str = "",
     expected_tmdbid: int = 0,
     expected_hash_prefix: str = "",
+    expected_season: int = 0,
     include_deletedest: bool = True,
     include_deletesrc: bool = True,
     timeout: int = 20,
@@ -168,6 +170,7 @@ def mp_cleanup_preview_from_transfer_history(
         expected_title=expected_title,
         expected_tmdbid=expected_tmdbid,
         expected_hash_prefix=expected_hash_prefix,
+        expected_season=expected_season,
         include_deletedest=include_deletedest,
         include_deletesrc=include_deletesrc,
     )
@@ -179,6 +182,7 @@ def build_mp_cleanup_preview(
     expected_title: str = "",
     expected_tmdbid: int = 0,
     expected_hash_prefix: str = "",
+    expected_season: int = 0,
     include_deletedest: bool = True,
     include_deletesrc: bool = True,
 ) -> Dict[str, object]:
@@ -189,6 +193,7 @@ def build_mp_cleanup_preview(
         expected_title=expected_title,
         expected_tmdbid=expected_tmdbid,
         expected_hash_prefix=expected_hash_prefix,
+        expected_season=expected_season,
     )
     if not filtered:
         blockers.append("no_matching_mp_transfer_history")
@@ -202,7 +207,7 @@ def build_mp_cleanup_preview(
     hashes = sorted({record.download_hash for record in filtered if record.download_hash})
     downloaders = sorted({record.downloader for record in filtered if record.downloader})
     source_roots = sorted({_parent_dir(record.src) for record in filtered if record.src})
-    destination_roots = sorted({_series_root_from_dest(record.dest) for record in filtered if record.dest})
+    destination_roots = sorted({_destination_root_from_dest(record.dest, expected_season) for record in filtered if record.dest})
     episodes = sorted({_episode_number(record.episodes) for record in filtered if _episode_number(record.episodes)})
     duplicate_episodes = _duplicate_episode_numbers(filtered)
     if duplicate_episodes:
@@ -231,6 +236,7 @@ def build_mp_cleanup_preview(
         "expected_title": expected_title,
         "expected_tmdbid": expected_tmdbid,
         "expected_hash_prefix": expected_hash_prefix,
+        "expected_season": expected_season,
         "ok": bool(filtered) and not blockers,
         "ready_for_manual_cleanup_approval": bool(filtered) and not blockers,
         "summary": {
@@ -284,6 +290,7 @@ def execute_mp_cleanup_from_preview_report(
     expected_episode_count: int,
     expected_episode_min: int,
     expected_episode_max: int,
+    expected_season: int = 0,
     expected_hash_prefixes: Optional[Iterable[str]] = None,
     expected_episodes: Optional[Iterable[int]] = None,
     include_deletesrc: bool = True,
@@ -301,6 +308,7 @@ def execute_mp_cleanup_from_preview_report(
         expected_tmdbid=expected_tmdbid,
         expected_hash_prefix=expected_hash_prefix,
         expected_hash_prefixes=expected_hash_prefixes,
+        expected_season=expected_season,
         expected_record_count=expected_record_count,
         expected_episode_count=expected_episode_count,
         expected_episode_min=expected_episode_min,
@@ -324,6 +332,7 @@ def execute_mp_cleanup_from_preview(
     expected_episode_count: int,
     expected_episode_min: int,
     expected_episode_max: int,
+    expected_season: int = 0,
     expected_hash_prefixes: Optional[Iterable[str]] = None,
     expected_episodes: Optional[Iterable[int]] = None,
     include_deletesrc: bool = True,
@@ -339,6 +348,7 @@ def execute_mp_cleanup_from_preview(
         expected_tmdbid=expected_tmdbid,
         expected_hash_prefix=expected_hash_prefix,
         expected_hash_prefixes=expected_hash_prefixes,
+        expected_season=expected_season,
         expected_record_count=expected_record_count,
         expected_episode_count=expected_episode_count,
         expected_episode_min=expected_episode_min,
@@ -363,6 +373,7 @@ def execute_mp_cleanup_from_preview(
             "tmdbid": expected_tmdbid,
             "hash_prefix": expected_hash_prefix.lower(),
             "hash_prefixes": normalized_hash_prefixes,
+            "season": expected_season,
             "record_count": expected_record_count,
             "episode_count": expected_episode_count,
             "episode_min": expected_episode_min,
@@ -611,6 +622,7 @@ def _mp_cleanup_execution_blockers(
     expected_episode_min: int,
     expected_episode_max: int,
     expected_hash_prefixes: Optional[Iterable[str]],
+    expected_season: int,
     expected_episodes: Optional[Iterable[int]],
     include_deletesrc: bool,
     include_deletedest: bool,
@@ -640,6 +652,8 @@ def _mp_cleanup_execution_blockers(
         blockers.append("expected_title_mismatch")
     if expected_tmdbid and int(preview.get("expected_tmdbid") or 0) not in {0, expected_tmdbid}:
         blockers.append("expected_tmdbid_mismatch")
+    if expected_season and int(preview.get("expected_season") or 0) not in {0, expected_season}:
+        blockers.append("expected_season_mismatch")
     preview_hash_prefixes = _normalize_hash_prefixes(None, str(preview.get("expected_hash_prefix") or ""))
     if normalized_hash_prefixes and preview_hash_prefixes and not _all_hash_prefixes_covered(preview_hash_prefixes, normalized_hash_prefixes):
         blockers.append("expected_hash_prefix_mismatch")
@@ -705,6 +719,12 @@ def _mp_cleanup_execution_blockers(
             blockers.append("record_title_mismatch")
         if expected_tmdbid and int(item.get("tmdbid") or 0) not in {0, expected_tmdbid}:
             blockers.append("record_tmdbid_mismatch")
+        if expected_season:
+            record_seasons = [int(value) for value in item.get("season_numbers", []) if int(value) > 0] if isinstance(item.get("season_numbers"), list) else []
+            if not record_seasons:
+                blockers.append("record_season_missing")
+            elif expected_season not in record_seasons:
+                blockers.append("record_season_mismatch")
         if item.get("status") is not True:
             blockers.append("record_not_successful")
     if expected_episode_set:
@@ -732,6 +752,7 @@ def _filter_transfer_records(
     expected_title: str = "",
     expected_tmdbid: int = 0,
     expected_hash_prefix: str = "",
+    expected_season: int = 0,
 ) -> List[MPTransferHistoryRecord]:
     expected_hash_prefix = expected_hash_prefix.lower()
     filtered: List[MPTransferHistoryRecord] = []
@@ -741,6 +762,8 @@ def _filter_transfer_records(
         if expected_tmdbid and record.tmdbid and record.tmdbid != expected_tmdbid:
             continue
         if expected_hash_prefix and not record.download_hash.lower().startswith(expected_hash_prefix):
+            continue
+        if expected_season and expected_season not in transfer_record_season_numbers(record):
             continue
         filtered.append(record)
     return filtered
@@ -796,6 +819,7 @@ def _cleanup_transfer_row(record: MPTransferHistoryRecord) -> Dict[str, object]:
         "year": record.year,
         "tmdbid": record.tmdbid,
         "seasons": record.seasons,
+        "season_numbers": transfer_record_season_numbers(record),
         "episodes": record.episodes,
         "episode_number": _episode_number(record.episodes),
         "mode": record.mode,
@@ -845,6 +869,42 @@ def _series_root_from_dest(path: str) -> str:
     if marker in path:
         return path.split(marker, 1)[0]
     return _parent_dir(path)
+
+
+def _destination_root_from_dest(path: str, expected_season: int = 0) -> str:
+    if not expected_season:
+        return _series_root_from_dest(path)
+    return _season_root_from_path(path, expected_season) or _parent_dir(path)
+
+
+def _season_root_from_path(path: str, expected_season: int) -> str:
+    if not path or not expected_season:
+        return ""
+    wanted = str(expected_season)
+    wanted_padded = f"{expected_season:02d}"
+    parts = PurePosixPath(path).parts
+    for index, part in enumerate(parts):
+        match = re.fullmatch(r"(?i)season\s*0*(\d{1,3})", part.strip())
+        if match and match.group(1) in {wanted, wanted_padded}:
+            return str(PurePosixPath(*parts[: index + 1]))
+    return ""
+
+
+def transfer_record_season_numbers(record: MPTransferHistoryRecord) -> List[int]:
+    values = [record.seasons, record.dest, record.src]
+    seasons: Set[int] = set()
+    for value in values:
+        seasons.update(_season_numbers(str(value or "")))
+    return sorted(seasons)
+
+
+def _season_numbers(value: str) -> Set[int]:
+    text = str(value or "")
+    seasons = {int(match.group(1)) for match in re.finditer(r"(?i)(?:^|[^A-Z0-9])S0*(\d{1,3})(?=E|\b|[^A-Z0-9])", text)}
+    seasons.update(int(match.group(1)) for match in re.finditer(r"(?i)Season\s*0*(\d{1,3})", text))
+    if not seasons and re.fullmatch(r"\s*0*(\d{1,3})\s*", text):
+        seasons.add(int(text))
+    return {season for season in seasons if season > 0}
 
 
 def _downloader_for_hash(records: List[MPTransferHistoryRecord], download_hash: str) -> str:

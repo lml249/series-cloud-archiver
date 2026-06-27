@@ -730,6 +730,7 @@ def delete_stale_emby_paths(
     stale_path_prefixes: Sequence[str],
     strm_path_prefixes: Sequence[str],
     stale_host_prefix: str = "",
+    delete_scope: str = "root",
     expected_episode_count: int = 0,
     expected_episode_min: int = 0,
     expected_episode_max: int = 0,
@@ -763,11 +764,19 @@ def delete_stale_emby_paths(
         blockers.append("library_db_required_for_stale_delete")
     if not stale_host_prefix:
         blockers.append("stale_host_prefix_required")
+    normalized_delete_scope = str(delete_scope or "root").strip().lower()
+    if normalized_delete_scope not in {"root", "season"}:
+        blockers.append("delete_scope_not_supported")
 
     stale_rows = _db_rows_for_prefixes_path(library_db_path, stale_path_prefixes) if library_db_path else []
-    root_rows = _stale_root_rows(stale_rows, stale_path_prefixes)
+    root_rows = _stale_delete_rows(stale_rows, stale_path_prefixes, normalized_delete_scope)
     if not root_rows:
         blockers.append("stale_root_item_not_found")
+    if normalized_delete_scope == "season":
+        if any(not _is_season_path_prefix(prefix) for prefix in _normalize_prefixes(stale_path_prefixes)):
+            blockers.append("season_stale_path_prefix_required")
+        if any(str(row.get("type") or "").lower() == "series" for row in root_rows):
+            blockers.append("season_scope_refuses_series_root")
     if len(root_rows) != len({str(row.get("path") or "").rstrip("/") for row in root_rows}):
         blockers.append("duplicate_stale_root_items")
 
@@ -798,6 +807,7 @@ def delete_stale_emby_paths(
         "mode": "emby-delete-stale-paths",
         "title": title,
         "ok": not blockers and bool(delete_results),
+        "delete_scope": normalized_delete_scope,
         "verification": verification,
         "stale_rows_count": len(stale_rows),
         "root_items": root_rows,
@@ -805,7 +815,7 @@ def delete_stale_emby_paths(
         "delete_results": delete_results,
         "blockers": sorted(set(blockers)),
         "warnings": warnings,
-        "safety": "approved Emby item delete only for stale root items whose host paths no longer exist and whose STRM replacement verifies complete; no filesystem, qBittorrent, MoviePilot, or direct database write is performed",
+        "safety": "approved Emby item delete only for stale root/season items whose host paths no longer exist and whose STRM replacement verifies complete; no filesystem, qBittorrent, MoviePilot, or direct database write is performed",
     }
 
 
@@ -819,6 +829,7 @@ def render_emby_delete_stale_paths_report(report: Dict[str, object], output_form
         "",
         f"- Title: `{report.get('title', '')}`",
         f"- OK: `{bool(report.get('ok'))}`",
+        f"- Delete scope: `{report.get('delete_scope', 'root')}`",
         f"- Stale rows before delete: `{report.get('stale_rows_count', 0)}`",
         f"- Root items deleted: `{len(report.get('delete_results', [])) if isinstance(report.get('delete_results'), list) else 0}`",
         f"- STRM records: `{totals.get('strm_records', 0)}`",
@@ -1100,6 +1111,36 @@ def _stale_root_rows(rows: Sequence[Dict[str, object]], stale_path_prefixes: Seq
                 }
             )
     return roots
+
+
+def _stale_delete_rows(rows: Sequence[Dict[str, object]], stale_path_prefixes: Sequence[str], delete_scope: str) -> List[Dict[str, object]]:
+    if delete_scope == "season":
+        return _stale_season_rows(rows, stale_path_prefixes)
+    return _stale_root_rows(rows, stale_path_prefixes)
+
+
+def _stale_season_rows(rows: Sequence[Dict[str, object]], stale_path_prefixes: Sequence[str]) -> List[Dict[str, object]]:
+    prefixes = set(_normalize_prefixes(stale_path_prefixes))
+    roots = []
+    for row in rows:
+        path = str(row.get("path") or "").rstrip("/")
+        if path not in prefixes:
+            continue
+        if str(row.get("type") or "").lower() != "season":
+            continue
+        roots.append(
+            {
+                "id": row.get("id"),
+                "type": row.get("type"),
+                "name": row.get("name"),
+                "path": path,
+            }
+        )
+    return roots
+
+
+def _is_season_path_prefix(prefix: str) -> bool:
+    return bool(Path(prefix.rstrip("/")).name.lower().replace(" ", "").startswith("season"))
 
 
 def _stale_host_check(stale_prefix: str, stale_path_prefixes: Sequence[str], stale_host_prefix: str) -> Dict[str, object]:

@@ -112,6 +112,7 @@ class CloudCompleteCleanupTest(unittest.TestCase):
         self.assertEqual(plan["items"][0]["source_roots_host"], ["/example-host/TV/Silent.Honor.S01"])
         self.assertEqual(plan["items"][0]["destination_roots_host"], ["/example-host/hlink/TV/沉默的荣耀 (2025) {tmdbid=281538}"])
         self.assertEqual(preview.call_count, 1)
+        self.assertEqual(preview.call_args.kwargs["expected_season"], 1)
         self.assertIn("readonly batch plan only", render_cloud_complete_cleanup_plan(plan, "markdown"))
 
     def test_plan_blocks_when_mp_records_do_not_cover_cloud_episodes(self) -> None:

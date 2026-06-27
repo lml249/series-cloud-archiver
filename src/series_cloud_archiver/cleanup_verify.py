@@ -6,7 +6,7 @@ from typing import Dict, Iterable, List, Optional, Sequence
 import urllib.parse
 
 from .episode import episode_signal
-from .moviepilot import MPTransferHistoryRecord, MoviePilotClient
+from .moviepilot import MPTransferHistoryRecord, MoviePilotClient, transfer_record_season_numbers
 from .qbittorrent import fetch_qb_torrents
 
 
@@ -297,6 +297,7 @@ def verify_mp_cleanup_from_services(
     expected_tmdbid: int = 0,
     expected_hash_prefix: str = "",
     expected_hash_prefixes: Optional[Iterable[str]] = None,
+    expected_season: int = 0,
     source_roots: Optional[Sequence[str]] = None,
     destination_roots: Optional[Sequence[str]] = None,
     strm_roots: Optional[Sequence[str]] = None,
@@ -337,6 +338,7 @@ def verify_mp_cleanup_from_services(
         expected_tmdbid=expected_tmdbid,
         expected_hash_prefix=expected_hash_prefix,
         expected_hash_prefixes=expected_hash_prefixes,
+        expected_season=expected_season,
         source_roots=source_roots or [],
         destination_roots=destination_roots or [],
         strm_roots=strm_roots or [],
@@ -358,6 +360,7 @@ def build_mp_cleanup_verification(
     expected_tmdbid: int = 0,
     expected_hash_prefix: str = "",
     expected_hash_prefixes: Optional[Iterable[str]] = None,
+    expected_season: int = 0,
     source_roots: Optional[Sequence[str]] = None,
     destination_roots: Optional[Sequence[str]] = None,
     strm_roots: Optional[Sequence[str]] = None,
@@ -373,7 +376,7 @@ def build_mp_cleanup_verification(
     expected_hash_prefix = expected_hash_prefix.lower()
     normalized_hash_prefixes = _normalize_hash_prefixes(expected_hash_prefixes, expected_hash_prefix)
 
-    matched_mp_records = _filter_mp_records(mp_records, expected_title, expected_tmdbid, normalized_hash_prefixes)
+    matched_mp_records = _filter_mp_records(mp_records, expected_title, expected_tmdbid, normalized_hash_prefixes, expected_season)
     if matched_mp_records:
         blockers.append("mp_transfer_history_still_present")
 
@@ -433,6 +436,7 @@ def build_mp_cleanup_verification(
             "tmdbid": expected_tmdbid,
             "hash_prefix": expected_hash_prefix,
             "hash_prefixes": normalized_hash_prefixes,
+            "season": expected_season,
             "episode_count": expected_episode_count,
             "episode_min": expected_episode_min,
             "episode_max": expected_episode_max,
@@ -478,6 +482,7 @@ def render_mp_cleanup_verification(report: Dict[str, object], output_format: str
         f"- Title: `{report.get('title', '')}`",
         f"- OK: `{bool(report.get('ok'))}`",
         f"- Expected TMDB ID: `{expected.get('tmdbid', 0)}`",
+        f"- Expected season: `{expected.get('season', 0)}`",
         f"- Expected hash prefix: `{expected.get('hash_prefix', '')}`",
         f"- MP transfer records matched after cleanup: `{mp_history.get('records_matched', 0)}`",
         f"- qB matched torrents after cleanup: `{qb.get('matched_count', 0)}`",
@@ -536,6 +541,7 @@ def _filter_mp_records(
     expected_title: str,
     expected_tmdbid: int,
     expected_hash_prefixes: Sequence[str],
+    expected_season: int = 0,
 ) -> List[MPTransferHistoryRecord]:
     filtered: List[MPTransferHistoryRecord] = []
     for record in records:
@@ -545,6 +551,10 @@ def _filter_mp_records(
             continue
         if expected_hash_prefixes and not _hash_matches_any_prefix(record.download_hash, expected_hash_prefixes):
             continue
+        if expected_season:
+            record_seasons = transfer_record_season_numbers(record)
+            if record_seasons and expected_season not in record_seasons:
+                continue
         filtered.append(record)
     return filtered
 
