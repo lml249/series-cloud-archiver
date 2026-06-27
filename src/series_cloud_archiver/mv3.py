@@ -3455,6 +3455,11 @@ def _episode_number_from_text(text: str) -> Optional[int]:
     match = re.search(r"(?:第\s*)?(\d{1,3})(?:\s*[集话話])", text)
     if match:
         return int(match.group(1))
+    match = re.search(r"(?:^|[\s._\-\[\(])0*(\d{1,3})(?=$|[\s._\-\]\)])", text)
+    if match:
+        episode = int(match.group(1))
+        if 1 <= episode <= 999:
+            return episode
     return None
 
 

@@ -1346,6 +1346,78 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("episode_range_incomplete", report["blockers"])
         self.assertEqual(report["transfer"], {"skipped": True})
 
+    def test_organize_transfer_accepts_delimited_episode_numbers(self) -> None:
+        seen = {}
+        browse_report = {
+            "path": "/未整理/沙尘暴",
+            "items": [
+                {"name": "沙尘暴_01_锅炉里的焦尸.mp4", "kind": "file", "episode": None, "file_id": "file-1"},
+                {"name": "沙尘暴_02_迟来的翻供.mp4", "kind": "file", "episode": None, "file_id": "file-2"},
+            ],
+        }
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return b'{"success":true,"data":{"task_id":"task-1"}}'
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = execute_mv3_organize_transfer_from_browse_report(
+                "http://mv3.example",
+                "token",
+                browse_report,
+                target_dir="/已整理",
+                strm_dir="/strm",
+                tmdb_id=272100,
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["episodes"], [1, 2])
+        self.assertEqual(len(seen["body"]["files"]), 2)
+
+    def test_organize_transfer_does_not_treat_technical_numbers_as_episodes(self) -> None:
+        browse_report = {
+            "path": "/未整理/Demo",
+            "items": [
+                {"name": "Demo.2025.2160p.60fps.mkv", "kind": "file", "episode": None, "file_id": "file-1"},
+            ],
+        }
+
+        report = execute_mv3_organize_transfer_from_browse_report(
+            "http://mv3.example",
+            "token",
+            browse_report,
+            target_dir="/已整理",
+            strm_dir="/strm",
+            tmdb_id=123,
+            expected_episode_count=1,
+            expected_episode_min=1,
+            expected_episode_max=1,
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("episode_count_mismatch", report["blockers"])
+        self.assertIn("episode_range_incomplete", report["blockers"])
+        self.assertEqual(report["transfer"], {"skipped": True})
+
     def test_organize_transfer_from_browse_report_posts_complete_file_list(self) -> None:
         seen = {}
         browse_report = {
