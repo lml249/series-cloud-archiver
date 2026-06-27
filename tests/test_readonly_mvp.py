@@ -19,7 +19,9 @@ from series_cloud_archiver.emby import (
     EmbyClient,
     delete_stale_emby_paths,
     notify_and_verify_emby_media_updated,
+    refresh_and_verify_emby_item,
     refresh_and_verify_emby_library,
+    render_emby_item_refresh_report,
     render_emby_media_updated_report,
     render_emby_refresh_verify_report,
     verify_emby_library_paths,
@@ -825,6 +827,149 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["notify"]["paths"], ["/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}"])
 
+    def test_refresh_and_verify_emby_item_uses_item_refresh_without_full_scan(self) -> None:
+        calls = []
+
+        class FakeClient:
+            def __init__(self, base_url, api_key, timeout=20):
+                self.base_url = base_url
+                self.api_key = api_key
+                self.timeout = timeout
+
+            def refresh_item(
+                self,
+                item_id,
+                recursive=True,
+                metadata_refresh_mode="Default",
+                image_refresh_mode="Default",
+                replace_all_metadata=False,
+                replace_all_images=False,
+            ):
+                calls.append(
+                    {
+                        "item_id": item_id,
+                        "recursive": recursive,
+                        "metadata_refresh_mode": metadata_refresh_mode,
+                        "image_refresh_mode": image_refresh_mode,
+                        "replace_all_metadata": replace_all_metadata,
+                        "replace_all_images": replace_all_images,
+                    }
+                )
+                return {"http_status": 204, "ok": True, "response": {}}
+
+            def refresh_library(self):
+                raise AssertionError("item refresh must not request a full library scan")
+
+            def items_by_search(self, search_term):
+                return [
+                    {
+                        "Id": "episode-strm-1",
+                        "Type": "Episode",
+                        "IndexNumber": 1,
+                        "Path": "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E01.strm",
+                    },
+                    {
+                        "Id": "episode-strm-2",
+                        "Type": "Episode",
+                        "IndexNumber": 2,
+                        "Path": "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E02.strm",
+                    },
+                ]
+
+        with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+            report = refresh_and_verify_emby_item(
+                "http://emby.example",
+                "token",
+                title="楚汉传奇",
+                item_id="7",
+                stale_path_prefixes=["/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}"],
+                strm_path_prefixes=["/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}"],
+                metadata_refresh_mode="FullRefresh",
+                image_refresh_mode="Default",
+                replace_all_metadata=True,
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "item_id": "7",
+                    "recursive": True,
+                    "metadata_refresh_mode": "FullRefresh",
+                    "image_refresh_mode": "Default",
+                    "replace_all_metadata": True,
+                    "replace_all_images": False,
+                }
+            ],
+        )
+        self.assertIn("Emby item refresh", render_emby_item_refresh_report(report, "markdown"))
+
+    def test_emby_item_refresh_cli_writes_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "emby-item-refresh.json"
+            env_file.write_text("EMBY_BASE_URL=http://emby.example\nEMBY_API_KEY=token\n", encoding="utf-8")
+
+            class FakeClient:
+                def __init__(self, base_url, api_key, timeout=20):
+                    pass
+
+                def refresh_item(
+                    self,
+                    item_id,
+                    recursive=True,
+                    metadata_refresh_mode="Default",
+                    image_refresh_mode="Default",
+                    replace_all_metadata=False,
+                    replace_all_images=False,
+                ):
+                    return {"http_status": 204, "ok": True, "response": {"item_id": item_id, "recursive": recursive}}
+
+                def items_by_search(self, search_term):
+                    return [
+                        {
+                            "Id": "episode-strm-1",
+                            "Type": "Episode",
+                            "IndexNumber": 1,
+                            "Path": "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E01.strm",
+                        }
+                    ]
+
+            with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+                code = main(
+                    [
+                        "emby-item-refresh-verify",
+                        "--env-file",
+                        str(env_file),
+                        "--title",
+                        "楚汉传奇",
+                        "--item-id",
+                        "7",
+                        "--strm-path-prefix",
+                        "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}",
+                        "--expected-episode-count",
+                        "1",
+                        "--expected-episode-min",
+                        "1",
+                        "--expected-episode-max",
+                        "1",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["refresh"]["item_id"], "7")
+
     def test_emby_client_uses_token_header_without_query_api_key(self) -> None:
         seen = {}
 
@@ -891,6 +1036,55 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
         self.assertNotIn("secret-key", seen["url"])
         self.assertEqual(seen["headers"].get("X-emby-token"), "secret-key")
         self.assertEqual(json.loads(seen["body"]), {"Updates": [{"Path": "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}", "UpdateType": "Created"}]})
+
+    def test_emby_client_posts_item_refresh_json_with_token_header(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            status = 204
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self):
+                return b""
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["headers"] = request.headers
+            seen["body"] = request.data.decode("utf-8")
+            seen["method"] = request.get_method()
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            result = EmbyClient("http://emby.example", "secret-key", timeout=7).refresh_item(
+                "library item",
+                recursive=True,
+                metadata_refresh_mode="FullRefresh",
+                replace_all_metadata=True,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(seen["method"], "POST")
+        self.assertIn("/emby/Items/library%20item/Refresh?", seen["url"])
+        self.assertIn("Recursive=true", seen["url"])
+        self.assertIn("MetadataRefreshMode=FullRefresh", seen["url"])
+        self.assertNotIn("secret-key", seen["url"])
+        self.assertEqual(seen["headers"].get("X-emby-token"), "secret-key")
+        self.assertEqual(
+            json.loads(seen["body"]),
+            {
+                "Recursive": True,
+                "MetadataRefreshMode": "FullRefresh",
+                "ImageRefreshMode": "Default",
+                "ReplaceAllMetadata": True,
+                "ReplaceAllImages": False,
+            },
+        )
 
     def test_emby_refresh_error_redacts_echoed_api_key(self) -> None:
         class FakeHTTPError(Exception):

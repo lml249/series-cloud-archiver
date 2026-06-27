@@ -116,6 +116,34 @@ class EmbyClient:
     def refresh_library(self) -> Dict[str, object]:
         return self._post_empty("/emby/Library/Refresh")
 
+    def refresh_item(
+        self,
+        item_id: object,
+        recursive: bool = True,
+        metadata_refresh_mode: str = "Default",
+        image_refresh_mode: str = "Default",
+        replace_all_metadata: bool = False,
+        replace_all_images: bool = False,
+    ) -> Dict[str, object]:
+        query = {
+            "Recursive": str(recursive).lower(),
+            "MetadataRefreshMode": metadata_refresh_mode,
+            "ImageRefreshMode": image_refresh_mode,
+            "ReplaceAllMetadata": str(replace_all_metadata).lower(),
+            "ReplaceAllImages": str(replace_all_images).lower(),
+        }
+        return self._post_json(
+            f"/emby/Items/{urllib.parse.quote(str(item_id), safe='')}/Refresh",
+            {
+                "Recursive": recursive,
+                "MetadataRefreshMode": metadata_refresh_mode,
+                "ImageRefreshMode": image_refresh_mode,
+                "ReplaceAllMetadata": replace_all_metadata,
+                "ReplaceAllImages": replace_all_images,
+            },
+            query=query,
+        )
+
     def notify_media_updated(self, paths: Sequence[str], update_type: str = "Created") -> Dict[str, object]:
         updates = [{"Path": path, "UpdateType": update_type} for path in paths if path]
         return self._post_json("/emby/Library/Media/Updated", {"Updates": updates})
@@ -325,6 +353,78 @@ def notify_and_verify_emby_media_updated(
     }
 
 
+def refresh_and_verify_emby_item(
+    base_url: str,
+    api_key: str,
+    title: str,
+    item_id: str,
+    stale_path_prefixes: Sequence[str],
+    strm_path_prefixes: Sequence[str],
+    recursive: bool = True,
+    metadata_refresh_mode: str = "Default",
+    image_refresh_mode: str = "Default",
+    replace_all_metadata: bool = False,
+    replace_all_images: bool = False,
+    expected_strm_records: int = 0,
+    expected_episode_count: int = 0,
+    expected_episode_min: int = 0,
+    expected_episode_max: int = 0,
+    library_db_path: str = "",
+    timeout: int = 20,
+) -> Dict[str, object]:
+    client = EmbyClient(base_url, api_key, timeout=timeout)
+    blockers: List[str] = []
+    warnings: List[str] = []
+    refresh = {
+        "requested": bool(item_id),
+        "item_id": item_id,
+        "recursive": recursive,
+        "metadata_refresh_mode": metadata_refresh_mode,
+        "image_refresh_mode": image_refresh_mode,
+        "replace_all_metadata": replace_all_metadata,
+        "replace_all_images": replace_all_images,
+    }
+    if not item_id:
+        blockers.append("emby_item_id_required")
+        refresh["request"] = {"skipped": True}
+    else:
+        result = client.refresh_item(
+            item_id,
+            recursive=recursive,
+            metadata_refresh_mode=metadata_refresh_mode,
+            image_refresh_mode=image_refresh_mode,
+            replace_all_metadata=replace_all_metadata,
+            replace_all_images=replace_all_images,
+        )
+        refresh["request"] = result
+        if not result.get("ok"):
+            blockers.append("emby_item_refresh_request_failed")
+
+    verification = verify_emby_library_paths(
+        client,
+        title=title,
+        stale_path_prefixes=stale_path_prefixes,
+        strm_path_prefixes=strm_path_prefixes,
+        expected_strm_records=expected_strm_records,
+        expected_episode_count=expected_episode_count,
+        expected_episode_min=expected_episode_min,
+        expected_episode_max=expected_episode_max,
+        library_db_path=library_db_path,
+    )
+    blockers.extend(verification.get("blockers", []))
+    warnings.extend(verification.get("warnings", []))
+    return {
+        "mode": "emby-item-refresh-verify",
+        "title": title,
+        "ok": not blockers,
+        "refresh": refresh,
+        "verification": verification,
+        "blockers": sorted(set(blockers)),
+        "warnings": warnings,
+        "safety": "Emby item refresh request and readonly verification only; no filesystem deletion, qBittorrent action, MoviePilot cleanup, full-library scan request, or direct Emby database write is performed",
+    }
+
+
 def verify_emby_library_paths(
     client: EmbyClient,
     title: str,
@@ -387,6 +487,43 @@ def render_emby_media_updated_report(report: Dict[str, object], output_format: s
         f"- STRM episode range: `{strm.get('episode_min', '')}-{strm.get('episode_max', '')}`",
         f"- STRM missing: `{strm.get('missing_in_range', [])}`",
         "- Safety: Emby media-updated notification and readonly verification only; no full-library scan or deletion is requested.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    return "\n".join(lines)
+
+
+def render_emby_item_refresh_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    refresh = report.get("refresh") if isinstance(report.get("refresh"), dict) else {}
+    request = refresh.get("request") if isinstance(refresh.get("request"), dict) else {}
+    verification = report.get("verification") if isinstance(report.get("verification"), dict) else {}
+    totals = verification.get("totals") if isinstance(verification.get("totals"), dict) else {}
+    strm = verification.get("strm") if isinstance(verification.get("strm"), dict) else {}
+    lines = [
+        "# Emby Item Refresh Verification",
+        "",
+        f"- Title: `{report.get('title', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Item id: `{refresh.get('item_id', '')}`",
+        f"- Recursive: `{bool(refresh.get('recursive'))}`",
+        f"- Metadata mode: `{refresh.get('metadata_refresh_mode', '')}`",
+        f"- Image mode: `{refresh.get('image_refresh_mode', '')}`",
+        f"- Refresh HTTP status: `{request.get('http_status', '')}`",
+        f"- Verification method: `{verification.get('method', '')}`",
+        f"- Stale path records: `{totals.get('stale_records', 0)}`",
+        f"- STRM records: `{totals.get('strm_records', 0)}`",
+        f"- STRM episode count: `{strm.get('episode_count', 0)}`",
+        f"- STRM episode range: `{strm.get('episode_min', '')}-{strm.get('episode_max', '')}`",
+        f"- STRM missing: `{strm.get('missing_in_range', [])}`",
+        "- Safety: Emby item refresh and readonly verification only; no deletion is requested.",
     ]
     blockers = report.get("blockers")
     if isinstance(blockers, list) and blockers:

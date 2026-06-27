@@ -24,8 +24,10 @@ from .dotqb_cleanup import cleanup_orphan_dotqb_roots, render_dotqb_orphan_clean
 from .emby import (
     delete_stale_emby_paths,
     notify_and_verify_emby_media_updated,
+    refresh_and_verify_emby_item,
     refresh_and_verify_emby_library,
     render_emby_delete_stale_paths_report,
+    render_emby_item_refresh_report,
     render_emby_media_updated_report,
     render_emby_refresh_verify_report,
 )
@@ -321,6 +323,26 @@ def build_parser() -> argparse.ArgumentParser:
     emby_media_updated_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
     emby_media_updated_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     emby_media_updated_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    emby_item_refresh_parser = subcommands.add_parser("emby-item-refresh-verify", help="Refresh one Emby item recursively and verify STRM state")
+    emby_item_refresh_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    emby_item_refresh_parser.add_argument("--title", required=True, help="Series title for reporting and API fallback search")
+    emby_item_refresh_parser.add_argument("--item-id", required=True, help="Emby item id to refresh, e.g. a library or series item")
+    emby_item_refresh_parser.add_argument("--stale-path-prefix", action="append", default=[], help="Old local/hlink path prefix that should disappear; can be repeated")
+    emby_item_refresh_parser.add_argument("--strm-path-prefix", action="append", default=[], help="STRM path prefix that should remain; can be repeated")
+    emby_item_refresh_parser.add_argument("--expected-strm-records", type=int, default=0, help="Expected Emby records under STRM path, including series/season/episode rows when using library DB")
+    emby_item_refresh_parser.add_argument("--expected-episode-count", type=int, default=0, help="Expected distinct STRM episode count")
+    emby_item_refresh_parser.add_argument("--expected-episode-min", type=int, default=0, help="Expected first STRM episode number")
+    emby_item_refresh_parser.add_argument("--expected-episode-max", type=int, default=0, help="Expected last STRM episode number")
+    emby_item_refresh_parser.add_argument("--library-db", default="", help="Optional Emby library.db path for exact readonly verification")
+    emby_item_refresh_parser.add_argument("--metadata-refresh-mode", default="Default", help="Emby metadata refresh mode")
+    emby_item_refresh_parser.add_argument("--image-refresh-mode", default="Default", help="Emby image refresh mode")
+    emby_item_refresh_parser.add_argument("--not-recursive", action="store_true", help="Refresh only the item itself instead of recursively")
+    emby_item_refresh_parser.add_argument("--replace-all-metadata", action="store_true", help="Ask Emby to replace all metadata during refresh")
+    emby_item_refresh_parser.add_argument("--replace-all-images", action="store_true", help="Ask Emby to replace all images during refresh")
+    emby_item_refresh_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    emby_item_refresh_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    emby_item_refresh_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     emby_delete_parser = subcommands.add_parser("emby-delete-stale-paths", help="Delete approved stale Emby root items after STRM replacement verifies")
     emby_delete_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -1128,6 +1150,36 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_emby_media_updated_report(report, args.format)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "emby-item-refresh-verify":
+        config = config_from_env(args.env_file, [])
+        if not config.emby_base_url or not config.emby_key:
+            parser.error("emby-item-refresh-verify requires EMBY_BASE_URL and EMBY_API_KEY")
+        report = refresh_and_verify_emby_item(
+            config.emby_base_url,
+            config.emby_key,
+            title=args.title,
+            item_id=args.item_id,
+            stale_path_prefixes=args.stale_path_prefix,
+            strm_path_prefixes=args.strm_path_prefix,
+            recursive=not args.not_recursive,
+            metadata_refresh_mode=args.metadata_refresh_mode,
+            image_refresh_mode=args.image_refresh_mode,
+            replace_all_metadata=args.replace_all_metadata,
+            replace_all_images=args.replace_all_images,
+            expected_strm_records=args.expected_strm_records,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            library_db_path=args.library_db or config.emby_library_db_path,
+            timeout=args.timeout,
+        )
+        rendered = render_emby_item_refresh_report(report, args.format)
         if args.output:
             Path(args.output).write_text(rendered + "\n", encoding="utf-8")
         else:
