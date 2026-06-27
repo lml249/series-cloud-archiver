@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class CliEntrypointTest(unittest.TestCase):
@@ -79,6 +80,77 @@ class CliEntrypointTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["status_counts"], {"cloud_strm_complete": 2})
             self.assertEqual(len(payload["items"]), 2)
+
+    def test_share_search_checkpoint_updates_after_each_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            transfer_plan = tmp_path / "transfer-plan.json"
+            output = tmp_path / "share-search.json"
+            checkpoint = tmp_path / "checkpoint.json"
+            transfer_plan.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-mv3-transfer-plan",
+                        "items": [
+                            {"title": "第一部", "season": 1, "size_bytes": 100, "expected_count": 1},
+                            {"title": "第二部", "season": 1, "size_bytes": 100, "expected_count": 1},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            writes = []
+
+            def fake_search(_base_url, _token, keyword, channels=None, timeout=60):
+                writes.append(checkpoint.exists())
+                return {
+                    "ok": True,
+                    "result_count": 1,
+                    "items": [
+                        {
+                            "index": 1,
+                            "title": f"{keyword} S01E01 完结",
+                            "size": "100B",
+                            "share_code_available": True,
+                        }
+                    ],
+                }
+
+            class FakeConfig:
+                mv3_base_url = "http://mv3.example"
+                mv3_token = "token"
+
+            from series_cloud_archiver import cli
+
+            with patch.object(cli, "config_from_env", return_value=FakeConfig()), patch.object(cli, "search_mv3_resources", side_effect=fake_search):
+                code = cli.main(
+                    [
+                        "plan-mv3-share-search",
+                        "--env-file",
+                        str(tmp_path / ".env"),
+                        "--transfer-plan",
+                        str(transfer_plan),
+                        "--limit",
+                        "2",
+                        "--checkpoint-output",
+                        str(checkpoint),
+                        "--checkpoint-each",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(writes, [False, True])
+            checkpoint_payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+            output_payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(checkpoint_payload["checkpoint"]["completed_items"], 2)
+            self.assertTrue(checkpoint_payload["checkpoint"]["complete"])
+            self.assertEqual(output_payload["planned_items"], 2)
+            self.assertEqual(output_payload["ready_items"], 2)
 
 
 if __name__ == "__main__":

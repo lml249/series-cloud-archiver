@@ -472,6 +472,8 @@ def build_parser() -> argparse.ArgumentParser:
     share_search_plan_parser.add_argument("--max-candidates", type=int, default=5, help="Maximum ranked search candidates per row")
     share_search_plan_parser.add_argument("--channel", action="append", default=[], help="Optional channel filter; can be repeated")
     share_search_plan_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    share_search_plan_parser.add_argument("--checkpoint-output", default=None, help="Write a partial JSON/Markdown report after each searched row")
+    share_search_plan_parser.add_argument("--checkpoint-each", action="store_true", help="Keep checkpoint-output updated after every row instead of only at the end")
     share_search_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     share_search_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
@@ -668,6 +670,11 @@ def _parse_episode_list(value: str) -> List[int]:
         else:
             episodes.add(int(token))
     return sorted(item for item in episodes if item > 0)
+
+
+def _write_text_output(path: str, text: str) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(text + "\n", encoding="utf-8")
 
 
 def _parse_int_list_args(values: List[str]) -> List[int]:
@@ -1465,7 +1472,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         stop = start + args.limit if args.limit > 0 else len(raw_items)
         selected_items = raw_items[start:stop]
         search_reports = {}
-        for item in selected_items:
+        checkpoint_path = args.checkpoint_output or (args.output if args.checkpoint_each else None)
+        for item_index, item in enumerate(selected_items, start=1):
             title = str(item.get("title") or "")
             if not title:
                 continue
@@ -1476,6 +1484,25 @@ def main(argv: Optional[List[str]] = None) -> int:
                 channels=args.channel,
                 timeout=args.timeout,
             )
+            if checkpoint_path and args.checkpoint_each:
+                partial_plan = plan_mv3_share_search_from_transfer_plan(
+                    transfer_plan,
+                    search_reports,
+                    limit=item_index,
+                    max_candidates=args.max_candidates,
+                    offset=args.offset,
+                )
+                partial_plan["checkpoint"] = {
+                    "enabled": True,
+                    "completed_items": item_index,
+                    "planned_items": len(selected_items),
+                    "current_title": title,
+                    "complete": item_index == len(selected_items),
+                }
+                _write_text_output(
+                    checkpoint_path,
+                    render_mv3_share_search_plan(partial_plan, args.format),
+                )
         plan = plan_mv3_share_search_from_transfer_plan(
             transfer_plan,
             search_reports,
@@ -1483,9 +1510,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             max_candidates=args.max_candidates,
             offset=args.offset,
         )
+        if checkpoint_path and not args.checkpoint_each:
+            _write_text_output(checkpoint_path, render_mv3_share_search_plan(plan, args.format))
         rendered = render_mv3_share_search_plan(plan, args.format)
         if args.output:
-            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            _write_text_output(args.output, rendered)
         else:
             print(rendered)
         return 0
