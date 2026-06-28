@@ -1225,6 +1225,7 @@ class MV3ProbeTest(unittest.TestCase):
             env_file = tmp_path / ".env"
             transfer_plan = tmp_path / "transfer.json"
             output = tmp_path / "cloud-index-plan.json"
+            seen_urls = []
             env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
             transfer_plan.write_text(
                 json.dumps(
@@ -1252,7 +1253,11 @@ class MV3ProbeTest(unittest.TestCase):
                 def headers(self):
                     return {"Content-Type": "application/json"}
 
-            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+            def fake_urlopen(request, timeout):
+                seen_urls.append(request.full_url)
+                return FakeResponse()
+
+            with patch("urllib.request.urlopen", fake_urlopen):
                 code = main(
                     [
                         "mv3-cloud-index-plan",
@@ -1275,6 +1280,7 @@ class MV3ProbeTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["mode"], "readonly-mv3-cloud-index-plan")
             self.assertEqual(payload["items_with_matches"], 1)
+            self.assertIn("limit=1150", seen_urls[0])
 
     def test_cloud_browse_treats_115_fid_only_root_rows_as_folders(self) -> None:
         class FakeResponse:

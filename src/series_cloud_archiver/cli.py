@@ -706,7 +706,7 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_index_plan_parser.add_argument("--offset", type=int, default=0, help="Skip this many transfer rows before matching")
     cloud_index_plan_parser.add_argument("--limit", type=int, default=0, help="Maximum transfer rows to match; 0 means all rows")
     cloud_index_plan_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
-    cloud_index_plan_parser.add_argument("--browse-limit", type=int, default=2000, help="Maximum root folder items to request")
+    cloud_index_plan_parser.add_argument("--browse-limit", type=int, default=1150, help="Maximum root folder items to request")
     cloud_index_plan_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     cloud_index_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     cloud_index_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")

@@ -603,7 +603,7 @@ def index_mv3_cloud_root_for_transfer_plan(
     offset: int = 0,
     limit: int = 0,
     storage: str = "115-default",
-    browse_limit: int = 2000,
+    browse_limit: int = 1150,
     timeout: int = 60,
 ) -> Dict[str, object]:
     client = MV3Client(base_url, token, timeout=timeout)
