@@ -852,6 +852,82 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["summary"]["file_count"], 1)
         self.assertEqual([item["kind"] for item in report["items"]], ["folder", "file"])
 
+    def test_cloud_sidecar_scan_recurses_into_115_fid_fc_zero_folders(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            parsed = urllib.parse.urlparse(request.full_url)
+            query = urllib.parse.parse_qs(parsed.query)
+            cid = query.get("cid", [""])[0]
+            if parsed.path.endswith("/api/v1/files/cloud/browse"):
+                if cid == "root-id":
+                    return FakeResponse(
+                        {
+                            "success": True,
+                            "data": {
+                                "items": [
+                                    {"fn": "Demo (2026) {tmdbid=123}", "fid": "title-id", "pid": "root-id", "fc": "0"},
+                                ]
+                            },
+                        }
+                    )
+                if cid == "title-id":
+                    return FakeResponse(
+                        {
+                            "success": True,
+                            "data": {
+                                "items": [
+                                    {"fn": "Season 1", "fid": "season-id", "pid": "title-id", "fc": "0"},
+                                ]
+                            },
+                        }
+                    )
+                if cid == "season-id":
+                    return FakeResponse(
+                        {
+                            "success": True,
+                            "data": {
+                                "items": [
+                                    {"fn": "Demo.S01E01.mkv", "fid": "video-1", "pid": "season-id", "s": 1000, "sha1": "abc"},
+                                    {"fn": "Demo.S01E01.nfo", "fid": "nfo-1", "pid": "season-id", "s": 10, "sha1": "def"},
+                                ]
+                            },
+                        }
+                    )
+            raise AssertionError(f"unexpected url: {request.full_url}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = verify_mv3_cloud_media_sidecars(
+                "http://mv3.example",
+                "token",
+                folder_id="root-id",
+                path="/已整理/series",
+                max_depth=3,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("cloud_media_metadata_sidecar_present", report["blockers"])
+        self.assertEqual(report["scan"]["visited_folder_count"], 3)
+        self.assertEqual(report["scan"]["video_file_count"], 1)
+        self.assertEqual(report["scan"]["metadata_sidecar_file_count"], 1)
+
     def test_cloud_browse_marks_metadata_sidecars_separately(self) -> None:
         class FakeResponse:
             status = 200

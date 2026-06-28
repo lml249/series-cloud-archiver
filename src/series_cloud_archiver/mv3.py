@@ -3375,6 +3375,8 @@ def _extract_folder_id(value: object) -> str:
         for key in ("cid", "file_id", "id", "folder_id"):
             if value.get(key):
                 return str(value.get(key))
+        if _looks_like_115_fid_folder(value):
+            return str(value.get("fid") or "")
         paths = value.get("paths")
         if isinstance(paths, list) and paths:
             nested = _extract_folder_id(paths[-1])
@@ -3495,7 +3497,9 @@ def _looks_like_115_fid_folder(item: Dict[str, object]) -> bool:
     name = _cloud_name(item)
     if Path(name).suffix:
         return False
-    for key in ("size", "size_text", "file_size", "file_size_text", "s", "fs", "sha1"):
+    if str(item.get("sha1") or "").strip():
+        return False
+    for key in ("size", "size_text", "file_size", "file_size_text", "s", "fs"):
         value = item.get(key)
         if value not in (None, "", 0, "0"):
             return False
