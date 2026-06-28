@@ -3880,10 +3880,14 @@ def _mv3_api_error_summary(
         "http_ok": False,
         "api_success": False,
         "status": 0,
-        "error_type": type(exc).__name__,
+        "error_type": _mv3_error_type(exc),
         "error": str(exc),
         "request": _sanitize_json(request_body),
     }
+
+
+def _mv3_error_type(exc: BaseException) -> str:
+    return "TimeoutError" if isinstance(exc, (TimeoutError, socket.timeout)) else type(exc).__name__
 
 
 def _mv3_share_browse_summary(
