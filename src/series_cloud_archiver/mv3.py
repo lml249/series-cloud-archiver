@@ -1360,6 +1360,7 @@ def preview_mv3_share(
     report["mode"] = "readonly-mv3-share-preview"
     browse_item_count = int(browse_report.get("item_count") or 0) if isinstance(browse_report.get("item_count"), int) else 0
     report["ok"] = bool(search.get("ok")) and bool(selected_summary) and parse_ok and browse_ok and browse_item_count > 0
+    report["blockers"] = _mv3_share_preview_blockers(report)
     report["safety"] = "search + share parse/browse preview only; no share receive/transfer, offline task, STRM generation, file operation, qBittorrent action, hlink deletion, or filesystem deletion is performed"
     return report
 
@@ -2474,6 +2475,8 @@ def render_mv3_share_preview_report(report: Dict[str, object], output_format: st
         "# MV3 Share Preview",
         "",
         f"- Keyword: `{report.get('keyword', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Blockers: `{report.get('blockers', [])}`",
         f"- Selected: `{selected.get('title', '')}`",
         f"- Search results: `{search.get('result_count', 0)}`",
         f"- Parse OK: `{bool(parse.get('ok'))}`",
@@ -3921,7 +3924,33 @@ def _resolve_mv3_share(
     search_body: Dict[str, object] = {"keyword": keyword}
     if channels:
         search_body["channels"] = channels
-    search_status, search_headers, search_response_body = client.post_json("/api/v1/resource-search/search", search_body)
+    try:
+        search_status, search_headers, search_response_body = client.post_json("/api/v1/resource-search/search", search_body)
+    except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+        search_report = _mv3_api_error_summary(
+            "POST",
+            "/api/v1/resource-search/search",
+            search_body,
+            exc,
+        )
+        search_report["result_count"] = 0
+        return {
+            "keyword": keyword,
+            "channels": channels or [],
+            "selection_index": selection_index,
+            "browse_cid": browse_cid,
+            "browse_limit": max(1, int(browse_limit or 1)),
+            "selected": {},
+            "search": search_report,
+            "parse": {"skipped": True},
+            "browse": {"skipped": True},
+            "warnings": ["mv3_resource_search_request_failed"],
+            "_raw": {
+                "share_code": "",
+                "receive_code": "",
+                "browse_items": [],
+            },
+        }
     search_text = search_response_body.decode("utf-8", "replace")
     search_parsed = _parse_json(search_text)
     search_payload = _unwrap_api_payload(search_parsed)
@@ -3953,22 +3982,31 @@ def _resolve_mv3_share(
             parse_body: Dict[str, object] = {"share_url": share_url}
             if receive_code:
                 parse_body["receive_code"] = receive_code
-            parse_status, parse_headers, parse_response_body = client.post_json("/api/v1/share-transfer/parse", parse_body)
-            parse_parsed = _parse_json(parse_response_body.decode("utf-8", "replace"))
-            parse_payload = _unwrap_api_payload(parse_parsed)
-            parse_api_success = _api_success(parse_parsed)
-            parse_report = _mv3_api_call_summary(
-                "POST",
-                "/api/v1/share-transfer/parse",
-                parse_status,
-                parse_headers,
-                parse_body,
-                parse_payload,
-                parse_api_success,
-                parse_response_body,
-            )
-            share_code = _find_first_raw_key(parse_payload, ["share_code", "shareCode", "shareId", "share_id"]) or share_code
-            receive_code = _find_first_raw_key(parse_payload, ["receive_code", "receiveCode", "password", "pwd"]) or receive_code
+            try:
+                parse_status, parse_headers, parse_response_body = client.post_json("/api/v1/share-transfer/parse", parse_body)
+                parse_parsed = _parse_json(parse_response_body.decode("utf-8", "replace"))
+                parse_payload = _unwrap_api_payload(parse_parsed)
+                parse_api_success = _api_success(parse_parsed)
+                parse_report = _mv3_api_call_summary(
+                    "POST",
+                    "/api/v1/share-transfer/parse",
+                    parse_status,
+                    parse_headers,
+                    parse_body,
+                    parse_payload,
+                    parse_api_success,
+                    parse_response_body,
+                )
+                share_code = _find_first_raw_key(parse_payload, ["share_code", "shareCode", "shareId", "share_id"]) or share_code
+                receive_code = _find_first_raw_key(parse_payload, ["receive_code", "receiveCode", "password", "pwd"]) or receive_code
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+                warnings.append("mv3_share_parse_request_failed")
+                parse_report = _mv3_api_error_summary(
+                    "POST",
+                    "/api/v1/share-transfer/parse",
+                    parse_body,
+                    exc,
+                )
 
         if not share_code:
             warnings.append("share_code_not_available_for_browse")
@@ -3978,18 +4016,27 @@ def _resolve_mv3_share(
                 browse_body["receive_code"] = receive_code
             if browse_cid:
                 browse_body["cid"] = browse_cid
-            browse_status, browse_headers, browse_response_body = client.post_json("/api/v1/share-transfer/browse", browse_body)
-            browse_parsed = _parse_json(browse_response_body.decode("utf-8", "replace"))
-            browse_payload = _unwrap_api_payload(browse_parsed)
-            browse_api_success = _api_success(browse_parsed)
-            browse_report = _mv3_share_browse_summary(
-                browse_status,
-                browse_headers,
-                browse_body,
-                browse_payload,
-                browse_api_success,
-                browse_response_body,
-            )
+            try:
+                browse_status, browse_headers, browse_response_body = client.post_json("/api/v1/share-transfer/browse", browse_body)
+                browse_parsed = _parse_json(browse_response_body.decode("utf-8", "replace"))
+                browse_payload = _unwrap_api_payload(browse_parsed)
+                browse_api_success = _api_success(browse_parsed)
+                browse_report = _mv3_share_browse_summary(
+                    browse_status,
+                    browse_headers,
+                    browse_body,
+                    browse_payload,
+                    browse_api_success,
+                    browse_response_body,
+                )
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+                warnings.append("mv3_share_browse_request_failed")
+                browse_report = _mv3_api_error_summary(
+                    "POST",
+                    "/api/v1/share-transfer/browse",
+                    browse_body,
+                    exc,
+                )
 
     return {
         "keyword": keyword,
@@ -4020,6 +4067,33 @@ def _resolve_mv3_share(
 
 def _public_share_resolution(resolution: Dict[str, object]) -> Dict[str, object]:
     return {key: value for key, value in resolution.items() if key != "_raw"}
+
+
+def _mv3_share_preview_blockers(report: Dict[str, object]) -> List[str]:
+    search = report.get("search") if isinstance(report.get("search"), dict) else {}
+    selected = report.get("selected") if isinstance(report.get("selected"), dict) else {}
+    parse = report.get("parse") if isinstance(report.get("parse"), dict) else {}
+    browse = report.get("browse") if isinstance(report.get("browse"), dict) else {}
+    warnings = [str(item) for item in report.get("warnings", []) if item] if isinstance(report.get("warnings"), list) else []
+    blockers: List[str] = []
+    if not search.get("ok"):
+        blockers.append("resource_search_failed")
+    if not selected:
+        blockers.append("share_selection_missing")
+    if "expected_title_contains_mismatch" in warnings:
+        blockers.append("expected_title_contains_mismatch")
+    if selected:
+        if parse.get("skipped"):
+            blockers.append("share_parse_skipped")
+        elif not parse.get("ok"):
+            blockers.append("share_parse_failed")
+        if browse.get("skipped"):
+            blockers.append("share_browse_skipped")
+        elif not browse.get("ok"):
+            blockers.append("share_browse_failed")
+        if not browse.get("skipped") and "item_count" in browse and int(browse.get("item_count") or 0) <= 0:
+            blockers.append("share_browse_empty")
+    return sorted(set(blockers))
 
 
 def _organize_scan_items(payload: object) -> List[Dict[str, object]]:

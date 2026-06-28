@@ -1948,6 +1948,156 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertFalse(report["browse"]["ok"])
         self.assertEqual(report["browse"]["item_count"], 0)
         self.assertEqual(report["browse"]["api_message"], "cannot browse share")
+        self.assertEqual(report["blockers"], ["share_browse_empty", "share_browse_failed"])
+
+    def test_share_preview_reports_blockers_when_search_request_fails(self) -> None:
+        def fake_urlopen(_request, timeout):
+            raise socket.timeout("timed out")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = preview_mv3_share(
+                "http://mv3.example",
+                "token",
+                "唐诡奇谭",
+                timeout=1,
+            )
+
+        rendered = render_mv3_share_preview_report(report, "markdown")
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["search"]["result_count"], 0)
+        self.assertIn("resource_search_failed", report["blockers"])
+        self.assertIn("share_selection_missing", report["blockers"])
+        self.assertIn("resource_search_failed", rendered)
+
+    def test_share_preview_reports_blocker_for_expected_title_mismatch(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.replace("http://mv3.example", "")
+            if path == "/api/v1/resource-search/search":
+                return FakeResponse({"success": True, "data": {"items": [{"title": "其他剧", "share_link": "https://example.test/s/private"}]}})
+            if path in {"/api/v1/share-transfer/parse", "/api/v1/share-transfer/browse"}:
+                raise AssertionError("title mismatch must stop before share parse/browse")
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = preview_mv3_share(
+                "http://mv3.example",
+                "token",
+                "唐诡奇谭",
+                expected_title_contains="唐诡",
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["selected"]["title"], "其他剧")
+        self.assertIn("expected_title_contains_mismatch", report["blockers"])
+        self.assertNotIn("share_selection_missing", report["blockers"])
+        self.assertTrue(report["parse"]["skipped"])
+        self.assertTrue(report["browse"]["skipped"])
+
+    def test_share_preview_reports_blockers_when_parse_request_fails(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.replace("http://mv3.example", "")
+            if path == "/api/v1/resource-search/search":
+                return FakeResponse({"success": True, "data": {"items": [{"title": "非常检控观", "share_link": "https://example.test/s/private"}]}})
+            if path == "/api/v1/share-transfer/parse":
+                raise socket.timeout("parse timed out")
+            if path == "/api/v1/share-transfer/browse":
+                raise AssertionError("parse failure without share_code must stop before browse")
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = preview_mv3_share(
+                "http://mv3.example",
+                "token",
+                "非常检控观",
+                expected_title_contains="非常检控观",
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("share_parse_failed", report["blockers"])
+        self.assertIn("share_browse_skipped", report["blockers"])
+        self.assertNotIn("share_browse_empty", report["blockers"])
+        self.assertIn("share_code_not_available_for_browse", report["warnings"])
+
+    def test_share_preview_reports_blocker_when_browse_request_fails(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.replace("http://mv3.example", "")
+            if path == "/api/v1/resource-search/search":
+                return FakeResponse({"success": True, "data": {"items": [{"title": "新闻女王", "share_link": "https://example.test/s/private"}]}})
+            if path == "/api/v1/share-transfer/parse":
+                return FakeResponse({"success": True, "data": {"share_code": "parsed-code"}})
+            if path == "/api/v1/share-transfer/browse":
+                raise socket.timeout("browse timed out")
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = preview_mv3_share(
+                "http://mv3.example",
+                "token",
+                "新闻女王",
+                expected_title_contains="新闻女王",
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("share_browse_failed", report["blockers"])
+        self.assertNotIn("share_browse_empty", report["blockers"])
+        self.assertEqual(report["browse"]["error_type"], "TimeoutError")
 
     def test_share_receive_blocks_folder_selection_and_redacts_report(self) -> None:
         seen = []
