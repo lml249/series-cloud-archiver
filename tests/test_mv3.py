@@ -808,6 +808,54 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertTrue(any("/api/v1/files/115/browse" in url for method, url, _body in calls if method == "GET"))
         self.assertNotIn("token", rendered)
 
+    def test_ensure_115_path_resolves_created_folder_when_api_returns_null_data(self) -> None:
+        calls = []
+        folders = {
+            "0": [],
+            "10": [],
+        }
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            calls.append((request.get_method(), request.full_url, request.data.decode("utf-8") if request.data else ""))
+            if request.get_method() == "GET":
+                query = request.full_url.split("?", 1)[1]
+                params = dict(urllib.parse.parse_qsl(query))
+                return FakeResponse({"success": True, "data": folders.get(params["cid"], [])})
+            body = json.loads(request.data.decode("utf-8"))
+            if body["name"] == "未整理":
+                folders["0"].append({"n": "未整理", "cid": "10"})
+            elif body["name"] == "Season 01":
+                folders["10"].append({"n": "Season 01", "cid": "20"})
+            return FakeResponse({"success": True, "data": None})
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = ensure_mv3_115_path("http://mv3.example", "token", "/未整理/Season 01", storage="115-default")
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["final_folder_id"], "20")
+        self.assertEqual([step["resolved_by"] for step in report["steps"]], ["post_create_browse", "post_create_browse"])
+        self.assertEqual(sum(1 for method, _url, _body in calls if method == "POST"), 2)
+        self.assertEqual(sum(1 for method, _url, _body in calls if method == "GET"), 4)
+
     def test_cloud_browse_uses_cloud_browse_and_reports_episode_gaps(self) -> None:
         seen = []
 

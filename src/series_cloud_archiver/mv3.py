@@ -225,6 +225,12 @@ def ensure_mv3_115_path(
         payload = _unwrap_api_payload(parsed)
         api_success = _api_success(parsed)
         folder_id = _extract_folder_id(payload)
+        resolved_by = "create_response" if folder_id else ""
+        if 200 <= status < 300 and api_success and not folder_id:
+            created = _find_115_child_folder(client, parent_id, segment, storage)
+            folder_id = str(created.get("cid") or created.get("file_id") or created.get("id") or "")
+            if folder_id:
+                resolved_by = "post_create_browse"
         steps.append(
             {
                 "path": current_path,
@@ -236,6 +242,7 @@ def ensure_mv3_115_path(
                 "status": status,
                 "response_content_type": _header(headers, "content-type"),
                 "folder_id": folder_id,
+                "resolved_by": resolved_by,
                 "request": _sanitize_json(body),
                 "response": _sanitize_json(payload if isinstance(payload, (dict, list)) else parsed),
             }
