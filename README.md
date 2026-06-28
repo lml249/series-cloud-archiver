@@ -350,6 +350,48 @@ PYTHONPATH=src python3 -m series_cloud_archiver mp-cleanup-verify \
 
 `mp-cleanup-verify` 是只读体检：它确认 MP 整理历史里不再有目标记录、qB 里不再有目标 hash、本地源目录和 hlink 目录已经不存在、STRM 目录仍然覆盖预期集数。它不会删除、移动、生成 STRM，也不会对 qB 发送任何操作。
 
+## qB/MP 记录缺失时的孤儿清理
+
+如果 MoviePilot 已经没有整理历史，qB 里也不再有对应任务，但本地 hlink 或源目录仍然残留，不能手动 `rm -rf`。先用项目的孤儿清理预览逐季确认。
+
+hlink-only 预览只允许清理一个显式 hlink Season 目录：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver cloud-hlink-orphan-cleanup-preview \
+  --env-file .env \
+  --title 绝命毒师 \
+  --expected-tmdbid 1396 \
+  --hlink-root "/media/hlink/TV/绝命毒师 (2008)/Season 01" \
+  --strm-root "/media/cloud-strm/series/绝命毒师 (2008) {tmdbid=1396}/Season 01" \
+  --expected-episode-count 7 \
+  --expected-episode-min 1 \
+  --expected-episode-max 7 \
+  --required-target-prefix "/已整理/series/绝命毒师 (2008) {tmdbid=1396}/Season" \
+  --cloud-media-folder-id 115-folder-id \
+  --format json \
+  --output reports/cloud-hlink-orphan-preview.json
+```
+
+source-only 预览只允许清理一个显式 qB 源目录：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver cloud-source-orphan-cleanup-preview \
+  --env-file .env \
+  --title 绝命毒师 \
+  --expected-tmdbid 1396 \
+  --source-root "/media/source/Breaking.Bad.S01.2008.1080p.BluRay.x264" \
+  --strm-root "/media/cloud-strm/series/绝命毒师 (2008) {tmdbid=1396}/Season 01" \
+  --expected-episode-count 7 \
+  --expected-episode-min 1 \
+  --expected-episode-max 7 \
+  --required-target-prefix "/已整理/series/绝命毒师 (2008) {tmdbid=1396}/Season" \
+  --cloud-media-folder-id 115-folder-id \
+  --format json \
+  --output reports/cloud-source-orphan-preview.json
+```
+
+这两个预览都会重新验证 STRM 集数和目标前缀、检查云盘媒体目录没有 `.nfo/.jpg/.jpeg/.png/.webp` 元数据旁挂，并扫描 qB 当前任务列表。只要 qB 仍然引用目标文件 inode 或源路径，预览就会阻断。真正执行必须从预览 JSON 报告进入，并显式传入标题、TMDB ID、目标根目录和 `--approve-delete`；执行时会再次预检，成功后只删除那个精确 hlink 或 source 根目录，不操作云盘、STRM、Emby 或其他 qB 任务。
+
 如果 Emby 里还残留旧本地源，优先只通知 STRM 媒体库路径更新并核验旧路径是否消失。批量迁移默认使用这个局部入口，避免慢速全库扫描，也避免把云盘实体目录带进刮削范围：
 
 ```bash

@@ -56,6 +56,12 @@ Cleanup can be implemented only when all of these are true:
 If any condition is missing, weak, stale, or contradictory, the orchestrator
 must preserve local data.
 
+When MoviePilot history and qBittorrent tasks are already gone, orphan cleanup
+is allowed only through explicit per-season preview/execute reports. Those
+reports must recheck STRM coverage, cloud-media sidecar absence, qB current task
+file lists and source paths, and a narrow hlink or source root before deleting
+that one root. This path must never be used for a normal seeded qB task.
+
 ## Cloud media scraping boundary
 
 Cloud media directories are transfer and STRM-generation sources only. Scraping

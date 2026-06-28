@@ -10,8 +10,10 @@ from series_cloud_archiver.hlink_cleanup import (
     cleanup_empty_hlink_root,
     execute_cloud_hlink_orphan_cleanup,
     execute_cloud_hlink_cleanup,
+    execute_cloud_source_orphan_cleanup,
     preview_cloud_hlink_orphan_cleanup,
     preview_cloud_hlink_cleanup,
+    preview_cloud_source_orphan_cleanup,
 )
 from series_cloud_archiver.models import QBTorrentEvidence
 
@@ -828,6 +830,191 @@ class CloudHlinkCleanupTest(unittest.TestCase):
                         "1",
                         "--expected-hlink-root",
                         "/example/hlink/Show",
+                    ]
+                )
+
+    def test_source_orphan_preview_allows_untracked_source_with_complete_strm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_root = tmp_path / "volume3" / "TV" / "Breaking.Bad.S01"
+            write(source_root / "Breaking.Bad.S01E01.mkv")
+            write(source_root / "Breaking.Bad.S01E02.mkv")
+            strm_root = tmp_path / "volume4" / "mv3" / "strm" / "series" / "绝命毒师 (2008) {tmdbid=1396}" / "Season 01"
+            write(strm_root / "绝命毒师.S01E01.strm", "/已整理/series/绝命毒师 (2008) {tmdbid=1396}/Season 01/E01.mkv")
+            write(strm_root / "绝命毒师.S01E02.strm", "/已整理/series/绝命毒师 (2008) {tmdbid=1396}/Season 01/E02.mkv")
+
+            class EmptyClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", EmptyClient), patch(
+                "series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[]
+            ):
+                report = preview_cloud_source_orphan_cleanup(
+                    "绝命毒师",
+                    str(source_root),
+                    str(strm_root),
+                    expected_tmdbid=1396,
+                    expected_episode_count=2,
+                    expected_episode_min=1,
+                    expected_episode_max=2,
+                    qb_base_url="http://qb.example",
+                    required_target_prefix="/已整理/series/绝命毒师 (2008) {tmdbid=1396}/Season",
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["ready_for_execute"])
+        self.assertEqual(report["source"]["video_count"], 2)
+        self.assertEqual(report["qbittorrent"]["linked_count"], 0)
+
+    def test_source_orphan_preview_blocks_when_qb_content_path_matches_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_root = tmp_path / "volume3" / "TV" / "Breaking.Bad.S01"
+            source_file = source_root / "Breaking.Bad.S01E01.mkv"
+            write(source_file)
+            strm_root = tmp_path / "strm" / "series" / "绝命毒师" / "Season 01"
+            write(strm_root / "绝命毒师.S01E01.strm", "/已整理/series/绝命毒师/Season 01/E01.mkv")
+            torrent = QBTorrentEvidence(
+                name="Breaking.Bad.S01",
+                hash="5555555555555555555555555555555555555555",
+                state="stalledUP",
+                save_path=str(tmp_path / "volume3" / "TV"),
+                content_path=str(source_root),
+                progress=1.0,
+                seeding_time_seconds=86400 * 30,
+                seed_days=30.0,
+                size_bytes=source_file.stat().st_size,
+            )
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return [
+                        {
+                            "name": torrent.name,
+                            "hash": torrent.hash,
+                            "state": torrent.state,
+                            "save_path": torrent.save_path,
+                            "content_path": torrent.content_path,
+                            "progress": torrent.progress,
+                            "seeding_time": torrent.seeding_time_seconds,
+                            "size": torrent.size_bytes,
+                        }
+                    ]
+
+                def torrent_files(self, _torrent_hash):
+                    return [{"name": "Breaking.Bad.S01/Breaking.Bad.S01E01.mkv", "size": source_file.stat().st_size}]
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", FakeClient), patch(
+                "series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[torrent]
+            ):
+                report = preview_cloud_source_orphan_cleanup(
+                    "绝命毒师",
+                    str(source_root),
+                    str(strm_root),
+                    expected_tmdbid=1396,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                    required_target_prefix="/已整理/series",
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("qb_linked_torrent_present", report["blockers"])
+        self.assertEqual(report["qbittorrent"]["hashes"], ["5555555555555555555555555555555555555555"])
+
+    def test_source_orphan_execute_rechecks_and_deletes_explicit_source_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_root = tmp_path / "volume3" / "TV" / "Breaking.Bad.S01"
+            write(source_root / "Breaking.Bad.S01E01.mkv")
+            strm_root = tmp_path / "strm" / "series" / "绝命毒师" / "Season 01"
+            write(strm_root / "绝命毒师.S01E01.strm", "/已整理/series/绝命毒师/Season 01/E01.mkv")
+            preview = {
+                "mode": "cloud-source-orphan-cleanup-preview",
+                "title": "绝命毒师",
+                "ready_for_execute": True,
+                "blockers": [],
+                "warnings": [],
+                "expected": {
+                    "tmdbid": 1396,
+                    "episode_count": 1,
+                    "episode_min": 1,
+                    "episode_max": 1,
+                    "required_target_prefix": "/已整理/series",
+                    "forbidden_target_prefixes": [],
+                },
+                "source": {"path": str(source_root)},
+                "strm": {"strm": {"roots": [{"path": str(strm_root)}]}},
+                "qbittorrent": {"hashes": [], "linked_count": 0},
+            }
+
+            class EmptyClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", EmptyClient), patch(
+                "series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[]
+            ):
+                report = execute_cloud_source_orphan_cleanup(preview, "http://qb.example")
+
+        self.assertTrue(report["ok"])
+        self.assertFalse(source_root.exists())
+        self.assertTrue(report["current_precheck"]["ok"])
+        self.assertTrue(report["verification"]["ok"])
+
+    def test_cli_requires_approval_before_source_orphan_cleanup_execute(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            preview_file = tmp_path / "source-preview.json"
+            env_file.write_text("QB_BASE_URL=http://qb.example\n", encoding="utf-8")
+            preview_file.write_text(
+                json.dumps(
+                    {
+                        "mode": "cloud-source-orphan-cleanup-preview",
+                        "title": "Show",
+                        "expected": {"tmdbid": 1},
+                        "source": {"path": "/example/source/Show.S01"},
+                        "qbittorrent": {"hashes": [], "linked_count": 0},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(SystemExit):
+                main(
+                    [
+                        "cloud-source-orphan-cleanup-execute",
+                        "--env-file",
+                        str(env_file),
+                        "--preview-report",
+                        str(preview_file),
+                        "--expected-title",
+                        "Show",
+                        "--expected-tmdbid",
+                        "1",
+                        "--expected-source-root",
+                        "/example/source/Show.S01",
                     ]
                 )
 

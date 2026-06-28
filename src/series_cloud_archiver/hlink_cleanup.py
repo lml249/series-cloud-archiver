@@ -277,6 +277,134 @@ def preview_cloud_hlink_orphan_cleanup(
     }
 
 
+def preview_cloud_source_orphan_cleanup(
+    title: str,
+    source_root: str,
+    strm_root: str,
+    expected_tmdbid: int = 0,
+    expected_episode_count: int = 0,
+    expected_episode_min: int = 0,
+    expected_episode_max: int = 0,
+    qb_base_url: str = "",
+    qb_user: str = "",
+    qb_pass: str = "",
+    path_aliases: Optional[Dict[str, str]] = None,
+    required_target_prefix: str = "",
+    forbidden_target_prefixes: Optional[Sequence[str]] = None,
+    mv3_base_url: str = "",
+    mv3_token: str = "",
+    cloud_media_path: str = "",
+    cloud_media_folder_id: str = "",
+    cloud_media_storage: str = "115-default",
+) -> Dict[str, object]:
+    aliases = _normalize_aliases(path_aliases or {})
+    blockers: List[str] = []
+    warnings: List[str] = []
+    source_check = _source_root_check(source_root)
+    if not source_check.get("exists"):
+        blockers.append("source_root_missing")
+    if source_check.get("non_video_count"):
+        warnings.append("source_root_contains_non_video_files")
+    if source_check.get("video_count") != expected_episode_count and expected_episode_count:
+        blockers.append("source_video_count_mismatch")
+    if source_check.get("exists") and not source_check.get("narrow"):
+        blockers.append("source_root_not_narrow")
+    if expected_episode_count and int(source_check.get("video_count") or 0) > 0:
+        expected_episodes = set(range(expected_episode_min, expected_episode_max + 1))
+        source_episodes = {int(item) for item in source_check.get("episodes", []) if int(item) > 0} if isinstance(source_check.get("episodes"), list) else set()
+        if not source_episodes:
+            blockers.append("source_episode_signal_missing")
+        elif source_episodes != expected_episodes:
+            blockers.append("source_episode_set_mismatch")
+
+    strm_report = verify_strm_paths(
+        title,
+        [strm_root],
+        expected_episode_count=expected_episode_count,
+        expected_episode_min=expected_episode_min,
+        expected_episode_max=expected_episode_max,
+        required_target_prefix=required_target_prefix,
+        forbidden_target_prefixes=forbidden_target_prefixes or [],
+    )
+    if not strm_report.get("ok"):
+        blockers.extend(str(blocker) for blocker in strm_report.get("blockers", []) if blocker)
+    warnings.extend(str(warning) for warning in strm_report.get("warnings", []) if warning)
+
+    cloud_media_report: Dict[str, object] = {"skipped": True}
+    if cloud_media_path or cloud_media_folder_id:
+        if not mv3_base_url or not mv3_token:
+            blockers.append("mv3_credentials_required_for_cloud_media_sidecar_verify")
+            cloud_media_report = {"skipped": True, "reason": "mv3_credentials_required"}
+        else:
+            try:
+                cloud_media_report = verify_mv3_cloud_media_sidecars(
+                    mv3_base_url,
+                    mv3_token,
+                    path=cloud_media_path,
+                    folder_id=cloud_media_folder_id,
+                    storage=cloud_media_storage,
+                )
+            except Exception as exc:  # pragma: no cover - exercised by integration
+                cloud_media_report = {"ok": False, "error": f"{type(exc).__name__}:{exc}"}
+                blockers.append("cloud_media_sidecar_verify_failed")
+            if cloud_media_report and not cloud_media_report.get("ok"):
+                blockers.extend(str(blocker) for blocker in cloud_media_report.get("blockers", []) if blocker)
+            warnings.extend(str(warning) for warning in cloud_media_report.get("warnings", []) if warning)
+
+    inode_matches: List[Dict[str, object]] = []
+    path_matches: List[Dict[str, object]] = []
+    qb_error = ""
+    qb_scanned_count = 0
+    if not qb_base_url:
+        blockers.append("qb_base_url_required")
+    else:
+        try:
+            qb_scan = _precise_qb_file_inode_matches(qb_base_url, qb_user, qb_pass, source_check, aliases)
+            qb_scanned_count = int(qb_scan.get("scanned_count") or 0)
+            inode_matches = qb_scan.get("matches", []) if isinstance(qb_scan.get("matches"), list) else []
+            path_scan = _qb_source_path_matches(qb_base_url, qb_user, qb_pass, source_root, aliases)
+            qb_scanned_count = max(qb_scanned_count, int(path_scan.get("scanned_count") or 0))
+            path_matches = path_scan.get("matches", []) if isinstance(path_scan.get("matches"), list) else []
+        except Exception as exc:  # pragma: no cover - exercised by integration
+            qb_error = f"{type(exc).__name__}:{exc}"
+            blockers.append("qb_torrent_check_failed")
+    qb_matches = _merge_qb_match_rows(inode_matches + path_matches)
+    if qb_matches:
+        blockers.append("qb_linked_torrent_present")
+
+    return {
+        "mode": "cloud-source-orphan-cleanup-preview",
+        "title": title,
+        "expected": {
+            "tmdbid": expected_tmdbid,
+            "episode_count": expected_episode_count,
+            "episode_min": expected_episode_min,
+            "episode_max": expected_episode_max,
+            "required_target_prefix": required_target_prefix,
+            "forbidden_target_prefixes": list(forbidden_target_prefixes or []),
+            "cloud_media_path": cloud_media_path,
+            "cloud_media_folder_id": cloud_media_folder_id,
+            "cloud_media_storage": cloud_media_storage,
+        },
+        "ok": not blockers,
+        "ready_for_execute": not blockers,
+        "source": source_check,
+        "strm": strm_report,
+        "cloud_media": cloud_media_report,
+        "qbittorrent": {
+            "configured": bool(qb_base_url),
+            "error": qb_error,
+            "scanned_count": qb_scanned_count,
+            "linked_count": len(qb_matches),
+            "hashes": sorted({str(row.get("hash") or "") for row in qb_matches if row.get("hash")}),
+            "matches": qb_matches,
+        },
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "safety": "readonly preview only; verifies STRM replacement, checks cloud media has no metadata sidecars, and scans qBittorrent before allowing one explicit orphan source root cleanup",
+    }
+
+
 def execute_cloud_hlink_cleanup(
     preview: Dict[str, object],
     qb_base_url: str,
@@ -449,6 +577,87 @@ def execute_cloud_hlink_orphan_cleanup(
     }
 
 
+def execute_cloud_source_orphan_cleanup(
+    preview: Dict[str, object],
+    qb_base_url: str,
+    qb_user: str = "",
+    qb_pass: str = "",
+    path_aliases: Optional[Dict[str, str]] = None,
+    mv3_base_url: str = "",
+    mv3_token: str = "",
+) -> Dict[str, object]:
+    blockers: List[str] = []
+    if preview.get("mode") != "cloud-source-orphan-cleanup-preview":
+        blockers.append("preview_mode_not_supported")
+    if not preview.get("ready_for_execute"):
+        blockers.append("preview_not_ready_for_execute")
+    if preview.get("blockers"):
+        blockers.append("preview_has_blockers")
+    if not qb_base_url:
+        blockers.append("qb_base_url_required")
+
+    source = preview.get("source") if isinstance(preview.get("source"), dict) else {}
+    expected = preview.get("expected") if isinstance(preview.get("expected"), dict) else {}
+    strm_report = preview.get("strm") if isinstance(preview.get("strm"), dict) else {}
+    strm_roots = [root.get("path") for root in strm_report.get("strm", {}).get("roots", [])] if isinstance(strm_report.get("strm"), dict) else []
+    source_root = str(source.get("path") or "")
+    strm_root = str(strm_roots[0] or "") if strm_roots else ""
+    if not source_root:
+        blockers.append("source_root_required")
+    if not strm_root:
+        blockers.append("strm_root_required")
+
+    current_precheck: Dict[str, object] = {}
+    removed_source: Dict[str, object] = {}
+    verification: Dict[str, object] = {}
+    if not blockers:
+        current_precheck = preview_cloud_source_orphan_cleanup(
+            str(preview.get("title") or ""),
+            source_root,
+            strm_root,
+            expected_tmdbid=int(expected.get("tmdbid") or 0),
+            expected_episode_count=int(expected.get("episode_count") or 0),
+            expected_episode_min=int(expected.get("episode_min") or 0),
+            expected_episode_max=int(expected.get("episode_max") or 0),
+            qb_base_url=qb_base_url,
+            qb_user=qb_user,
+            qb_pass=qb_pass,
+            path_aliases=path_aliases,
+            required_target_prefix=str(expected.get("required_target_prefix") or ""),
+            forbidden_target_prefixes=expected.get("forbidden_target_prefixes") if isinstance(expected.get("forbidden_target_prefixes"), list) else [],
+            mv3_base_url=mv3_base_url,
+            mv3_token=mv3_token,
+            cloud_media_path=str(expected.get("cloud_media_path") or ""),
+            cloud_media_folder_id=str(expected.get("cloud_media_folder_id") or ""),
+            cloud_media_storage=str(expected.get("cloud_media_storage") or "115-default"),
+        )
+        if not current_precheck.get("ready_for_execute"):
+            blockers.append("current_precheck_not_ready_for_execute")
+
+    if not blockers:
+        removed_source = _remove_source_root(source_root)
+        if not removed_source.get("ok"):
+            blockers.append("source_delete_failed")
+
+    if not blockers:
+        verification = _verify_after_source_orphan_execute(preview)
+        if not verification.get("ok"):
+            blockers.extend(str(blocker) for blocker in verification.get("blockers", []) if blocker)
+
+    return {
+        "mode": "cloud-source-orphan-cleanup-execute",
+        "title": preview.get("title", ""),
+        "ok": not blockers,
+        "approved": True,
+        "current_precheck": current_precheck,
+        "source_delete": removed_source,
+        "verification": verification,
+        "blockers": sorted(set(blockers)),
+        "warnings": preview.get("warnings", []) if isinstance(preview.get("warnings"), list) else [],
+        "safety": "approved source-only cleanup; qBittorrent is rechecked immediately before deleting only the explicit orphan source root; STRM, cloud media, hlink, and Emby are not modified",
+    }
+
+
 def cleanup_empty_hlink_root(title: str, hlink_root: str, expected_tmdbid: int = 0, approve_delete: bool = False) -> Dict[str, object]:
     blockers: List[str] = []
     hlink_check = _hlink_root_check(hlink_root)
@@ -476,6 +685,34 @@ def cleanup_empty_hlink_root(title: str, hlink_root: str, expected_tmdbid: int =
         "blockers": sorted(set(blockers)),
         "warnings": [],
         "safety": "approved cleanup only for one explicit hlink root that contains no video files; qBittorrent, STRM, cloud files, and Emby are not modified",
+    }
+
+
+def _verify_after_source_orphan_execute(preview: Dict[str, object]) -> Dict[str, object]:
+    blockers: List[str] = []
+    source = preview.get("source") if isinstance(preview.get("source"), dict) else {}
+    expected = preview.get("expected") if isinstance(preview.get("expected"), dict) else {}
+    strm_report = preview.get("strm") if isinstance(preview.get("strm"), dict) else {}
+    strm_roots = [root.get("path") for root in strm_report.get("strm", {}).get("roots", [])] if isinstance(strm_report.get("strm"), dict) else []
+    strm_verify = verify_strm_paths(
+        str(preview.get("title") or ""),
+        [str(path) for path in strm_roots if path],
+        expected_episode_count=int(expected.get("episode_count") or 0),
+        expected_episode_min=int(expected.get("episode_min") or 0),
+        expected_episode_max=int(expected.get("episode_max") or 0),
+        required_target_prefix=str(expected.get("required_target_prefix") or ""),
+        forbidden_target_prefixes=expected.get("forbidden_target_prefixes") if isinstance(expected.get("forbidden_target_prefixes"), list) else [],
+    )
+    if not strm_verify.get("ok"):
+        blockers.extend(str(blocker) for blocker in strm_verify.get("blockers", []) if blocker)
+    source_exists = Path(str(source.get("path") or "")).exists()
+    if source_exists:
+        blockers.append("source_root_still_exists")
+    return {
+        "ok": not blockers,
+        "strm": strm_verify,
+        "source_exists": source_exists,
+        "blockers": sorted(set(blockers)),
     }
 
 
@@ -511,6 +748,7 @@ def render_cloud_hlink_cleanup(report: Dict[str, object], output_format: str) ->
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
     hlink = report.get("hlink") if isinstance(report.get("hlink"), dict) else {}
+    source = report.get("source") if isinstance(report.get("source"), dict) else {}
     qb = report.get("qbittorrent") if isinstance(report.get("qbittorrent"), dict) else {}
     cloud_media = report.get("cloud_media") if isinstance(report.get("cloud_media"), dict) else {}
     current_cloud_media = report.get("current_cloud_media") if isinstance(report.get("current_cloud_media"), dict) else {}
@@ -525,6 +763,8 @@ def render_cloud_hlink_cleanup(report: Dict[str, object], output_format: str) ->
         f"- Ready: `{bool(report.get('ready_for_execute', report.get('ok')))}`",
         f"- hlink root: `{hlink.get('path', '')}`",
         f"- hlink videos: `{hlink.get('video_count', 0)}`",
+        f"- source root: `{source.get('path', '')}`",
+        f"- source videos: `{source.get('video_count', 0)}`",
         f"- qB matches: `{qb.get('matched_count', 0)}`",
         f"- qB hashes: `{qb.get('hashes', [])}`",
         f"- Cloud metadata sidecars: `{cloud_scan.get('metadata_sidecar_file_count', 0)}`",
@@ -603,6 +843,35 @@ def _hlink_root_check(hlink_root: str) -> Dict[str, object]:
     return {
         "path": hlink_root,
         "exists": True,
+        "file_count": len(files),
+        "video_count": len(videos),
+        "non_video_count": len(files) - len(videos),
+        "episodes": signal.episodes,
+        "seasons": signal.seasons,
+        "total_bytes": sum(int(row["size_bytes"]) for row in inode_rows),
+        "sample_files": [str(item) for item in videos[:8]],
+        "inodes": inode_rows,
+    }
+
+
+def _source_root_check(source_root: str) -> Dict[str, object]:
+    root = Path(source_root)
+    if not root.exists():
+        return {"path": source_root, "exists": False, "narrow": False, "video_count": 0, "file_count": 0, "episodes": [], "sample_files": [], "inodes": []}
+    files = [item for item in root.rglob("*") if item.is_file()]
+    videos = [item for item in files if is_video_file(item)]
+    signal = episode_signal(str(item.relative_to(root)) for item in videos)
+    inode_rows = []
+    for item in videos:
+        try:
+            stat = item.stat()
+        except OSError:
+            continue
+        inode_rows.append({"path": str(item), "device": stat.st_dev, "inode": stat.st_ino, "size_bytes": stat.st_size})
+    return {
+        "path": source_root,
+        "exists": True,
+        "narrow": _is_narrow_source_root(root),
         "file_count": len(files),
         "video_count": len(videos),
         "non_video_count": len(files) - len(videos),
@@ -790,6 +1059,43 @@ def _precise_qb_source_check(match: Dict[str, object]) -> Dict[str, object]:
     }
 
 
+def _qb_source_path_matches(
+    qb_base_url: str,
+    qb_user: str,
+    qb_pass: str,
+    source_root: str,
+    aliases: Dict[str, str],
+) -> Dict[str, object]:
+    rows: List[Dict[str, object]] = []
+    source_variants = _path_variants(source_root, aliases)
+    torrents = fetch_qb_evidence(qb_base_url, qb_user, qb_pass)
+    for torrent in torrents:
+        content_path = str(getattr(torrent, "content_path", "") or "")
+        if not content_path:
+            continue
+        content_variants = _path_variants(content_path, aliases)
+        if not any(_path_is_same_or_inside(candidate, root) for root in source_variants for candidate in content_variants):
+            continue
+        row = _qb_evidence_row(torrent, source_root, aliases)
+        row["match_reason"] = "content_path_matches_source_root"
+        rows.append(row)
+    return {"scanned_count": len(torrents), "matches": rows}
+
+
+def _merge_qb_match_rows(matches: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
+    merged: Dict[str, Dict[str, object]] = {}
+    for row in matches:
+        key = str(row.get("hash") or row.get("name") or json.dumps(row, sort_keys=True, ensure_ascii=False))
+        if key not in merged:
+            merged[key] = dict(row)
+            continue
+        existing = merged[key]
+        reasons = {str(existing.get("match_reason") or "")}
+        reasons.add(str(row.get("match_reason") or "inode_matches_source_root"))
+        existing["match_reason"] = ",".join(sorted(reason for reason in reasons if reason))
+    return list(merged.values())
+
+
 def _candidate_torrents_for_inode_check(torrents: Iterable[object], series: FileSystemSeries) -> List[object]:
     wanted = _title_token_set(series.title)
     if not wanted:
@@ -961,9 +1267,29 @@ def _remove_hlink_root(hlink_root: str) -> Dict[str, object]:
     return {"path": hlink_root, "ok": not root.exists()}
 
 
+def _remove_source_root(source_root: str) -> Dict[str, object]:
+    root = Path(source_root)
+    if not root.exists():
+        return {"path": source_root, "ok": True, "already_missing": True}
+    if not _is_narrow_source_root(root):
+        return {"path": source_root, "ok": False, "error": "source_root_not_narrow"}
+    try:
+        shutil.rmtree(root)
+    except OSError as exc:
+        return {"path": source_root, "ok": False, "error": f"{type(exc).__name__}:{exc}"}
+    return {"path": source_root, "ok": not root.exists()}
+
+
 def _is_narrow_hlink_root(path: Path) -> bool:
     name = path.name.strip()
     if not name or name in {"TV", "Movies", "Movie", "hlink", "downloads", "download"}:
+        return False
+    return len(path.parts) >= 4
+
+
+def _is_narrow_source_root(path: Path) -> bool:
+    name = path.name.strip()
+    if not name or name in {"TV", "Movies", "Movie", "hlink", "downloads", "download", "volume3", "volume4"}:
         return False
     return len(path.parts) >= 4
 
@@ -981,3 +1307,22 @@ def _map_path(path: str, aliases: Dict[str, str]) -> str:
         if normalized == target or normalized.startswith(target + "/"):
             return source + normalized[len(target) :]
     return normalized
+
+
+def _path_variants(path: str, aliases: Dict[str, str]) -> Set[str]:
+    normalized = str(path or "").rstrip("/")
+    if not normalized:
+        return set()
+    variants = {normalized}
+    for source, target in aliases.items():
+        if normalized == source or normalized.startswith(source + "/"):
+            variants.add(target + normalized[len(source) :])
+        if normalized == target or normalized.startswith(target + "/"):
+            variants.add(source + normalized[len(target) :])
+    return {item.rstrip("/") for item in variants if item}
+
+
+def _path_is_same_or_inside(candidate: str, root: str) -> bool:
+    normalized_candidate = str(candidate or "").rstrip("/")
+    normalized_root = str(root or "").rstrip("/")
+    return bool(normalized_candidate and normalized_root and (normalized_candidate == normalized_root or normalized_candidate.startswith(normalized_root + "/")))
