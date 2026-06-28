@@ -454,7 +454,7 @@ def _fake_mv3_sidecar_cleanup_response(request, deleted=False):
     raise AssertionError(f"unexpected url: {request.full_url}")
 
 
-def _fake_mv3_duplicate_video_cleanup_response(request, deleted=False, empty_info=False):
+def _fake_mv3_duplicate_video_cleanup_response(request, deleted=False, empty_info=False, raw_115_names=False):
     class FakeResponse:
         status = 200
 
@@ -500,15 +500,16 @@ def _fake_mv3_duplicate_video_cleanup_response(request, deleted=False, empty_inf
         )
     if parsed.path.endswith("/api/v1/files/cloud/browse"):
         if cid == "season-id":
+            name_key = "fn" if raw_115_names else "name"
             items = [
-                {"name": "Demo - S01E01.mkv", "fid": "video-1", "is_dir": False},
-                {"name": "Demo - S01E02.mkv", "fid": "video-2", "is_dir": False},
+                {name_key: "Demo - S01E01.mkv", "fid": "video-1", "is_dir": False},
+                {name_key: "Demo - S01E02.mkv", "fid": "video-2", "is_dir": False},
             ]
             if not deleted:
                 items.extend(
                     [
-                        {"name": "Demo - S01E01(1).mkv", "fid": "dup-1", "is_dir": False},
-                        {"name": "Demo - S01E02(1).mkv", "fid": "dup-2", "is_dir": False},
+                        {name_key: "Demo - S01E01(1).mkv", "fid": "dup-1", "is_dir": False},
+                        {name_key: "Demo - S01E02(1).mkv", "fid": "dup-2", "is_dir": False},
                     ]
                 )
             return FakeResponse({"success": True, "data": {"items": items}})
@@ -1105,6 +1106,33 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertTrue(report["ok"])
             self.assertEqual(report["folder_id"], "season-id")
             self.assertEqual(report["delete_plan"]["duplicate_video_count"], 2)
+
+    def test_cloud_duplicate_video_cleanup_reads_115_fn_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm" / "Demo" / "Season 1"
+            root.mkdir(parents=True)
+            for episode in (1, 2):
+                (root / f"Demo - S01E{episode:02d}.strm").write_text(
+                    f"/已整理/series/Demo/Season 1/Demo - S01E{episode:02d}.mkv",
+                    encoding="utf-8",
+                )
+
+            def fake_urlopen(request, timeout):
+                return _fake_mv3_duplicate_video_cleanup_response(request, deleted=False, raw_115_names=True)
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                report = cleanup_mv3_cloud_duplicate_videos(
+                    "http://mv3.example",
+                    "token",
+                    season_path="/已整理/series/Demo/Season 1",
+                    strm_root=str(root),
+                    expected_episode_count=2,
+                )
+
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["summary"]["video_file_count"], 4)
+            self.assertEqual(report["summary"]["duplicate_episodes"], [1, 2])
+            self.assertEqual([item["file_id"] for item in report["delete_plan"]["items"]], ["dup-1", "dup-2"])
 
     def test_offline_status_reports_not_ready_until_task_done_and_folder_has_files(self) -> None:
         class FakeResponse:

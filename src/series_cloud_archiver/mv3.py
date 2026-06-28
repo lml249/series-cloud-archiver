@@ -938,7 +938,7 @@ def repair_mv3_wrong_root(
         title_rows = [
             row
             for row in title_rows
-            if title_filter in str(_first_raw_present(row, ["name", "file_name", "filename", "n", "title"]))
+            if title_filter in _cloud_name(row)
         ]
     if not wrong_root_folder.get("exists") and normalized_wrong_root:
         warnings.append("wrong_root_not_found")
@@ -2691,7 +2691,7 @@ def _plan_mv3_wrong_root_title(
     approve_delete_duplicates: bool,
     approve_delete_empty: bool,
 ) -> Dict[str, object]:
-    title = str(_first_raw_present(title_row, ["name", "file_name", "filename", "n", "title"]))
+    title = _cloud_name(title_row)
     title_folder_id = _cloud_file_id(title_row)
     wrong_title_path = f"{wrong_root}/{title}"
     correct_title_path = f"{correct_root}/{title}"
@@ -3259,7 +3259,7 @@ def _mv3_wrong_root_item_verified(
 
 
 def _cloud_name(item: Dict[str, object]) -> str:
-    return str(_first_raw_present(item, ["name", "file_name", "filename", "n", "title"]))
+    return str(_first_raw_present(item, ["name", "file_name", "filename", "fn", "n", "title"]))
 
 
 def _cloud_file_id(item: Dict[str, object]) -> str:
@@ -3401,7 +3401,7 @@ def _cloud_rows(payload: object) -> List[Dict[str, object]]:
 
 
 def _cloud_browse_item_summary(item: Dict[str, object], index: int) -> Dict[str, object]:
-    name = _first_present(item, ["name", "file_name", "filename", "n", "title"])
+    name = _first_present(item, ["name", "file_name", "filename", "fn", "n", "title"])
     return {
         "index": index,
         "name": name,
@@ -3450,7 +3450,7 @@ def _cloud_item_media_kind(item: Dict[str, object]) -> str:
 
 
 def _cloud_info_summary(info: Dict[str, object]) -> Dict[str, object]:
-    name = _first_present(info, ["name", "file_name", "filename", "n", "title"])
+    name = _first_present(info, ["name", "file_name", "filename", "fn", "n", "title"])
     return {
         "name": name,
         "kind": _cloud_item_kind(info),
@@ -4201,7 +4201,7 @@ def _share_receive_items(
 
 
 def _share_item_name(item: Dict[str, object]) -> str:
-    return _first_present(item, ["name", "file_name", "filename", "n", "title"])
+    return _first_present(item, ["name", "file_name", "filename", "fn", "n", "title"])
 
 
 def _share_item_is_video(item: Dict[str, object]) -> bool:
