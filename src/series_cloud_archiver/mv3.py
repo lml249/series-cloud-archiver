@@ -1402,8 +1402,17 @@ def receive_mv3_share(
         browse_selection if isinstance(browse_selection, dict) else {},
         receive_all_files,
     )
+    excluded_non_transfer_items = _share_non_transfer_items_excluded_from_receive(
+        browse_items,
+        browse_selection if isinstance(browse_selection, dict) else {},
+        receive_all_files,
+    )
     if excluded_metadata_sidecars:
         warnings.append("metadata_sidecars_excluded_from_receive")
+    if excluded_non_transfer_items:
+        warnings.append("non_transfer_media_excluded_from_receive")
+    if browse_selection and not receive_all_files and _share_item_kind(browse_selection) == "folder":
+        warnings.append("folder_selection_requires_browse_cid_receive_all_files")
     file_ids = [_share_item_file_id(item) for item in selected_items]
     file_ids = [item for item in file_ids if item]
     if not file_ids:
@@ -1442,6 +1451,7 @@ def receive_mv3_share(
         "episode_count_mismatch",
         "episode_range_incomplete",
         "video_file_count_mismatch",
+        "folder_selection_requires_browse_cid_receive_all_files",
     }
     if normalized_target_path and file_ids and share_code and not (set(warnings) & blocking_warnings):
         receive_body: Dict[str, object] = {
@@ -1482,6 +1492,11 @@ def receive_mv3_share(
         _share_browse_item_summary(item, index)
         for index, item in enumerate(excluded_metadata_sidecars[:50], start=1)
     ]
+    report["excluded_non_transfer_item_count"] = len(excluded_non_transfer_items)
+    report["excluded_non_transfer_items"] = [
+        _share_browse_item_summary(item, index)
+        for index, item in enumerate(excluded_non_transfer_items[:50], start=1)
+    ]
     report["episode_count"] = len(episode_numbers)
     report["episode_min"] = min(episode_numbers) if episode_numbers else None
     report["episode_max"] = max(episode_numbers) if episode_numbers else None
@@ -1496,7 +1511,7 @@ def receive_mv3_share(
     report["storage"] = storage
     report["receive"] = receive_report
     report["warnings"] = warnings
-    report["safety"] = "exactly one approved MV3 share receive request may be sent; selected share item IDs are gated by optional episode coverage checks and metadata scraping sidecars are excluded. Cloud storage is only for transfer and STRM generation; scraping must happen against the STRM library side. No organize/recognize/transfer, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed"
+    report["safety"] = "exactly one approved MV3 share receive request may be sent; selected share item IDs are gated by optional episode coverage checks. Cloud receive only submits video files and subtitle sidecars; folders, metadata scraping sidecars, and other non-transfer files are excluded. Cloud storage is only for transfer and STRM generation; scraping must happen against the STRM library side. No organize/recognize/transfer, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed"
     return report
 
 
@@ -4527,9 +4542,9 @@ def _share_receive_items(
         return [
             item
             for item in browse_items
-            if _share_item_kind(item) == "file" and not _share_item_is_metadata_sidecar(item)
+            if _share_item_is_transfer_media(item)
         ]
-    if browse_selection and not _share_item_is_metadata_sidecar(browse_selection):
+    if browse_selection and _share_item_is_transfer_media(browse_selection):
         return [browse_selection]
     return []
 
@@ -4550,6 +4565,22 @@ def _share_metadata_sidecars_excluded_from_receive(
     return []
 
 
+def _share_non_transfer_items_excluded_from_receive(
+    browse_items: List[Dict[str, object]],
+    browse_selection: Dict[str, object],
+    receive_all_files: bool,
+) -> List[Dict[str, object]]:
+    if receive_all_files:
+        return [
+            item
+            for item in browse_items
+            if not _share_item_is_transfer_media(item)
+        ]
+    if browse_selection and not _share_item_is_transfer_media(browse_selection):
+        return [browse_selection]
+    return []
+
+
 def _share_item_name(item: Dict[str, object]) -> str:
     return _first_present(item, ["name", "file_name", "filename", "fn", "n", "title"])
 
@@ -4564,6 +4595,10 @@ def _share_item_is_sidecar(item: Dict[str, object]) -> bool:
 
 def _share_item_is_metadata_sidecar(item: Dict[str, object]) -> bool:
     return Path(_share_item_name(item)).suffix.lower() in METADATA_SIDECAR_EXTENSIONS
+
+
+def _share_item_is_transfer_media(item: Dict[str, object]) -> bool:
+    return _share_item_kind(item) == "file" and (_share_item_is_video(item) or _share_item_is_sidecar(item))
 
 
 def _share_browse_item_summary(item: Dict[str, object], index: int) -> Dict[str, object]:
