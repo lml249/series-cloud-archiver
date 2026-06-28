@@ -12,6 +12,7 @@ from series_cloud_archiver.mv3 import (
     add_mv3_offline_task,
     browse_mv3_cloud_folder,
     batch_verify_mv3_cloud_media_sidecars,
+    check_mv3_offline_manifest_status,
     check_mv3_offline_task,
     cleanup_mv3_cloud_duplicate_videos,
     cleanup_mv3_cloud_media_sidecars,
@@ -34,6 +35,7 @@ from series_cloud_archiver.mv3 import (
     render_mv3_ensure_path_report,
     render_mv3_instances_report,
     render_mv3_offline_add_report,
+    render_mv3_offline_manifest_status_report,
     render_mv3_offline_status_report,
     render_mv3_organize_transfer_report,
     render_mv3_organize_scan_report,
@@ -900,6 +902,90 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual([step["action"] for step in report["steps"]], ["reused", "created"])
         self.assertEqual(report["steps"][0]["folder_id"], "10")
         self.assertEqual(report["steps"][1]["resolved_by"], "post_create_browse")
+
+    def test_offline_manifest_status_matches_tasks_without_writes(self) -> None:
+        manifest = {
+            "mv3_context": {"cloud_drive_slug": "115-default"},
+            "items": [
+                {
+                    "priority": 1,
+                    "title": "Waiting",
+                    "tmdbid": 111,
+                    "season": 1,
+                    "expected_count": 12,
+                    "size_bytes": 100,
+                    "offline_wp_path": "/未整理",
+                    "proposed_cloud_destination": "/未整理/Waiting/Season 01",
+                    "qb_matches": [{"hash": "abc"}],
+                },
+                {
+                    "priority": 2,
+                    "title": "Done",
+                    "tmdbid": 222,
+                    "season": 1,
+                    "expected_count": 10,
+                    "size_bytes": 200,
+                    "offline_wp_path": "/未整理",
+                    "proposed_cloud_destination": "/未整理/Done/Season 01",
+                    "qb_matches": [{"hash": "def"}],
+                },
+                {
+                    "priority": 3,
+                    "title": "Missing",
+                    "tmdbid": 333,
+                    "season": 1,
+                    "expected_count": 8,
+                    "size_bytes": 300,
+                    "offline_wp_path": "/未整理",
+                    "proposed_cloud_destination": "/未整理/Missing/Season 01",
+                    "qb_matches": [{"hash": "ghi"}],
+                },
+            ],
+        }
+        calls = []
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(
+                    {
+                        "success": True,
+                        "data": {
+                            "tasks": [
+                                {"info_hash": "abc", "name": "Waiting", "status": 1, "status_text": "等待中", "percentDone": 0, "wp_path_id": "root"},
+                                {"info_hash": "def", "name": "Done", "status": 2, "status_text": "下载成功", "percentDone": 100, "file_id": "done-file", "wp_path_id": "root"},
+                            ]
+                        },
+                    }
+                ).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            calls.append((request.get_method(), request.full_url, getattr(request, "data", None)))
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = check_mv3_offline_manifest_status("http://mv3.example", "token", manifest, priorities=[1, 2, 3])
+
+        rendered = render_mv3_offline_manifest_status_report(report, "json")
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["summary"]["submitted_count"], 2)
+        self.assertEqual(report["summary"]["downloaded_count"], 1)
+        self.assertEqual(report["items"][0]["state"], "submitted")
+        self.assertEqual(report["items"][1]["state"], "downloaded")
+        self.assertEqual(report["items"][2]["state"], "not_submitted")
+        self.assertFalse(any(method != "GET" or body for method, _url, body in calls))
+        self.assertNotIn("token", rendered)
 
     def test_cloud_browse_uses_cloud_browse_and_reports_episode_gaps(self) -> None:
         seen = []

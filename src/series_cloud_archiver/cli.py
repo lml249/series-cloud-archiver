@@ -58,6 +58,7 @@ from .mv3 import (
     cleanup_mv3_cloud_media_sidecars,
     ensure_mv3_115_path,
     check_mv3_offline_task,
+    check_mv3_offline_manifest_status,
     execute_mv3_organize_transfer_from_browse_report,
     generate_mv3_strm,
     inspect_mv3_capabilities,
@@ -80,6 +81,7 @@ from .mv3 import (
     render_mv3_ensure_path_report,
     render_mv3_instances_report,
     render_mv3_offline_add_report,
+    render_mv3_offline_manifest_status_report,
     render_mv3_offline_status_report,
     render_mv3_organize_transfer_report,
     render_mv3_organize_scan_report,
@@ -512,6 +514,15 @@ def build_parser() -> argparse.ArgumentParser:
     offline_status_parser.add_argument("--timeout", type=int, default=30, help="Per-request timeout in seconds")
     offline_status_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     offline_status_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    offline_status_plan_parser = subcommands.add_parser("mv3-offline-status-plan", help="Readonly status check for MV3 115 offline tasks from a manifest")
+    offline_status_plan_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    offline_status_plan_parser.add_argument("--manifest", required=True, help="JSON report from plan-mv3-offline")
+    offline_status_plan_parser.add_argument("--priority", type=int, action="append", default=[], help="Only check one manifest priority; can be repeated")
+    offline_status_plan_parser.add_argument("--storage", default="", help="Override MV3 cloud drive slug; defaults to manifest storage or 115-default")
+    offline_status_plan_parser.add_argument("--timeout", type=int, default=30, help="Per-request timeout in seconds")
+    offline_status_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    offline_status_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     resource_search_parser = subcommands.add_parser("mv3-resource-search", help="Search MV3 resource sources without transferring")
     resource_search_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -1732,6 +1743,25 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_offline_status_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mv3-offline-status-plan":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-offline-status-plan requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = check_mv3_offline_manifest_status(
+            config.mv3_base_url,
+            config.mv3_token,
+            load_optional_json_report(args.manifest),
+            priorities=args.priority,
+            storage=args.storage,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_offline_manifest_status_report(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

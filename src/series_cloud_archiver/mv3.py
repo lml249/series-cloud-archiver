@@ -313,6 +313,94 @@ def check_mv3_offline_task(
     }
 
 
+def check_mv3_offline_manifest_status(
+    base_url: str,
+    token: str,
+    manifest: Dict[str, object],
+    priorities: Optional[List[int]] = None,
+    storage: str = "",
+    timeout: int = 30,
+) -> Dict[str, object]:
+    if not isinstance(manifest, dict):
+        raise ValueError("manifest must be a JSON object")
+    raw_items = manifest.get("items")
+    if not isinstance(raw_items, list):
+        raise ValueError("manifest items must be a list")
+
+    wanted = {int(priority) for priority in (priorities or []) if int(priority) > 0}
+    items = [
+        item
+        for item in raw_items
+        if isinstance(item, dict) and (not wanted or int(item.get("priority") or 0) in wanted)
+    ]
+    context = manifest.get("mv3_context") if isinstance(manifest.get("mv3_context"), dict) else {}
+    effective_storage = storage or str(context.get("cloud_drive_slug") or "") or "115-default"
+
+    client = MV3Client(base_url, token, timeout=timeout)
+    query = urllib.parse.urlencode({"storage": effective_storage}) if effective_storage else ""
+    tasks_path = "/api/v1/files/115/offline/tasks" + (f"?{query}" if query else "")
+    task_status, task_headers, task_body = client.get(tasks_path)
+    task_payload = _unwrap_api_payload(_parse_json(task_body.decode("utf-8", "replace")))
+
+    rows = []
+    for item in items:
+        hashes = _manifest_item_hashes(item)
+        task: Dict[str, object] = {}
+        for info_hash in hashes:
+            task = _find_offline_task(task_payload, info_hash)
+            if task:
+                break
+        task_summary = _offline_task_summary(task) if task else {}
+        task_done = _offline_task_done(task)
+        if not task:
+            state = "not_submitted"
+        elif task_done:
+            state = "downloaded"
+        elif str(task.get("status_text") or "") or int(task.get("status") or 0):
+            state = "submitted"
+        else:
+            state = "unknown"
+        rows.append(
+            {
+                "priority": int(item.get("priority") or 0),
+                "title": str(item.get("title") or ""),
+                "tmdbid": int(item.get("tmdbid") or 0),
+                "season": int(item.get("season") or 0),
+                "expected_count": int(item.get("expected_count") or 0),
+                "size_bytes": int(item.get("size_bytes") or 0),
+                "offline_wp_path": str(item.get("offline_wp_path") or item.get("proposed_cloud_destination") or ""),
+                "proposed_cloud_destination": str(item.get("proposed_cloud_destination") or ""),
+                "hashes": hashes,
+                "task_found": bool(task),
+                "state": state,
+                "ready_for_browse": bool(task_done and (task_summary.get("file_id") or task_summary.get("target_folder_id"))),
+                "task": task_summary,
+            }
+        )
+
+    return {
+        "mode": "readonly-mv3-offline-status-plan",
+        "ok": 200 <= task_status < 300,
+        "storage": effective_storage,
+        "selected_priorities": sorted(wanted),
+        "item_count": len(rows),
+        "summary": {
+            "submitted_count": sum(1 for row in rows if row.get("task_found")),
+            "not_submitted_count": sum(1 for row in rows if not row.get("task_found")),
+            "downloaded_count": sum(1 for row in rows if row.get("state") == "downloaded"),
+            "ready_for_browse_count": sum(1 for row in rows if row.get("ready_for_browse")),
+            "waiting_or_running_count": sum(1 for row in rows if row.get("task_found") and row.get("state") != "downloaded"),
+        },
+        "items": rows,
+        "http": {
+            "tasks_status": task_status,
+            "tasks_content_type": _header(task_headers, "content-type"),
+            "tasks_body_bytes": len(task_body),
+        },
+        "safety": "readonly manifest status check only; no offline task, STRM generation, file operation, qBittorrent action, hlink deletion, MP cleanup, or filesystem deletion is performed",
+    }
+
+
 def browse_mv3_cloud_folder(
     base_url: str,
     token: str,
@@ -2913,6 +3001,44 @@ def render_mv3_offline_status_report(report: Dict[str, object], output_format: s
     return "\n".join(lines)
 
 
+def render_mv3_offline_manifest_status_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    lines = [
+        "# MV3 Offline Manifest Status",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Storage: `{report.get('storage', '')}`",
+        f"- Items: `{report.get('item_count', 0)}`",
+        f"- Submitted: `{summary.get('submitted_count', 0)}`",
+        f"- Downloaded: `{summary.get('downloaded_count', 0)}`",
+        f"- Ready for browse: `{summary.get('ready_for_browse_count', 0)}`",
+        f"- Waiting/running: `{summary.get('waiting_or_running_count', 0)}`",
+        "",
+        "| Priority | Title | State | Percent | Status | Target folder ID | Proposed destination |",
+        "| ---: | --- | --- | ---: | --- | --- | --- |",
+    ]
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        task = item.get("task") if isinstance(item.get("task"), dict) else {}
+        lines.append(
+            "| {priority} | {title} | {state} | {percent} | {status} | {folder} | {destination} |".format(
+                priority=item.get("priority") or "",
+                title=_escape(str(item.get("title") or "")),
+                state=_escape(str(item.get("state") or "")),
+                percent=task.get("percent_done", ""),
+                status=_escape(str(task.get("status_text") or "")),
+                folder=_escape(str(task.get("target_folder_id") or "")),
+                destination=_escape(str(item.get("proposed_cloud_destination") or "")),
+            )
+        )
+    lines.append("")
+    lines.append("No write operation was performed.")
+    return "\n".join(lines)
+
+
 def render_mv3_ensure_path_report(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -4292,6 +4418,22 @@ def _find_offline_task(payload: object, info_hash: str) -> Dict[str, object]:
         if isinstance(row, dict) and str(row.get("info_hash") or "").lower() == wanted:
             return row
     return {}
+
+
+def _manifest_item_hashes(item: Dict[str, object]) -> List[str]:
+    hashes = []
+    for row in item.get("qb_matches", []) if isinstance(item.get("qb_matches"), list) else []:
+        if isinstance(row, dict) and str(row.get("hash") or ""):
+            hashes.append(str(row.get("hash") or "").lower())
+    return hashes
+
+
+def _offline_task_done(task: Dict[str, object]) -> bool:
+    if not task:
+        return False
+    if int(task.get("status") or 0) == 2:
+        return True
+    return int(task.get("percentDone") or 0) >= 100 and str(task.get("status_text") or "") == "下载成功"
 
 
 def _offline_task_summary(task: Dict[str, object]) -> Dict[str, object]:
