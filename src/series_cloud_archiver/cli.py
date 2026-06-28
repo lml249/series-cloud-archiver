@@ -53,6 +53,7 @@ from .moviepilot import (
 from .mv3 import (
     add_mv3_offline_task,
     browse_mv3_cloud_folder,
+    cleanup_mv3_cloud_media_sidecars,
     ensure_mv3_115_path,
     check_mv3_offline_task,
     execute_mv3_organize_transfer_from_browse_report,
@@ -66,6 +67,7 @@ from .mv3 import (
     regenerate_mv3_strm_records,
     render_mv3_capabilities_report,
     render_mv3_cloud_browse_report,
+    render_mv3_cloud_media_sidecar_cleanup_report,
     render_mv3_cloud_media_sidecar_verify_report,
     render_mv3_ensure_path_report,
     render_mv3_instances_report,
@@ -671,6 +673,19 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_sidecar_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     cloud_sidecar_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     cloud_sidecar_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    cloud_sidecar_cleanup_parser = subcommands.add_parser("mv3-cloud-media-sidecar-cleanup", help="Dry-run or delete MV3 cloud media metadata sidecars only")
+    cloud_sidecar_cleanup_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    cloud_sidecar_cleanup_parser.add_argument("--folder-id", default="", help="Cloud folder id to clean")
+    cloud_sidecar_cleanup_parser.add_argument("--path", default="", help="Cloud media path to resolve before cleaning")
+    cloud_sidecar_cleanup_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    cloud_sidecar_cleanup_parser.add_argument("--limit", type=int, default=1150, help="Maximum folder items per browse request")
+    cloud_sidecar_cleanup_parser.add_argument("--max-depth", type=int, default=4, help="Maximum recursive folder depth")
+    cloud_sidecar_cleanup_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    cloud_sidecar_cleanup_parser.add_argument("--expected-delete-count", type=int, default=-1, help="Safety check: expected metadata sidecar count, required for approved cleanup")
+    cloud_sidecar_cleanup_parser.add_argument("--approve-delete", action="store_true", help="Required: actually delete selected cloud metadata sidecars")
+    cloud_sidecar_cleanup_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    cloud_sidecar_cleanup_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     wrong_root_parser = subcommands.add_parser("mv3-repair-wrong-root", help="Dry-run or repair MV3 cloud files placed under a duplicated wrong root")
     wrong_root_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -1996,6 +2011,31 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_cloud_media_sidecar_verify_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "mv3-cloud-media-sidecar-cleanup":
+        if args.approve_delete and args.expected_delete_count < 0:
+            parser.error("mv3-cloud-media-sidecar-cleanup requires --expected-delete-count with --approve-delete")
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-cloud-media-sidecar-cleanup requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = cleanup_mv3_cloud_media_sidecars(
+            config.mv3_base_url,
+            config.mv3_token,
+            folder_id=args.folder_id,
+            path=args.path,
+            storage=args.storage,
+            limit=args.limit,
+            max_depth=args.max_depth,
+            timeout=args.timeout,
+            approve_delete=args.approve_delete,
+            expected_delete_count=args.expected_delete_count,
+        )
+        rendered = render_mv3_cloud_media_sidecar_cleanup_report(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

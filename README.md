@@ -463,7 +463,33 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-brows
   --output reports/mv3-organize-transfer-chuhan.json
 ```
 
-`mv3-organize-transfer-from-browse` 只负责把媒体文件交给 MV3 整理并生成 STRM。云盘媒体文件目录不需要额外刮削、也不应生成旁挂 NFO/JPG；后续只让 MoviePilot/Emby 对 STRM 目录刮削入库。
+`mv3-organize-transfer-from-browse` 只负责把媒体文件交给 MV3 整理并生成 STRM。云盘只做转存和 STRM 生成，云盘媒体文件目录不做刮削，也不应生成旁挂 NFO/JPG；后续只让 MoviePilot/Emby 对 STRM 目录刮削入库。
+
+如果发现云盘媒体目录里已经出现 `.nfo/.jpg/.jpeg/.png/.webp` 等刮削旁挂，先用 dry-run 列出将要删除的元数据文件：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-cloud-media-sidecar-cleanup \
+  --env-file .env \
+  --path "/已整理/series/剧名 (2026) {tmdbid=123456}" \
+  --storage 115-default \
+  --format json \
+  --output reports/mv3-cloud-media-sidecar-cleanup-dry-run.json
+```
+
+确认报告里只包含元数据旁挂、没有视频和字幕后，才允许带上预期数量批准删除：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-cloud-media-sidecar-cleanup \
+  --env-file .env \
+  --path "/已整理/series/剧名 (2026) {tmdbid=123456}" \
+  --storage 115-default \
+  --expected-delete-count 2 \
+  --approve-delete \
+  --format json \
+  --output reports/mv3-cloud-media-sidecar-cleanup-execute.json
+```
+
+这个命令只会通过 MV3 删除云盘媒体目录中的元数据旁挂；视频文件和字幕旁挂不会被选中，也不会操作 qB、MP、Emby 或本地文件。
 
 如果之前误把 `--target-dir` 传成 `/已整理/series`，云盘可能出现 `/已整理/series/series/剧名...` 这种重复 `series` 根目录。可以先用错根目录修复命令 dry-run：
 

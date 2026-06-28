@@ -497,6 +497,151 @@ def verify_mv3_cloud_media_sidecars(
     }
 
 
+def cleanup_mv3_cloud_media_sidecars(
+    base_url: str,
+    token: str,
+    path: str = "",
+    folder_id: str = "",
+    storage: str = "115-default",
+    limit: int = 1150,
+    max_depth: int = 4,
+    timeout: int = 60,
+    approve_delete: bool = False,
+    expected_delete_count: int = -1,
+) -> Dict[str, object]:
+    client = MV3Client(base_url, token, timeout=timeout)
+    warnings: List[str] = []
+    blockers: List[str] = []
+    normalized_path = _normalize_cloud_path(path) if path else ""
+    root_id = str(folder_id or "")
+    info: Dict[str, object] = {}
+    info_status = 0
+    info_content_type = ""
+    if not root_id and normalized_path:
+        info, info_status, info_content_type = _read_cloud_info_status(client, "", normalized_path, storage)
+        root_id = _extract_folder_id(info)
+        if not info:
+            blockers.append("cloud_media_path_not_found")
+    if not root_id:
+        blockers.append("cloud_media_folder_required")
+
+    scan = _empty_cloud_sidecar_scan()
+    if root_id:
+        scan = _scan_mv3_cloud_media_sidecars(
+            client,
+            root_id,
+            normalized_path,
+            storage,
+            limit=max(1, limit),
+            max_depth=max(0, max_depth),
+        )
+        warnings.extend(str(warning) for warning in scan.get("warnings", []) if warning)
+        if scan.get("truncated"):
+            blockers.append("cloud_media_scan_truncated")
+
+    metadata_sidecars = [
+        item
+        for item in scan.get("metadata_sidecars", [])
+        if isinstance(item, dict) and str(item.get("file_id") or "")
+    ]
+    metadata_count = int(scan.get("metadata_sidecar_file_count") or 0)
+    delete_ids = [str(item.get("file_id") or "") for item in metadata_sidecars]
+    if metadata_count != len(delete_ids):
+        blockers.append("metadata_sidecar_file_ids_incomplete")
+    if expected_delete_count >= 0 and metadata_count != expected_delete_count:
+        blockers.append("expected_delete_count_mismatch")
+
+    operation: Dict[str, object] = {"skipped": True, "reason": "dry_run"}
+    post_scan: Dict[str, object] = {}
+    if approve_delete:
+        if metadata_count <= 0:
+            operation = {"skipped": True, "reason": "no_metadata_sidecars"}
+        elif not blockers:
+            operation = _mv3_delete_115(client, delete_ids, storage)
+            post_scan = _scan_mv3_cloud_media_sidecars(
+                client,
+                root_id,
+                normalized_path,
+                storage,
+                limit=max(1, limit),
+                max_depth=max(0, max_depth),
+            )
+            if int(post_scan.get("metadata_sidecar_file_count") or 0) > 0:
+                blockers.append("post_delete_metadata_sidecar_still_present")
+            if post_scan.get("truncated"):
+                blockers.append("post_delete_cloud_media_scan_truncated")
+            warnings.extend(str(warning) for warning in post_scan.get("warnings", []) if warning)
+        else:
+            operation = {"skipped": True, "reason": "blocked"}
+
+    ok = not blockers and (not approve_delete or bool(operation.get("ok")) or metadata_count == 0)
+    return {
+        "mode": "mv3-cloud-media-sidecar-cleanup-result",
+        "ok": ok,
+        "dry_run": not approve_delete,
+        "path": normalized_path,
+        "folder_id": root_id,
+        "storage": storage,
+        "limit": limit,
+        "max_depth": max_depth,
+        "info_status": info_status,
+        "info_content_type": info_content_type,
+        "folder_info": _cloud_info_summary(info) if info else {},
+        "delete_plan": {
+            "metadata_sidecar_count": metadata_count,
+            "expected_delete_count": expected_delete_count,
+            "file_ids": delete_ids,
+            "items": metadata_sidecars,
+        },
+        "scan": scan,
+        "operation": operation,
+        "post_scan": post_scan,
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "safety": (
+            "default dry-run; approved execution deletes only MV3 cloud media metadata sidecars "
+            "(.nfo/.jpg/.jpeg/.png/.webp) discovered under the requested cloud media folder. "
+            "Video files and subtitle sidecars are never selected. Cloud storage is only for transfer and STRM generation; "
+            "scraping must happen against the STRM library side."
+        ),
+    }
+
+
+def render_mv3_cloud_media_sidecar_cleanup_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    plan = report.get("delete_plan") if isinstance(report.get("delete_plan"), dict) else {}
+    operation = report.get("operation") if isinstance(report.get("operation"), dict) else {}
+    lines = [
+        "# MV3 Cloud Media Sidecar Cleanup",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Dry run: `{bool(report.get('dry_run'))}`",
+        f"- Path: `{report.get('path', '')}`",
+        f"- Folder ID: `{report.get('folder_id', '')}`",
+        f"- Storage: `{report.get('storage', '')}`",
+        f"- Metadata sidecars planned: `{plan.get('metadata_sidecar_count', 0)}`",
+        f"- Expected delete count: `{plan.get('expected_delete_count', -1)}`",
+        f"- Delete submitted: `{bool(operation.get('ok'))}`",
+        "- Safety: only metadata sidecars are selected; videos and subtitles are not selected.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    items = plan.get("items") if isinstance(plan.get("items"), list) else []
+    if items:
+        lines.extend(["", "## Planned Metadata Sidecar Deletes", ""])
+        for item in items[:50]:
+            if isinstance(item, dict):
+                lines.append(f"- `{item.get('path', '')}`")
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    return "\n".join(lines)
+
+
 def render_mv3_cloud_media_sidecar_verify_report(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -1129,7 +1274,12 @@ def execute_mv3_organize_transfer_from_browse_report(
         "completion_verification": completion_verification,
         "warnings": warnings,
         "blockers": sorted(set(blockers)),
-        "safety": "approved MV3 organize transfer; request is built only from a complete readonly cloud browse report and sends one /api/v1/organize/transfer call; no qBittorrent action, hlink deletion, local filesystem deletion, or MP cleanup is performed",
+        "safety": (
+            "approved MV3 organize transfer; request is built only from video files in a complete readonly cloud browse report "
+            "and sends one /api/v1/organize/transfer call. Cloud storage is used only for transfer and STRM generation; "
+            "cloud media metadata sidecars are not copied, and scraping must happen against the STRM library side. "
+            "No qBittorrent action, hlink deletion, local filesystem deletion, or MP cleanup is performed"
+        ),
     }
 
 
@@ -1223,7 +1373,11 @@ def generate_mv3_strm(
         "generate": generate_report,
         "warnings": warnings,
         "blockers": sorted(set(blockers)),
-        "safety": "approved MV3 STRM generation only; no cloud media move/delete, qBittorrent action, hlink deletion, local filesystem deletion, or MP cleanup is performed",
+        "safety": (
+            "approved MV3 STRM generation only; cloud storage remains the source for STRM files, not the scraping target. "
+            "Scraping must happen against the STRM library side; no cloud media move/delete, qBittorrent action, "
+            "hlink deletion, local filesystem deletion, or MP cleanup is performed"
+        ),
     }
 
 
@@ -1244,7 +1398,7 @@ def render_mv3_strm_generate_report(report: Dict[str, object], output_format: st
         f"- Organize: `{bool(report.get('organize'))}`",
         f"- Generate OK: `{bool(generate.get('ok'))}`",
         f"- Generate HTTP status: `{generate.get('status', '')}`",
-        "- Safety: one approved MV3 STRM generate request only; no qB, hlink, local filesystem, or MP cleanup was performed.",
+        "- Safety: one approved MV3 STRM generate request only; cloud storage remains the source for STRM files, and scraping must happen against the STRM library side.",
     ]
     blockers = report.get("blockers")
     if isinstance(blockers, list) and blockers:
@@ -1753,7 +1907,7 @@ def render_mv3_organize_transfer_report(report: Dict[str, object], output_format
         f"- Transfer OK: `{bool(transfer.get('ok'))}`",
         f"- Transfer HTTP status: `{transfer.get('status', '')}`",
         f"- Completion status: `{completion.get('status', '')}`",
-        "- Safety: one approved MV3 organize transfer only; no qB, hlink, local filesystem, or MP cleanup was performed.",
+        "- Safety: one approved MV3 organize transfer only; only video files are submitted, cloud metadata sidecars are not copied, and scraping must happen against the STRM library side.",
     ]
     next_steps = completion.get("required_followup")
     if isinstance(next_steps, list) and next_steps:
@@ -2689,6 +2843,21 @@ def _scan_mv3_cloud_media_sidecars(
         "folders": folders[:50],
         "truncated": truncated,
         "warnings": warnings,
+    }
+
+
+def _empty_cloud_sidecar_scan() -> Dict[str, object]:
+    return {
+        "visited_folder_count": 0,
+        "file_count": 0,
+        "video_file_count": 0,
+        "subtitle_sidecar_file_count": 0,
+        "metadata_sidecar_file_count": 0,
+        "other_file_count": 0,
+        "metadata_sidecars": [],
+        "folders": [],
+        "truncated": False,
+        "warnings": [],
     }
 
 

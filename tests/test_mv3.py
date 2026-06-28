@@ -12,6 +12,7 @@ from series_cloud_archiver.mv3 import (
     add_mv3_offline_task,
     browse_mv3_cloud_folder,
     check_mv3_offline_task,
+    cleanup_mv3_cloud_media_sidecars,
     ensure_mv3_115_path,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
@@ -21,6 +22,7 @@ from series_cloud_archiver.mv3 import (
     redirect_mv3_strm_records,
     render_mv3_capabilities_report,
     render_mv3_cloud_browse_report,
+    render_mv3_cloud_media_sidecar_cleanup_report,
     render_mv3_cloud_media_sidecar_verify_report,
     render_mv3_ensure_path_report,
     render_mv3_instances_report,
@@ -201,6 +203,56 @@ class MV3WrongRootRepairTest(unittest.TestCase):
             self.assertTrue(payload["dry_run"])
             self.assertEqual(payload["items"][0]["action"], "dry_run_delete_duplicate_wrong_season")
 
+    def test_cli_refuses_cloud_sidecar_cleanup_approval_without_expected_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            with patch("urllib.request.urlopen") as fake_urlopen:
+                with self.assertRaises(SystemExit) as caught:
+                    main(
+                        [
+                            "mv3-cloud-media-sidecar-cleanup",
+                            "--env-file",
+                            str(env_file),
+                            "--path",
+                            "/已整理/series/Demo",
+                            "--approve-delete",
+                        ]
+                    )
+
+            self.assertNotEqual(caught.exception.code, 0)
+            fake_urlopen.assert_not_called()
+
+    def test_cli_writes_cloud_sidecar_cleanup_dry_run_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "cleanup.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            with patch("urllib.request.urlopen", lambda request, timeout: _fake_mv3_sidecar_cleanup_response(request, deleted=False)):
+                code = main(
+                    [
+                        "mv3-cloud-media-sidecar-cleanup",
+                        "--env-file",
+                        str(env_file),
+                        "--path",
+                        "/已整理/series/Demo",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["dry_run"])
+            self.assertEqual(payload["delete_plan"]["metadata_sidecar_count"], 2)
+            self.assertEqual(payload["delete_plan"]["file_ids"], ["nfo-1", "poster-1"])
+
 
 def _fake_mv3_wrong_root_response(request, move_case=False, deleted=False, moved=False):
     class FakeResponse:
@@ -284,6 +336,52 @@ def _fake_mv3_wrong_root_response(request, move_case=False, deleted=False, moved
     if parsed.path.endswith("/api/v1/files/cloud/browse") or parsed.path.endswith("/api/v1/files/115/browse"):
         return FakeResponse({"success": True, "data": {"items": browse.get(cid, [])}})
     return FakeResponse({"success": True, "data": {}})
+
+
+def _fake_mv3_sidecar_cleanup_response(request, deleted=False):
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            return False
+
+        def read(self, _limit=-1):
+            return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+
+        @property
+        def headers(self):
+            return {"Content-Type": "application/json"}
+
+    parsed = urllib.parse.urlparse(request.full_url)
+    query = urllib.parse.parse_qs(parsed.query)
+    cid = query.get("cid", [""])[0]
+    if parsed.path.endswith("/api/v1/files/115/delete"):
+        return FakeResponse({"success": True, "message": "ok", "data": None})
+    if parsed.path.endswith("/api/v1/files/cloud/info"):
+        return FakeResponse({"success": True, "data": {"file_name": "Demo", "file_id": "root-id", "is_dir": True}})
+    if parsed.path.endswith("/api/v1/files/cloud/browse"):
+        if cid == "root-id":
+            return FakeResponse({"success": True, "data": {"items": [{"name": "Season 1", "file_id": "season-id", "is_dir": True}]}})
+        if cid == "season-id":
+            items = [
+                {"name": "Demo.S01E01.mkv", "fid": "video-1", "is_dir": False},
+                {"name": "Demo.S01E01.ass", "fid": "sub-1", "is_dir": False},
+            ]
+            if not deleted:
+                items.extend(
+                    [
+                        {"name": "Demo.S01E01.nfo", "fid": "nfo-1", "is_dir": False},
+                        {"name": "poster.jpg", "fid": "poster-1", "is_dir": False},
+                    ]
+                )
+            return FakeResponse({"success": True, "data": {"items": items}})
+    raise AssertionError(f"unexpected url: {request.full_url}")
 
 
 class MV3ProbeTest(unittest.TestCase):
@@ -679,6 +777,75 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["scan"]["subtitle_sidecar_file_count"], 1)
         self.assertEqual(report["scan"]["metadata_sidecar_file_count"], 1)
         self.assertIn("/已整理/series/Demo/Season 1/Demo.S01E01.nfo", rendered)
+
+    def test_cloud_media_sidecar_cleanup_dry_run_plans_metadata_only(self) -> None:
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append((request.get_method(), request.full_url, getattr(request, "data", None)))
+            return _fake_mv3_sidecar_cleanup_response(request, deleted=False)
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = cleanup_mv3_cloud_media_sidecars("http://mv3.example", "token", path="/已整理/series/Demo")
+
+        rendered = render_mv3_cloud_media_sidecar_cleanup_report(report, "json")
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["dry_run"])
+        self.assertEqual(report["delete_plan"]["metadata_sidecar_count"], 2)
+        self.assertEqual(report["delete_plan"]["file_ids"], ["nfo-1", "poster-1"])
+        self.assertFalse(any("/api/v1/files/115/delete" in url for _method, url, _body in calls))
+        self.assertNotIn("video-1", json.dumps(report["delete_plan"], ensure_ascii=False))
+        self.assertNotIn("sub-1", json.dumps(report["delete_plan"], ensure_ascii=False))
+        self.assertNotIn("token", rendered)
+
+    def test_cloud_media_sidecar_cleanup_deletes_only_metadata_with_approval(self) -> None:
+        posted = []
+        state = {"deleted": False}
+
+        def fake_urlopen(request, timeout):
+            if getattr(request, "data", None):
+                posted.append((request.full_url, json.loads(request.data.decode("utf-8"))))
+                if request.full_url.endswith("/api/v1/files/115/delete"):
+                    state["deleted"] = True
+            return _fake_mv3_sidecar_cleanup_response(request, deleted=state["deleted"])
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = cleanup_mv3_cloud_media_sidecars(
+                "http://mv3.example",
+                "token",
+                path="/已整理/series/Demo",
+                approve_delete=True,
+                expected_delete_count=2,
+            )
+
+        self.assertTrue(report["ok"])
+        delete_bodies = [body for url, body in posted if url.endswith("/api/v1/files/115/delete")]
+        self.assertEqual(len(delete_bodies), 1)
+        self.assertEqual(delete_bodies[0]["file_ids"], ["nfo-1", "poster-1"])
+        self.assertEqual(report["post_scan"]["metadata_sidecar_file_count"], 0)
+        self.assertEqual(report["post_scan"]["video_file_count"], 1)
+        self.assertEqual(report["post_scan"]["subtitle_sidecar_file_count"], 1)
+
+    def test_cloud_media_sidecar_cleanup_blocks_unexpected_delete_count(self) -> None:
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append(request.full_url)
+            return _fake_mv3_sidecar_cleanup_response(request, deleted=False)
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = cleanup_mv3_cloud_media_sidecars(
+                "http://mv3.example",
+                "token",
+                path="/已整理/series/Demo",
+                approve_delete=True,
+                expected_delete_count=1,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("expected_delete_count_mismatch", report["blockers"])
+        self.assertEqual(report["operation"], {"skipped": True, "reason": "blocked"})
+        self.assertTrue(all("/api/v1/files/115/delete" not in url for url in calls))
 
     def test_offline_status_reports_not_ready_until_task_done_and_folder_has_files(self) -> None:
         class FakeResponse:
@@ -1627,6 +1794,55 @@ class MV3ProbeTest(unittest.TestCase):
 
         self.assertTrue(report["ok"])
         self.assertEqual([item["source_file_id"] for item in seen["body"]["files"]], ["video-1", "video-2"])
+
+    def test_organize_transfer_request_never_copies_cloud_metadata_sidecars(self) -> None:
+        seen = {}
+        browse_report = {
+            "path": "/未整理/Demo",
+            "items": [
+                {"name": "Demo.S01E01.mkv", "kind": "file", "media_kind": "video", "episode": 1, "file_id": "video-1"},
+                {"name": "Demo.S01E01.nfo", "kind": "file", "media_kind": "metadata_sidecar", "episode": 1, "file_id": "nfo-1"},
+                {"name": "poster.jpg", "kind": "file", "media_kind": "metadata_sidecar", "episode": None, "file_id": "poster-1"},
+            ],
+        }
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return b'{"success":true,"data":{"task_id":"task-1"}}'
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = execute_mv3_organize_transfer_from_browse_report(
+                "http://mv3.example",
+                "token",
+                browse_report,
+                target_dir="/已整理",
+                strm_dir="/strm",
+                tmdb_id=123,
+                expected_episode_count=1,
+                expected_episode_min=1,
+                expected_episode_max=1,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(seen["body"]["files"], [{"source_path": "/未整理/Demo/Demo.S01E01.mkv", "source_file_id": "video-1", "is_cloud_source": True, "name": "Demo.S01E01.mkv"}])
+        self.assertFalse(seen["body"]["copy_non_media"])
+        self.assertIn("scraping", report["safety"].lower())
 
     def test_organize_transfer_reports_timeout_without_throwing(self) -> None:
         browse_report = {

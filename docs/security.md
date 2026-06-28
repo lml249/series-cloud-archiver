@@ -55,3 +55,18 @@ Cleanup can be implemented only when all of these are true:
 
 If any condition is missing, weak, stale, or contradictory, the orchestrator
 must preserve local data.
+
+## Cloud media scraping boundary
+
+Cloud media directories are transfer and STRM-generation sources only. Scraping
+must happen against STRM-backed library paths, not beside the cloud media files.
+
+- MV3 organize transfer requests should submit media files only and should not
+  copy non-media metadata sidecars into the cloud media directory.
+- `.nfo`, `.jpg`, `.jpeg`, `.png`, and `.webp` files found beside cloud media are
+  treated as metadata sidecars, not cleanup evidence.
+- Local cleanup must stay blocked while cloud media metadata sidecars are
+  present.
+- Removing cloud media metadata sidecars requires a dry-run report, an explicit
+  approval flag, and an expected delete count. Video files and subtitle sidecars
+  must not be selected by that cleanup path.
