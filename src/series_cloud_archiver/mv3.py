@@ -3480,11 +3480,30 @@ def _cloud_item_kind(item: Dict[str, object]) -> str:
             return "folder"
         if str(value).lower() in ("0", "false", "no"):
             return "file"
+    if _looks_like_115_fid_folder(item):
+        return "folder"
     if str(item.get("fid") or ""):
         return "file"
     if str(item.get("cid") or item.get("folder_id") or ""):
         return "folder"
     return raw_type or "unknown"
+
+
+def _looks_like_115_fid_folder(item: Dict[str, object]) -> bool:
+    if not str(item.get("fid") or ""):
+        return False
+    name = _cloud_name(item)
+    if Path(name).suffix:
+        return False
+    for key in ("size", "size_text", "file_size", "file_size_text", "s", "fs", "sha1"):
+        value = item.get(key)
+        if value not in (None, "", 0, "0"):
+            return False
+    if str(item.get("ico") or "").strip():
+        return False
+    if str(item.get("ftype") or "").strip():
+        return False
+    return True
 
 
 def _cloud_item_media_kind(item: Dict[str, object]) -> str:

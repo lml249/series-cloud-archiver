@@ -809,6 +809,49 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual([item["media_kind"] for item in report["items"]], ["video", "subtitle_sidecar", "video", "subtitle_sidecar"])
         self.assertEqual(report["summary"]["missing_in_range"], [])
 
+    def test_cloud_browse_treats_115_fid_only_root_rows_as_folders(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            if "/api/v1/files/cloud/browse?" in request.full_url:
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {"fn": "已整理", "fid": "folder-1", "pid": "0", "fc": "0"},
+                                {"fn": "根目录.txt", "fid": "file-1", "pid": "0", "fc": "1", "fs": 32, "ico": "txt", "sha1": "abc"},
+                            ]
+                        },
+                    }
+                )
+            raise AssertionError(f"unexpected url: {request.full_url}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = browse_mv3_cloud_folder("http://mv3.example", "token", folder_id="0")
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["summary"]["folder_count"], 1)
+        self.assertEqual(report["summary"]["file_count"], 1)
+        self.assertEqual([item["kind"] for item in report["items"]], ["folder", "file"])
+
     def test_cloud_browse_marks_metadata_sidecars_separately(self) -> None:
         class FakeResponse:
             status = 200
