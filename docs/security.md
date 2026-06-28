@@ -68,6 +68,9 @@ must happen against STRM-backed library paths, not beside the cloud media files.
   be submitted as media files.
 - `.nfo`, `.jpg`, `.jpeg`, `.png`, and `.webp` files found beside cloud media are
   treated as metadata sidecars, not cleanup evidence.
+- STRM NFO language or scraping-quality audits must run against STRM-backed
+  library paths only. Passing cloud media paths such as `/已整理` or `/未整理`
+  is blocked because cloud media metadata is not the source of truth.
 - Local cleanup must stay blocked while cloud media metadata sidecars are
   present.
 - Removing cloud media metadata sidecars requires a dry-run report, an explicit

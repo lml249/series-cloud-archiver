@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 
 from .episode import episode_signal
 from .moviepilot import MPTransferHistoryRecord, MoviePilotClient, transfer_record_season_numbers
+from .path_safety import cloud_media_paths
 from .qbittorrent import fetch_qb_torrents
 
 
@@ -147,9 +148,13 @@ def audit_strm_nfo_language(
 ) -> Dict[str, object]:
     blockers: List[str] = []
     warnings: List[str] = []
+    blocked_cloud_media_roots = cloud_media_paths(strm_roots)
     roots = [_nfo_language_root_row(path, min_chinese_ratio=min_chinese_ratio, sample_limit=sample_limit) for path in strm_roots]
     if not strm_roots:
         blockers.append("strm_root_required")
+    if blocked_cloud_media_roots:
+        blockers.append("strm_nfo_root_must_be_strm_side")
+        warnings.append("cloud_media_paths_are_transfer_and_strm_only")
     if any(not item["exists"] for item in roots):
         blockers.append("strm_root_missing")
 
@@ -167,6 +172,7 @@ def audit_strm_nfo_language(
         "expected": {
             "min_chinese_ratio": min_chinese_ratio,
             "sample_limit": sample_limit,
+            "blocked_cloud_media_roots": blocked_cloud_media_roots,
         },
         "summary": {
             "root_count": len(roots),
@@ -177,7 +183,7 @@ def audit_strm_nfo_language(
         "roots": roots,
         "blockers": sorted(set(blockers)),
         "warnings": sorted(set(warnings)),
-        "safety": "readonly STRM NFO language audit only; no file changes, scraping, MoviePilot request, qBittorrent action, or deletion is performed",
+        "safety": "readonly STRM-side NFO language audit only; cloud media directories are transfer and STRM-generation sources only and must not be audited as scraping targets; no file changes, scraping, MoviePilot request, qBittorrent action, or deletion is performed",
     }
 
 
@@ -195,7 +201,8 @@ def render_strm_nfo_language_audit(report: Dict[str, object], output_format: str
         f"- Suspect English NFO files: `{summary.get('suspect_english_count', 0)}`",
         f"- Parse errors: `{summary.get('parse_error_count', 0)}`",
         f"- Min Chinese ratio: `{expected.get('min_chinese_ratio', 0)}`",
-        "- Safety: readonly STRM NFO language audit only; no file changes were made.",
+        f"- Blocked cloud media roots: `{expected.get('blocked_cloud_media_roots', [])}`",
+        "- Safety: readonly STRM-side NFO language audit only; cloud media directories are not scraping targets.",
     ]
     blockers = report.get("blockers")
     if isinstance(blockers, list) and blockers:

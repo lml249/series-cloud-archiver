@@ -2469,6 +2469,24 @@ class MoviePilotEvidenceTest(unittest.TestCase):
             self.assertIn("strm_nfo_language_not_chinese", report["blockers"])
             self.assertEqual(report["summary"]["suspect_english_count"], 1)
 
+    def test_strm_nfo_language_audit_blocks_cloud_media_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cloud_root = Path(tmp) / "已整理" / "series" / "Demo (2026) {tmdbid=1}" / "Season 01"
+            cloud_root.mkdir(parents=True)
+            (cloud_root / "Demo S01E01.nfo").write_text(
+                "<episodedetails><title>Pilot</title><plot>English cloud-side metadata should not be used as STRM scraping evidence.</plot></episodedetails>",
+                encoding="utf-8",
+            )
+
+            report = audit_strm_nfo_language([str(cloud_root)])
+            rendered = render_strm_nfo_language_audit(report, "markdown")
+
+            self.assertFalse(report["ok"])
+            self.assertIn("strm_nfo_root_must_be_strm_side", report["blockers"])
+            self.assertIn("cloud_media_paths_are_transfer_and_strm_only", report["warnings"])
+            self.assertEqual(report["expected"]["blocked_cloud_media_roots"], [str(cloud_root)])
+            self.assertIn("Blocked cloud media roots", rendered)
+
     def test_strm_nfo_language_audit_cli_writes_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             strm_root = Path(tmp) / "strm" / "series" / "Demo (2026) {tmdbid=1}" / "Season 01"

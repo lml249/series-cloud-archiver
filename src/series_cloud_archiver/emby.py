@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Sequence
 
 from .episode import episode_signal
 from .models import EmbyEvidence, FileSystemSeries
+from .path_safety import cloud_media_paths
 from .redaction import redact_sensitive_text
 
 
@@ -1149,24 +1150,7 @@ def _normalize_prefixes(prefixes: Sequence[str]) -> List[str]:
 
 
 def _cloud_media_paths_forbidden_for_emby_scrape(paths: Sequence[str]) -> List[str]:
-    return [path for path in paths if _looks_like_cloud_media_path(path)]
-
-
-def _looks_like_cloud_media_path(path: str) -> bool:
-    normalized = str(path or "").strip().replace("\\", "/").rstrip("/")
-    if not normalized:
-        return False
-    if normalized == "/已整理" or normalized.startswith("/已整理/"):
-        return True
-    if normalized == "/未整理" or normalized.startswith("/未整理/"):
-        return True
-    lowered = normalized.lower()
-    cloud_media_markers = (
-        "/media/cloud-media",
-        "/cloud/media",
-        "/115/media",
-    )
-    return any(marker in lowered for marker in cloud_media_markers)
+    return cloud_media_paths(paths)
 
 
 def _stale_root_rows(rows: Sequence[Dict[str, object]], stale_path_prefixes: Sequence[str]) -> List[Dict[str, object]]:
