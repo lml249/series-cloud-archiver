@@ -73,3 +73,6 @@ must happen against STRM-backed library paths, not beside the cloud media files.
 - Removing cloud media metadata sidecars requires a dry-run report, an explicit
   approval flag, and an expected delete count. Video files and subtitle sidecars
   must not be selected by that cleanup path.
+- Standalone MV3 STRM generation is STRM-only by default. Its `organize`
+  parameter is blocked unless an explicit override is provided, so cloud media
+  organization remains confined to the audited organize-transfer flow.

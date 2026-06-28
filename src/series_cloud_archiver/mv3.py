@@ -1542,6 +1542,7 @@ def generate_mv3_strm(
     enable_primary_category: bool = True,
     enable_secondary_category: bool = True,
     template: str = "",
+    allow_organize: bool = False,
     timeout: int = 180,
 ) -> Dict[str, object]:
     warnings: List[str] = []
@@ -1556,6 +1557,9 @@ def generate_mv3_strm(
         blockers.append("target_dir_looks_like_cloud_media_root")
     if cloud and normalized_source_dir.startswith("/volume"):
         blockers.append("source_dir_looks_like_local_strm_root")
+    if organize and not allow_organize:
+        blockers.append("strm_generate_organize_disabled")
+        warnings.append("cloud_media_is_transfer_and_strm_only_use_mv3_organize_transfer_first")
 
     request_body: Dict[str, object] = {
         "source_dir": normalized_source_dir,
@@ -1611,6 +1615,7 @@ def generate_mv3_strm(
         "overwrite": overwrite,
         "organize": organize,
         "openlist": openlist,
+        "allow_organize": allow_organize,
         "enable_primary_category": enable_primary_category,
         "enable_secondary_category": enable_secondary_category,
         "template": template,

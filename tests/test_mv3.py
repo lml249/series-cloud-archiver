@@ -2513,6 +2513,61 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertFalse(seen["body"]["overwrite"])
         self.assertNotIn("token", rendered)
 
+    def test_strm_generate_blocks_organize_by_default(self) -> None:
+        with patch("urllib.request.urlopen") as fake_urlopen:
+            report = generate_mv3_strm(
+                "http://mv3.example",
+                "token",
+                source_dir="/已整理/series/Demo/Season 1",
+                target_dir="/example/strm-root",
+                organize=True,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("strm_generate_organize_disabled", report["blockers"])
+        self.assertTrue(report["request_summary"]["organize"])
+        fake_urlopen.assert_not_called()
+
+    def test_strm_generate_allows_organize_with_explicit_override(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return b'{"success":true,"data":{"task_id":"strm-task-1"}}'
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = generate_mv3_strm(
+                "http://mv3.example",
+                "token",
+                source_dir="/已整理/series/Demo/Season 1",
+                target_dir="/example/strm-root",
+                organize=True,
+                allow_organize=True,
+                timeout=42,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["allow_organize"])
+        self.assertTrue(seen["body"]["organize"])
+        self.assertEqual(seen["timeout"], 42)
+
     def test_strm_records_regenerate_posts_record_ids(self) -> None:
         seen = {}
 
@@ -4153,6 +4208,38 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["source_dir"], "/已整理/series/Demo/Season 1")
             self.assertEqual(payload["target_dir"], "/example/strm-root")
+
+    def test_cli_blocks_strm_generate_organize_without_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "strm-generate.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            with patch("urllib.request.urlopen") as fake_urlopen:
+                code = main(
+                    [
+                        "mv3-strm-generate",
+                        "--env-file",
+                        str(env_file),
+                        "--source-dir",
+                        "/已整理/series/Demo/Season 1",
+                        "--target-dir",
+                        "/example/strm-root",
+                        "--organize",
+                        "--approve-generate",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            fake_urlopen.assert_not_called()
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertFalse(payload["ok"])
+            self.assertIn("strm_generate_organize_disabled", payload["blockers"])
 
     def test_cli_refuses_strm_records_regenerate_without_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -593,7 +593,8 @@ def build_parser() -> argparse.ArgumentParser:
     strm_generate_parser.add_argument("--local-source", action="store_true", help="Treat source as local instead of cloud")
     strm_generate_parser.add_argument("--overwrite", action="store_true", help="Allow MV3 to overwrite existing STRM files")
     strm_generate_parser.add_argument("--full", action="store_true", help="Disable incremental mode")
-    strm_generate_parser.add_argument("--organize", action="store_true", help="Ask MV3 to organize while generating STRM")
+    strm_generate_parser.add_argument("--organize", action="store_true", help="Ask MV3 to organize while generating STRM; blocked unless --allow-organize is also set")
+    strm_generate_parser.add_argument("--allow-organize", action="store_true", help="Dangerous override: allow MV3 STRM generation to organize. Prefer mv3-organize-transfer-from-browse first, then generate STRM only")
     strm_generate_parser.add_argument("--openlist", action="store_true", help="Use MV3 openlist mode")
     strm_generate_parser.add_argument("--disable-primary-category", action="store_true", help="Disable MV3 primary category output")
     strm_generate_parser.add_argument("--disable-secondary-category", action="store_true", help="Disable MV3 secondary category output")
@@ -1877,6 +1878,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             enable_primary_category=not args.disable_primary_category,
             enable_secondary_category=not args.disable_secondary_category,
             template=args.template,
+            allow_organize=args.allow_organize,
             timeout=args.timeout,
         )
         rendered = render_mv3_strm_generate_report(report, args.format)
