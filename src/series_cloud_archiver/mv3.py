@@ -1739,7 +1739,7 @@ def list_mv3_strm_records(
 
 def render_mv3_strm_records_report(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
-        return json.dumps(report, ensure_ascii=False, indent=2)
+        return json.dumps(_public_strm_records_report(report), ensure_ascii=False, indent=2)
     lines = [
         "# MV3 STRM Records",
         "",
@@ -1771,6 +1771,24 @@ def render_mv3_strm_records_report(report: Dict[str, object], output_format: str
         lines.extend(["", "## Warnings", ""])
         lines.extend(f"- `{warning}`" for warning in warnings)
     return "\n".join(lines)
+
+
+def _public_strm_records_report(report: Dict[str, object]) -> Dict[str, object]:
+    public_report = dict(report)
+    records = public_report.get("records")
+    if isinstance(records, list):
+        public_report["records"] = [
+            _public_strm_record(record) if isinstance(record, dict) else record
+            for record in records
+        ]
+    return public_report
+
+
+def _public_strm_record(record: Dict[str, object]) -> Dict[str, object]:
+    public_record = dict(record)
+    if "strm_content" in public_record:
+        public_record["strm_content"] = "[REDACTED]" if public_record.get("strm_content") else ""
+    return public_record
 
 
 def materialize_mv3_strm_records(

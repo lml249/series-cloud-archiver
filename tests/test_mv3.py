@@ -2801,6 +2801,7 @@ class MV3ProbeTest(unittest.TestCase):
                                 "source": "organize",
                                 "strm_path": "/example/strm-root/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.strm",
                                 "source_path": "/已整理/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.mkv",
+                                "strm_content": "https://mv3.example/redirect?path=/已整理/series/八千里路云和月/Season%201/E37.mkv&pickcode=secret",
                             },
                             {
                                 "id": 16962,
@@ -2843,7 +2844,10 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["matched_record_count"], 1)
         self.assertEqual(report["records"][0]["id"], 16868)
         self.assertEqual(report["records"][0]["episode"], 37)
+        self.assertIn("pickcode=secret", report["records"][0]["strm_content"])
         self.assertNotIn("token", rendered)
+        self.assertNotIn("pickcode=secret", rendered)
+        self.assertIn('"strm_content": "[REDACTED]"', rendered)
 
     def test_strm_records_materialize_writes_record_content_with_prefix_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
