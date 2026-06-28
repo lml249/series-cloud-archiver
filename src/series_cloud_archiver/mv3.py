@@ -760,6 +760,7 @@ def cleanup_mv3_cloud_duplicate_videos(
         "expected_episode_count": expected_episode_count,
         "info_status": info_status,
         "info_content_type": info_content_type,
+        "folder_info": _cloud_info_summary(info) if info else {},
         "summary": {
             "video_file_count": len(media_items),
             "episode_count": len(episode_numbers),
@@ -3319,6 +3320,13 @@ def _extract_folder_id(value: object) -> str:
         for key in ("cid", "file_id", "id", "folder_id"):
             if value.get(key):
                 return str(value.get(key))
+        paths = value.get("paths")
+        if isinstance(paths, list) and paths:
+            nested = _extract_folder_id(paths[-1])
+            if nested:
+                return nested
+        if value.get("parent_id") and value.get("parent_path") and _cloud_name(value):
+            return str(value.get("parent_id"))
         for key in ("data", "folder", "result"):
             nested = _extract_folder_id(value.get(key))
             if nested:

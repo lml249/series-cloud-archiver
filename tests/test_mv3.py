@@ -478,7 +478,22 @@ def _fake_mv3_duplicate_video_cleanup_response(request, deleted=False):
     if parsed.path.endswith("/api/v1/files/115/delete"):
         return FakeResponse({"success": True, "message": "ok", "data": None})
     if parsed.path.endswith("/api/v1/files/cloud/info"):
-        return FakeResponse({"success": True, "data": {"file_name": "Season 1", "file_id": "season-id", "is_dir": True}})
+        return FakeResponse(
+            {
+                "success": True,
+                "data": {
+                    "file_name": "Season 1",
+                    "parent_id": "season-id",
+                    "parent_path": "/已整理/series/Demo/Season 1",
+                    "paths": [
+                        {"name": "已整理", "cid": "root"},
+                        {"name": "series", "cid": "series"},
+                        {"name": "Demo", "cid": "title-id"},
+                        {"name": "Season 1", "cid": "season-id"},
+                    ],
+                },
+            }
+        )
     if parsed.path.endswith("/api/v1/files/cloud/browse"):
         if cid == "season-id":
             items = [
