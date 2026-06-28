@@ -12,9 +12,11 @@ from .cloud_cleanup import (
     render_cloud_complete_cleanup_plan,
 )
 from .cleanup_verify import (
+    audit_strm_nfo_language,
     cleanup_duplicate_strm_root,
     render_duplicate_strm_cleanup,
     render_mp_cleanup_verification,
+    render_strm_nfo_language_audit,
     render_strm_verification,
     verify_mp_cleanup_from_services,
     verify_strm_paths,
@@ -342,6 +344,13 @@ def build_parser() -> argparse.ArgumentParser:
     strm_verify_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
     strm_verify_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     strm_verify_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    strm_nfo_parser = subcommands.add_parser("strm-nfo-language-audit", help="Readonly STRM NFO Chinese-language audit")
+    strm_nfo_parser.add_argument("--strm-root", action="append", required=True, help="STRM root to scan; can be repeated")
+    strm_nfo_parser.add_argument("--min-chinese-ratio", type=float, default=0.35, help="Minimum Chinese-character ratio for plot text")
+    strm_nfo_parser.add_argument("--sample-limit", type=int, default=50, help="Maximum NFO files to inspect per root")
+    strm_nfo_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    strm_nfo_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     strm_duplicate_cleanup_parser = subcommands.add_parser("strm-duplicate-cleanup", help="Delete an approved duplicate STRM root after verification")
     strm_duplicate_cleanup_parser.add_argument("--title", required=True, help="Series title for reporting")
@@ -1416,6 +1425,19 @@ def main(argv: Optional[List[str]] = None) -> int:
             forbidden_target_prefixes=args.forbidden_target_prefix,
         )
         rendered = render_strm_verification(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "strm-nfo-language-audit":
+        report = audit_strm_nfo_language(
+            strm_roots=args.strm_root,
+            min_chinese_ratio=args.min_chinese_ratio,
+            sample_limit=args.sample_limit,
+        )
+        rendered = render_strm_nfo_language_audit(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

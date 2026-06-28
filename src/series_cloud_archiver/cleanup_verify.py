@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Dict, Iterable, List, Optional, Sequence
 import urllib.parse
+import xml.etree.ElementTree as ET
 
 from .episode import episode_signal
 from .moviepilot import MPTransferHistoryRecord, MoviePilotClient, transfer_record_season_numbers
@@ -135,6 +137,109 @@ def render_strm_verification(report: Dict[str, object], output_format: str) -> s
                     forbidden=item.get("forbidden_target_count", 0),
                 )
             )
+    return "\n".join(lines)
+
+
+def audit_strm_nfo_language(
+    strm_roots: Sequence[str],
+    min_chinese_ratio: float = 0.35,
+    sample_limit: int = 50,
+) -> Dict[str, object]:
+    blockers: List[str] = []
+    warnings: List[str] = []
+    roots = [_nfo_language_root_row(path, min_chinese_ratio=min_chinese_ratio, sample_limit=sample_limit) for path in strm_roots]
+    if not strm_roots:
+        blockers.append("strm_root_required")
+    if any(not item["exists"] for item in roots):
+        blockers.append("strm_root_missing")
+
+    total_nfo = sum(int(item.get("nfo_count") or 0) for item in roots)
+    suspect_count = sum(int(item.get("suspect_english_count") or 0) for item in roots)
+    parse_error_count = sum(int(item.get("parse_error_count") or 0) for item in roots)
+    if suspect_count:
+        blockers.append("strm_nfo_language_not_chinese")
+    if parse_error_count:
+        warnings.append("strm_nfo_parse_error")
+
+    return {
+        "mode": "strm-nfo-language-audit",
+        "ok": not blockers,
+        "expected": {
+            "min_chinese_ratio": min_chinese_ratio,
+            "sample_limit": sample_limit,
+        },
+        "summary": {
+            "root_count": len(roots),
+            "nfo_count": total_nfo,
+            "suspect_english_count": suspect_count,
+            "parse_error_count": parse_error_count,
+        },
+        "roots": roots,
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "safety": "readonly STRM NFO language audit only; no file changes, scraping, MoviePilot request, qBittorrent action, or deletion is performed",
+    }
+
+
+def render_strm_nfo_language_audit(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+
+    expected = report.get("expected") if isinstance(report.get("expected"), dict) else {}
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    lines = [
+        "# STRM NFO Language Audit",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- NFO files: `{summary.get('nfo_count', 0)}`",
+        f"- Suspect English NFO files: `{summary.get('suspect_english_count', 0)}`",
+        f"- Parse errors: `{summary.get('parse_error_count', 0)}`",
+        f"- Min Chinese ratio: `{expected.get('min_chinese_ratio', 0)}`",
+        "- Safety: readonly STRM NFO language audit only; no file changes were made.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+
+    roots = report.get("roots")
+    if isinstance(roots, list) and roots:
+        lines.extend(
+            [
+                "",
+                "## Roots",
+                "",
+                "| Path | Exists | NFO files | Suspect English | Parse errors |",
+                "| --- | --- | ---: | ---: | ---: |",
+            ]
+        )
+        for item in roots:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "| {path} | {exists} | {nfo_count} | {suspect} | {errors} |".format(
+                    path=_escape(str(item.get("path") or "")),
+                    exists=item.get("exists"),
+                    nfo_count=item.get("nfo_count", 0),
+                    suspect=item.get("suspect_english_count", 0),
+                    errors=item.get("parse_error_count", 0),
+                )
+            )
+            suspects = item.get("suspect_english_samples")
+            if isinstance(suspects, list):
+                for sample in suspects[:10]:
+                    if isinstance(sample, dict):
+                        lines.append(
+                            "  - `{path}` title_ratio=`{title_ratio}` plot_ratio=`{plot_ratio}`".format(
+                                path=sample.get("path", ""),
+                                title_ratio=sample.get("title_chinese_ratio", 0),
+                                plot_ratio=sample.get("plot_chinese_ratio", 0),
+                            )
+                        )
     return "\n".join(lines)
 
 
@@ -701,6 +806,106 @@ def _strm_target_row(path: Path, required_target_prefix: str, forbidden_target_p
         "target_prefix_mismatch": target_prefix_mismatch,
         "forbidden_target": forbidden_target,
     }
+
+
+def _nfo_language_root_row(path: str, min_chinese_ratio: float, sample_limit: int) -> Dict[str, object]:
+    root = Path(path)
+    if not root.exists():
+        return {
+            "path": path,
+            "exists": False,
+            "nfo_count": 0,
+            "sample_count": 0,
+            "suspect_english_count": 0,
+            "parse_error_count": 0,
+            "samples": [],
+            "suspect_english_samples": [],
+        }
+
+    files = sorted(item for item in root.rglob("*") if item.is_file() and item.suffix.lower() == ".nfo")
+    samples = [_nfo_language_file_row(item, min_chinese_ratio=min_chinese_ratio) for item in files[: max(0, sample_limit)]]
+    suspect_samples = [item for item in samples if item.get("suspect_english")]
+    parse_error_count = sum(1 for item in samples if item.get("parse_error"))
+    return {
+        "path": path,
+        "exists": True,
+        "nfo_count": len(files),
+        "sample_count": len(samples),
+        "suspect_english_count": len(suspect_samples),
+        "parse_error_count": parse_error_count,
+        "samples": samples[:20],
+        "suspect_english_samples": suspect_samples[:20],
+    }
+
+
+def _nfo_language_file_row(path: Path, min_chinese_ratio: float) -> Dict[str, object]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    parsed = _parse_nfo_text(text)
+    title = parsed.get("title", "")
+    plot = parsed.get("plot", "")
+    title_ratio = _chinese_ratio(title)
+    plot_ratio = _chinese_ratio(plot)
+    has_plot_letters = _letter_count(plot) >= 20
+    suspect_english = bool(has_plot_letters and plot_ratio < min_chinese_ratio)
+    return {
+        "path": str(path),
+        "title": title[:240],
+        "plot": plot[:360],
+        "title_chinese_ratio": title_ratio,
+        "plot_chinese_ratio": plot_ratio,
+        "suspect_english": suspect_english,
+        "parse_error": parsed.get("parse_error", ""),
+    }
+
+
+def _parse_nfo_text(text: str) -> Dict[str, str]:
+    result = {"title": "", "plot": "", "parse_error": ""}
+    try:
+        root = ET.fromstring(text)
+        result["title"] = _first_xml_text(root, ["title", "originaltitle", "sorttitle"])
+        result["plot"] = _first_xml_text(root, ["plot", "outline", "overview"])
+        return result
+    except ET.ParseError as exc:
+        result["parse_error"] = f"xml_parse_error:{exc.__class__.__name__}"
+
+    result["title"] = _first_tag_text(text, ["title", "originaltitle", "sorttitle"])
+    result["plot"] = _first_tag_text(text, ["plot", "outline", "overview"])
+    return result
+
+
+def _first_xml_text(root: ET.Element, tags: Sequence[str]) -> str:
+    wanted = {tag.casefold() for tag in tags}
+    for element in root.iter():
+        tag = str(element.tag or "").split("}", 1)[-1].casefold()
+        if tag in wanted and element.text:
+            return _clean_nfo_text(element.text)
+    return ""
+
+
+def _first_tag_text(text: str, tags: Sequence[str]) -> str:
+    for tag in tags:
+        match = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", text, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return _clean_nfo_text(match.group(1))
+    return ""
+
+
+def _clean_nfo_text(value: str) -> str:
+    text = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", str(value or ""), flags=re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _chinese_ratio(value: str) -> float:
+    letters = [char for char in str(value or "") if char.isalpha() or "\u4e00" <= char <= "\u9fff"]
+    if not letters:
+        return 0.0
+    chinese = sum(1 for char in letters if "\u4e00" <= char <= "\u9fff")
+    return round(chinese / len(letters), 3)
+
+
+def _letter_count(value: str) -> int:
+    return sum(1 for char in str(value or "") if char.isalpha() or "\u4e00" <= char <= "\u9fff")
 
 
 def _strm_target_path(target: str) -> str:

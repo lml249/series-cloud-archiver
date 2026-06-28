@@ -8,10 +8,12 @@ from unittest.mock import patch
 from series_cloud_archiver.cli import main
 from series_cloud_archiver.config import ScanConfig
 from series_cloud_archiver.cleanup_verify import (
+    audit_strm_nfo_language,
     build_mp_cleanup_verification,
     cleanup_duplicate_strm_root,
     render_duplicate_strm_cleanup,
     render_mp_cleanup_verification,
+    render_strm_nfo_language_audit,
     render_strm_verification,
     verify_strm_paths,
 )
@@ -2295,6 +2297,64 @@ class MoviePilotEvidenceTest(unittest.TestCase):
             self.assertFalse(report["ok"])
             self.assertIn("strm_target_prefix_mismatch", report["blockers"])
             self.assertIn("strm_forbidden_target_prefix", report["blockers"])
+
+    def test_strm_nfo_language_audit_accepts_chinese_nfo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm" / "series" / "心理测量者 (2012) {tmdbid=43865}" / "Season 01"
+            strm_root.mkdir(parents=True)
+            (strm_root / "心理测量者 S01E01.nfo").write_text(
+                "<episodedetails><title>犯罪系数</title><plot><![CDATA[新人监视官常守朱来到公安局刑事课，第一次面对西比拉系统下的真实案件。]]></plot></episodedetails>",
+                encoding="utf-8",
+            )
+
+            report = audit_strm_nfo_language([str(strm_root)])
+            rendered = render_strm_nfo_language_audit(report, "markdown")
+
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["summary"]["nfo_count"], 1)
+            self.assertIn("NFO files", rendered)
+
+    def test_strm_nfo_language_audit_blocks_english_plot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm" / "series" / "Demo (2026) {tmdbid=1}" / "Season 01"
+            strm_root.mkdir(parents=True)
+            (strm_root / "Demo S01E01.nfo").write_text(
+                "<episodedetails><title>Pilot</title><plot>A detective investigates a strange case in a city full of secrets and lies.</plot></episodedetails>",
+                encoding="utf-8",
+            )
+
+            report = audit_strm_nfo_language([str(strm_root)], min_chinese_ratio=0.35)
+
+            self.assertFalse(report["ok"])
+            self.assertIn("strm_nfo_language_not_chinese", report["blockers"])
+            self.assertEqual(report["summary"]["suspect_english_count"], 1)
+
+    def test_strm_nfo_language_audit_cli_writes_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm" / "series" / "Demo (2026) {tmdbid=1}" / "Season 01"
+            strm_root.mkdir(parents=True)
+            (strm_root / "Demo S01E01.nfo").write_text(
+                "<episodedetails><title>第一集</title><plot>这是一段中文剧情简介，用于确认 STRM 侧 NFO 已经是中文内容。</plot></episodedetails>",
+                encoding="utf-8",
+            )
+            output = Path(tmp) / "nfo-language.json"
+
+            code = main(
+                [
+                    "strm-nfo-language-audit",
+                    "--strm-root",
+                    str(strm_root),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(code, 0)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["summary"]["nfo_count"], 1)
 
     def test_duplicate_strm_cleanup_previews_without_deleting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
