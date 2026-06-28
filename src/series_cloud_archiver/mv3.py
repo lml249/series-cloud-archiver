@@ -206,7 +206,7 @@ def ensure_mv3_115_path(
         current_path = f"{current_path}/{segment}"
         existing = _find_115_child_folder(client, parent_id, segment, storage)
         if existing:
-            parent_id = str(existing.get("cid") or existing.get("file_id") or existing.get("id") or "")
+            parent_id = _cloud_file_id(existing)
             steps.append(
                 {
                     "path": current_path,
@@ -228,7 +228,7 @@ def ensure_mv3_115_path(
         resolved_by = "create_response" if folder_id else ""
         if 200 <= status < 300 and api_success and not folder_id:
             created = _find_115_child_folder(client, parent_id, segment, storage)
-            folder_id = str(created.get("cid") or created.get("file_id") or created.get("id") or "")
+            folder_id = _cloud_file_id(created)
             if folder_id:
                 resolved_by = "post_create_browse"
         steps.append(
@@ -3930,8 +3930,8 @@ def _find_115_child_folder(client: MV3Client, parent_id: str, name: str, storage
     for row in rows:
         if not isinstance(row, dict):
             continue
-        row_name = str(row.get("n") or row.get("name") or "")
-        folder_id = str(row.get("cid") or row.get("file_id") or row.get("id") or "")
+        row_name = _cloud_name(row)
+        folder_id = _cloud_file_id(row)
         if row_name == name and folder_id:
             return row
     return {}
