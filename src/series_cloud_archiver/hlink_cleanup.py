@@ -8,6 +8,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from .cleanup_verify import verify_strm_paths
 from .episode import episode_signal, is_video_file
 from .models import EpisodeSignal, FileSystemSeries
+from .mv3 import verify_mv3_cloud_media_sidecars
 from .qbittorrent import QBClient, fetch_qb_evidence, match_torrent
 
 
@@ -26,6 +27,11 @@ def preview_cloud_hlink_cleanup(
     min_seed_days: int = 7,
     required_target_prefix: str = "",
     forbidden_target_prefixes: Optional[Sequence[str]] = None,
+    mv3_base_url: str = "",
+    mv3_token: str = "",
+    cloud_media_path: str = "",
+    cloud_media_folder_id: str = "",
+    cloud_media_storage: str = "115-default",
 ) -> Dict[str, object]:
     aliases = _normalize_aliases(path_aliases or {})
     blockers: List[str] = []
@@ -50,6 +56,27 @@ def preview_cloud_hlink_cleanup(
     if not strm_report.get("ok"):
         blockers.extend(str(blocker) for blocker in strm_report.get("blockers", []) if blocker)
     warnings.extend(str(warning) for warning in strm_report.get("warnings", []) if warning)
+
+    cloud_media_report: Dict[str, object] = {"skipped": True}
+    if cloud_media_path or cloud_media_folder_id:
+        if not mv3_base_url or not mv3_token:
+            blockers.append("mv3_credentials_required_for_cloud_media_sidecar_verify")
+            cloud_media_report = {"skipped": True, "reason": "mv3_credentials_required"}
+        else:
+            try:
+                cloud_media_report = verify_mv3_cloud_media_sidecars(
+                    mv3_base_url,
+                    mv3_token,
+                    path=cloud_media_path,
+                    folder_id=cloud_media_folder_id,
+                    storage=cloud_media_storage,
+                )
+            except Exception as exc:  # pragma: no cover - exercised by integration
+                cloud_media_report = {"ok": False, "error": f"{type(exc).__name__}:{exc}"}
+                blockers.append("cloud_media_sidecar_verify_failed")
+            if cloud_media_report and not cloud_media_report.get("ok"):
+                blockers.extend(str(blocker) for blocker in cloud_media_report.get("blockers", []) if blocker)
+            warnings.extend(str(warning) for warning in cloud_media_report.get("warnings", []) if warning)
 
     qb_matches: List[Dict[str, object]] = []
     qb_error = ""
@@ -103,11 +130,15 @@ def preview_cloud_hlink_cleanup(
             "min_seed_days": min_seed_days,
             "required_target_prefix": required_target_prefix,
             "forbidden_target_prefixes": list(forbidden_target_prefixes or []),
+            "cloud_media_path": cloud_media_path,
+            "cloud_media_folder_id": cloud_media_folder_id,
+            "cloud_media_storage": cloud_media_storage,
         },
         "ok": not blockers,
         "ready_for_execute": not blockers,
         "hlink": hlink_check,
         "strm": strm_report,
+        "cloud_media": cloud_media_report,
         "qbittorrent": {
             "configured": bool(qb_base_url),
             "error": qb_error,
@@ -139,6 +170,11 @@ def preview_cloud_hlink_orphan_cleanup(
     path_aliases: Optional[Dict[str, str]] = None,
     required_target_prefix: str = "",
     forbidden_target_prefixes: Optional[Sequence[str]] = None,
+    mv3_base_url: str = "",
+    mv3_token: str = "",
+    cloud_media_path: str = "",
+    cloud_media_folder_id: str = "",
+    cloud_media_storage: str = "115-default",
 ) -> Dict[str, object]:
     aliases = _normalize_aliases(path_aliases or {})
     blockers: List[str] = []
@@ -163,6 +199,27 @@ def preview_cloud_hlink_orphan_cleanup(
     if not strm_report.get("ok"):
         blockers.extend(str(blocker) for blocker in strm_report.get("blockers", []) if blocker)
     warnings.extend(str(warning) for warning in strm_report.get("warnings", []) if warning)
+
+    cloud_media_report: Dict[str, object] = {"skipped": True}
+    if cloud_media_path or cloud_media_folder_id:
+        if not mv3_base_url or not mv3_token:
+            blockers.append("mv3_credentials_required_for_cloud_media_sidecar_verify")
+            cloud_media_report = {"skipped": True, "reason": "mv3_credentials_required"}
+        else:
+            try:
+                cloud_media_report = verify_mv3_cloud_media_sidecars(
+                    mv3_base_url,
+                    mv3_token,
+                    path=cloud_media_path,
+                    folder_id=cloud_media_folder_id,
+                    storage=cloud_media_storage,
+                )
+            except Exception as exc:  # pragma: no cover - exercised by integration
+                cloud_media_report = {"ok": False, "error": f"{type(exc).__name__}:{exc}"}
+                blockers.append("cloud_media_sidecar_verify_failed")
+            if cloud_media_report and not cloud_media_report.get("ok"):
+                blockers.extend(str(blocker) for blocker in cloud_media_report.get("blockers", []) if blocker)
+            warnings.extend(str(warning) for warning in cloud_media_report.get("warnings", []) if warning)
 
     qb_matches: List[Dict[str, object]] = []
     qb_error = ""
@@ -193,11 +250,15 @@ def preview_cloud_hlink_orphan_cleanup(
             "episode_max": expected_episode_max,
             "required_target_prefix": required_target_prefix,
             "forbidden_target_prefixes": list(forbidden_target_prefixes or []),
+            "cloud_media_path": cloud_media_path,
+            "cloud_media_folder_id": cloud_media_folder_id,
+            "cloud_media_storage": cloud_media_storage,
         },
         "ok": not blockers,
         "ready_for_execute": not blockers,
         "hlink": hlink_check,
         "strm": strm_report,
+        "cloud_media": cloud_media_report,
         "qbittorrent": {
             "configured": bool(qb_base_url),
             "error": qb_error,
@@ -222,6 +283,8 @@ def execute_cloud_hlink_cleanup(
     qb_user: str = "",
     qb_pass: str = "",
     path_aliases: Optional[Dict[str, str]] = None,
+    mv3_base_url: str = "",
+    mv3_token: str = "",
     timeout: int = 20,
 ) -> Dict[str, object]:
     blockers: List[str] = []
@@ -242,6 +305,30 @@ def execute_cloud_hlink_cleanup(
     hlink_root = str(hlink.get("path") or "")
     if not hlink_root:
         blockers.append("hlink_root_required")
+
+    expected = preview.get("expected") if isinstance(preview.get("expected"), dict) else {}
+    cloud_media_path = str(expected.get("cloud_media_path") or "")
+    cloud_media_folder_id = str(expected.get("cloud_media_folder_id") or "")
+    cloud_media_storage = str(expected.get("cloud_media_storage") or "115-default")
+    current_cloud_media: Dict[str, object] = {"skipped": True}
+    if (cloud_media_path or cloud_media_folder_id) and not blockers:
+        if not mv3_base_url or not mv3_token:
+            current_cloud_media = {"skipped": True, "reason": "mv3_credentials_required"}
+            blockers.append("mv3_credentials_required_for_cloud_media_sidecar_verify")
+        else:
+            try:
+                current_cloud_media = verify_mv3_cloud_media_sidecars(
+                    mv3_base_url,
+                    mv3_token,
+                    path=cloud_media_path,
+                    folder_id=cloud_media_folder_id,
+                    storage=cloud_media_storage,
+                )
+            except Exception as exc:  # pragma: no cover - exercised by integration
+                current_cloud_media = {"ok": False, "error": f"{type(exc).__name__}:{exc}"}
+                blockers.append("cloud_media_sidecar_verify_failed")
+            if current_cloud_media and not current_cloud_media.get("ok"):
+                blockers.extend(str(blocker) for blocker in current_cloud_media.get("blockers", []) if blocker)
 
     delete_result: Dict[str, object] = {}
     removed_hlink: Dict[str, object] = {}
@@ -271,6 +358,7 @@ def execute_cloud_hlink_cleanup(
         "title": preview.get("title", ""),
         "ok": not blockers,
         "approved": True,
+        "current_cloud_media": current_cloud_media,
         "qb_delete": delete_result,
         "hlink_delete": removed_hlink,
         "verification": verification,
@@ -286,6 +374,8 @@ def execute_cloud_hlink_orphan_cleanup(
     qb_user: str = "",
     qb_pass: str = "",
     path_aliases: Optional[Dict[str, str]] = None,
+    mv3_base_url: str = "",
+    mv3_token: str = "",
 ) -> Dict[str, object]:
     blockers: List[str] = []
     if preview.get("mode") != "cloud-hlink-orphan-cleanup-preview":
@@ -326,6 +416,11 @@ def execute_cloud_hlink_orphan_cleanup(
             path_aliases=path_aliases,
             required_target_prefix=str(expected.get("required_target_prefix") or ""),
             forbidden_target_prefixes=expected.get("forbidden_target_prefixes") if isinstance(expected.get("forbidden_target_prefixes"), list) else [],
+            mv3_base_url=mv3_base_url,
+            mv3_token=mv3_token,
+            cloud_media_path=str(expected.get("cloud_media_path") or ""),
+            cloud_media_folder_id=str(expected.get("cloud_media_folder_id") or ""),
+            cloud_media_storage=str(expected.get("cloud_media_storage") or "115-default"),
         )
         if not current_precheck.get("ready_for_execute"):
             blockers.append("current_precheck_not_ready_for_execute")
@@ -417,6 +512,11 @@ def render_cloud_hlink_cleanup(report: Dict[str, object], output_format: str) ->
         return json.dumps(report, ensure_ascii=False, indent=2)
     hlink = report.get("hlink") if isinstance(report.get("hlink"), dict) else {}
     qb = report.get("qbittorrent") if isinstance(report.get("qbittorrent"), dict) else {}
+    cloud_media = report.get("cloud_media") if isinstance(report.get("cloud_media"), dict) else {}
+    current_cloud_media = report.get("current_cloud_media") if isinstance(report.get("current_cloud_media"), dict) else {}
+    cloud_scan = cloud_media.get("scan") if isinstance(cloud_media.get("scan"), dict) else {}
+    if not cloud_scan and isinstance(current_cloud_media.get("scan"), dict):
+        cloud_scan = current_cloud_media.get("scan")
     lines = [
         "# Cloud Hlink Cleanup",
         "",
@@ -427,6 +527,7 @@ def render_cloud_hlink_cleanup(report: Dict[str, object], output_format: str) ->
         f"- hlink videos: `{hlink.get('video_count', 0)}`",
         f"- qB matches: `{qb.get('matched_count', 0)}`",
         f"- qB hashes: `{qb.get('hashes', [])}`",
+        f"- Cloud metadata sidecars: `{cloud_scan.get('metadata_sidecar_file_count', 0)}`",
         "- Safety: preview is readonly; execute only mutates approved qB hashes and the explicit hlink root.",
     ]
     blockers = report.get("blockers")

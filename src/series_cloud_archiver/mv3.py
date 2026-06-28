@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 DEFAULT_PROBE_PATHS = ["/", "/api", "/api/v1", "/openapi.json", "/api/v1/openapi.json", "/api/v1/config"]
@@ -98,6 +98,13 @@ SIDECAR_EXTENSIONS = {
     ".sub",
     ".sup",
     ".vtt",
+}
+METADATA_SIDECAR_EXTENSIONS = {
+    ".jpeg",
+    ".jpg",
+    ".nfo",
+    ".png",
+    ".webp",
 }
 
 
@@ -332,6 +339,8 @@ def browse_mv3_cloud_folder(
     rows = _cloud_rows(folder_payload)
     items = [_cloud_browse_item_summary(row, index) for index, row in enumerate(rows[:200], start=1)]
     media_items = [item for item in items if isinstance(item, dict) and str(item.get("media_kind") or "video") == "video"]
+    subtitle_sidecars = [item for item in items if isinstance(item, dict) and str(item.get("media_kind") or "") == "subtitle_sidecar"]
+    metadata_sidecars = [item for item in items if isinstance(item, dict) and str(item.get("media_kind") or "") == "metadata_sidecar"]
     episode_numbers = _episode_numbers_from_scan_items([{"name": item.get("name")} for item in media_items])
     if not rows and folder_id:
         warnings.append("no_cloud_items_found")
@@ -358,7 +367,10 @@ def browse_mv3_cloud_folder(
             "folder_count": sum(1 for row in rows if _cloud_item_kind(row) == "folder"),
             "file_count": sum(1 for row in rows if _cloud_item_kind(row) == "file"),
             "video_file_count": sum(1 for item in items if isinstance(item, dict) and str(item.get("media_kind") or "") == "video"),
-            "sidecar_file_count": sum(1 for item in items if isinstance(item, dict) and str(item.get("media_kind") or "") == "sidecar"),
+            "sidecar_file_count": len(subtitle_sidecars) + len(metadata_sidecars),
+            "subtitle_sidecar_file_count": len(subtitle_sidecars),
+            "metadata_sidecar_file_count": len(metadata_sidecars),
+            "metadata_sidecar_samples": [str(item.get("name") or "") for item in metadata_sidecars[:10]],
             "episode_count": len(episode_numbers),
             "episode_min": min(episode_numbers) if episode_numbers else None,
             "episode_max": max(episode_numbers) if episode_numbers else None,
@@ -385,6 +397,9 @@ def render_mv3_cloud_browse_report(report: Dict[str, object], output_format: str
         f"- Items: `{summary.get('item_count', 0)}`",
         f"- Files: `{summary.get('file_count', 0)}`",
         f"- Folders: `{summary.get('folder_count', 0)}`",
+        f"- Video files: `{summary.get('video_file_count', 0)}`",
+        f"- Subtitle sidecars: `{summary.get('subtitle_sidecar_file_count', 0)}`",
+        f"- Metadata sidecars: `{summary.get('metadata_sidecar_file_count', 0)}`",
         f"- Episode count: `{summary.get('episode_count', 0)}`",
         f"- Episode range: `{summary.get('episode_min', '')}-{summary.get('episode_max', '')}`",
         f"- Missing in range: `{summary.get('missing_in_range', [])}`",
@@ -394,19 +409,125 @@ def render_mv3_cloud_browse_report(report: Dict[str, object], output_format: str
     if isinstance(warnings, list) and warnings:
         lines.extend(["", "## Warnings", ""])
         lines.extend(f"- `{warning}`" for warning in warnings)
-    lines.extend(["", "| # | Name | Kind | Episode | Size |", "| ---: | --- | --- | ---: | ---: |"])
+    lines.extend(["", "| # | Name | Kind | Media kind | Episode | Size |", "| ---: | --- | --- | --- | ---: | ---: |"])
     for item in report.get("items", []):
         if not isinstance(item, dict):
             continue
         lines.append(
-            "| {index} | {name} | {kind} | {episode} | {size} |".format(
+            "| {index} | {name} | {kind} | {media_kind} | {episode} | {size} |".format(
                 index=item.get("index") or "",
                 name=_escape(str(item.get("name") or "")),
                 kind=_escape(str(item.get("kind") or "")),
+                media_kind=_escape(str(item.get("media_kind") or "")),
                 episode=item.get("episode") or "",
                 size=_escape(str(item.get("size") or "")),
             )
         )
+    return "\n".join(lines)
+
+
+def verify_mv3_cloud_media_sidecars(
+    base_url: str,
+    token: str,
+    path: str = "",
+    folder_id: str = "",
+    storage: str = "115-default",
+    limit: int = 1150,
+    max_depth: int = 4,
+    timeout: int = 60,
+) -> Dict[str, object]:
+    client = MV3Client(base_url, token, timeout=timeout)
+    warnings: List[str] = []
+    blockers: List[str] = []
+    normalized_path = _normalize_cloud_path(path) if path else ""
+    root_id = str(folder_id or "")
+    info: Dict[str, object] = {}
+    info_status = 0
+    info_content_type = ""
+    if not root_id and normalized_path:
+        info, info_status, info_content_type = _read_cloud_info_status(client, "", normalized_path, storage)
+        root_id = _extract_folder_id(info)
+        if not info:
+            blockers.append("cloud_media_path_not_found")
+    if not root_id:
+        blockers.append("cloud_media_folder_required")
+
+    scan: Dict[str, object] = {
+        "visited_folder_count": 0,
+        "file_count": 0,
+        "video_file_count": 0,
+        "subtitle_sidecar_file_count": 0,
+        "metadata_sidecar_file_count": 0,
+        "other_file_count": 0,
+        "metadata_sidecars": [],
+        "folders": [],
+        "truncated": False,
+    }
+    if root_id:
+        scan = _scan_mv3_cloud_media_sidecars(
+            client,
+            root_id,
+            normalized_path,
+            storage,
+            limit=max(1, limit),
+            max_depth=max(0, max_depth),
+        )
+        warnings.extend(str(warning) for warning in scan.get("warnings", []) if warning)
+        if int(scan.get("metadata_sidecar_file_count") or 0) > 0:
+            blockers.append("cloud_media_metadata_sidecar_present")
+        if scan.get("truncated"):
+            blockers.append("cloud_media_scan_truncated")
+
+    return {
+        "mode": "readonly-mv3-cloud-media-sidecar-verify",
+        "endpoint": {"method": "GET", "path": "/api/v1/files/cloud/browse"},
+        "ok": not blockers,
+        "path": normalized_path,
+        "folder_id": root_id,
+        "storage": storage,
+        "limit": limit,
+        "max_depth": max_depth,
+        "info_status": info_status,
+        "info_content_type": info_content_type,
+        "folder_info": _cloud_info_summary(info) if info else {},
+        "scan": scan,
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "safety": "readonly cloud media sidecar verification only; no cloud media move/delete, STRM generation, qBittorrent action, hlink deletion, local filesystem deletion, or scraping is performed",
+    }
+
+
+def render_mv3_cloud_media_sidecar_verify_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    scan = report.get("scan") if isinstance(report.get("scan"), dict) else {}
+    lines = [
+        "# MV3 Cloud Media Sidecar Verify",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Path: `{report.get('path', '')}`",
+        f"- Folder ID: `{report.get('folder_id', '')}`",
+        f"- Storage: `{report.get('storage', '')}`",
+        f"- Folders scanned: `{scan.get('visited_folder_count', 0)}`",
+        f"- Video files: `{scan.get('video_file_count', 0)}`",
+        f"- Subtitle sidecars: `{scan.get('subtitle_sidecar_file_count', 0)}`",
+        f"- Metadata sidecars: `{scan.get('metadata_sidecar_file_count', 0)}`",
+        "- Safety: readonly cloud media sidecar verification only; no writes were performed.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    metadata_sidecars = scan.get("metadata_sidecars")
+    if isinstance(metadata_sidecars, list) and metadata_sidecars:
+        lines.extend(["", "## Metadata Sidecars", ""])
+        for item in metadata_sidecars[:20]:
+            if isinstance(item, dict):
+                lines.append(f"- `{item.get('path', '')}`")
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
     return "\n".join(lines)
 
 
@@ -2478,6 +2599,99 @@ def _cloud_media_item_summary(row: Dict[str, object]) -> Dict[str, object]:
     }
 
 
+def _scan_mv3_cloud_media_sidecars(
+    client: MV3Client,
+    root_id: str,
+    root_path: str,
+    storage: str,
+    limit: int,
+    max_depth: int,
+) -> Dict[str, object]:
+    warnings: List[str] = []
+    folders: List[Dict[str, object]] = []
+    metadata_sidecars: List[Dict[str, object]] = []
+    queue: List[Tuple[str, str, int]] = [(root_id, root_path, 0)]
+    visited: Set[str] = set()
+    file_count = 0
+    video_file_count = 0
+    subtitle_sidecar_file_count = 0
+    metadata_sidecar_file_count = 0
+    other_file_count = 0
+    truncated = False
+
+    while queue:
+        folder_id, folder_path, depth = queue.pop(0)
+        if not folder_id or folder_id in visited:
+            continue
+        visited.add(folder_id)
+        folder_payload, status, content_type = _read_cloud_folder_status(client, folder_id, storage, limit)
+        rows = _cloud_rows(folder_payload)
+        folder_summary = {
+            "path": folder_path,
+            "folder_id": folder_id,
+            "status": status,
+            "content_type": content_type,
+            "item_count": len(rows),
+            "depth": depth,
+        }
+        folders.append(folder_summary)
+        if not (200 <= status < 300):
+            warnings.append(f"cloud_folder_browse_failed:{folder_path or folder_id}:{status}")
+            truncated = True
+            continue
+        if len(rows) >= limit:
+            warnings.append(f"cloud_folder_browse_may_be_truncated:{folder_path or folder_id}")
+            truncated = True
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name = _cloud_name(row)
+            child_path = _cloud_join_path(folder_path, name)
+            kind = _cloud_item_kind(row)
+            media_kind = _cloud_item_media_kind(row)
+            if kind == "folder":
+                child_id = _extract_folder_id(row)
+                if child_id and depth < max_depth:
+                    queue.append((child_id, child_path, depth + 1))
+                elif child_id:
+                    warnings.append(f"cloud_folder_max_depth_reached:{child_path}")
+                    truncated = True
+                continue
+            if kind != "file":
+                continue
+            file_count += 1
+            if media_kind == "video":
+                video_file_count += 1
+            elif media_kind == "subtitle_sidecar":
+                subtitle_sidecar_file_count += 1
+            elif media_kind == "metadata_sidecar":
+                metadata_sidecar_file_count += 1
+                if len(metadata_sidecars) < 50:
+                    metadata_sidecars.append(
+                        {
+                            "path": child_path,
+                            "name": name,
+                            "file_id": _first_present(row, ["fid", "file_id", "id", "cid", "folder_id"]),
+                            "size": _format_size_value(_first_raw_present(row, ["size", "size_text", "file_size", "file_size_text", "s"])),
+                        }
+                    )
+            else:
+                other_file_count += 1
+
+    return {
+        "visited_folder_count": len(visited),
+        "file_count": file_count,
+        "video_file_count": video_file_count,
+        "subtitle_sidecar_file_count": subtitle_sidecar_file_count,
+        "metadata_sidecar_file_count": metadata_sidecar_file_count,
+        "other_file_count": other_file_count,
+        "metadata_sidecars": metadata_sidecars,
+        "folders": folders[:50],
+        "truncated": truncated,
+        "warnings": warnings,
+    }
+
+
 def _strm_title_summary(strm_root: str, title: str, wrong_root: str, correct_root: str) -> Dict[str, object]:
     title_dir = Path(strm_root) / title if strm_root and title else Path("__missing__")
     strm_files = sorted(title_dir.rglob("*.strm")) if title_dir.exists() else []
@@ -2761,7 +2975,9 @@ def _cloud_item_media_kind(item: Dict[str, object]) -> str:
     if suffix in MEDIA_EXTENSIONS:
         return "video"
     if suffix in SIDECAR_EXTENSIONS:
-        return "sidecar"
+        return "subtitle_sidecar"
+    if suffix in METADATA_SIDECAR_EXTENSIONS:
+        return "metadata_sidecar"
     return "file"
 
 
@@ -3528,6 +3744,10 @@ def _share_item_is_sidecar(item: Dict[str, object]) -> bool:
     return Path(_share_item_name(item)).suffix.lower() in SIDECAR_EXTENSIONS
 
 
+def _share_item_is_metadata_sidecar(item: Dict[str, object]) -> bool:
+    return Path(_share_item_name(item)).suffix.lower() in METADATA_SIDECAR_EXTENSIONS
+
+
 def _share_browse_item_summary(item: Dict[str, object], index: int) -> Dict[str, object]:
     name = _share_item_name(item)
     return {
@@ -3567,7 +3787,9 @@ def _share_item_media_kind(item: Dict[str, object]) -> str:
     if _share_item_is_video(item):
         return "video"
     if _share_item_is_sidecar(item):
-        return "sidecar"
+        return "subtitle_sidecar"
+    if _share_item_is_metadata_sidecar(item):
+        return "metadata_sidecar"
     return "file"
 
 
@@ -3582,6 +3804,16 @@ def _share_item_file_id(item: Dict[str, object]) -> str:
 def _normalize_cloud_path(path: str) -> str:
     segments = [segment for segment in str(path or "").strip().strip("/").split("/") if segment]
     return "/" + "/".join(segments) if segments else ""
+
+
+def _cloud_join_path(parent: str, name: str) -> str:
+    parent_path = _normalize_cloud_path(parent) if parent else ""
+    clean_name = str(name or "").strip().strip("/")
+    if not clean_name:
+        return parent_path
+    if not parent_path:
+        return f"/{clean_name}"
+    return f"{parent_path}/{clean_name}"
 
 
 def _looks_like_mv3_category_dir(path: str) -> bool:

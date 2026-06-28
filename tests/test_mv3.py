@@ -21,6 +21,7 @@ from series_cloud_archiver.mv3 import (
     redirect_mv3_strm_records,
     render_mv3_capabilities_report,
     render_mv3_cloud_browse_report,
+    render_mv3_cloud_media_sidecar_verify_report,
     render_mv3_ensure_path_report,
     render_mv3_instances_report,
     render_mv3_offline_add_report,
@@ -40,6 +41,7 @@ from series_cloud_archiver.mv3 import (
     repair_mv3_wrong_root,
     scan_mv3_organize_source,
     search_mv3_resources,
+    verify_mv3_cloud_media_sidecars,
     preview_mv3_share,
     receive_mv3_share,
     execute_mv3_organize_transfer_from_browse_report,
@@ -571,9 +573,112 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["summary"]["file_count"], 4)
         self.assertEqual(report["summary"]["video_file_count"], 2)
         self.assertEqual(report["summary"]["sidecar_file_count"], 2)
+        self.assertEqual(report["summary"]["subtitle_sidecar_file_count"], 2)
+        self.assertEqual(report["summary"]["metadata_sidecar_file_count"], 0)
         self.assertEqual(report["summary"]["episode_count"], 2)
-        self.assertEqual([item["media_kind"] for item in report["items"]], ["video", "sidecar", "video", "sidecar"])
+        self.assertEqual([item["media_kind"] for item in report["items"]], ["video", "subtitle_sidecar", "video", "subtitle_sidecar"])
         self.assertEqual(report["summary"]["missing_in_range"], [])
+
+    def test_cloud_browse_marks_metadata_sidecars_separately(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            if "/api/v1/files/cloud/info?" in request.full_url:
+                return FakeResponse({"success": True, "data": {"file_name": "Demo", "file_id": "folder-1", "is_dir": True}})
+            if "/api/v1/files/cloud/browse?" in request.full_url:
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {"name": "Demo.S01E01.mkv", "fid": "video-1", "is_dir": False},
+                                {"name": "Demo.S01E01.nfo", "fid": "nfo-1", "is_dir": False},
+                                {"name": "poster.jpg", "fid": "jpg-1", "is_dir": False},
+                            ]
+                        },
+                    }
+                )
+            raise AssertionError(f"unexpected url: {request.full_url}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = browse_mv3_cloud_folder("http://mv3.example", "token", path="/已整理/series/Demo")
+
+        self.assertEqual(report["summary"]["video_file_count"], 1)
+        self.assertEqual(report["summary"]["metadata_sidecar_file_count"], 2)
+        self.assertEqual(report["summary"]["metadata_sidecar_samples"], ["Demo.S01E01.nfo", "poster.jpg"])
+        self.assertEqual([item["media_kind"] for item in report["items"]], ["video", "metadata_sidecar", "metadata_sidecar"])
+
+    def test_cloud_media_sidecar_verify_blocks_metadata_and_allows_subtitles(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            parsed = urllib.parse.urlparse(request.full_url)
+            query = urllib.parse.parse_qs(parsed.query)
+            if parsed.path.endswith("/api/v1/files/cloud/info"):
+                return FakeResponse({"success": True, "data": {"file_name": "Demo", "file_id": "root-id", "is_dir": True}})
+            if parsed.path.endswith("/api/v1/files/cloud/browse"):
+                cid = query.get("cid", [""])[0]
+                if cid == "root-id":
+                    return FakeResponse({"success": True, "data": {"items": [{"name": "Season 1", "file_id": "season-id", "is_dir": True}]}})
+                if cid == "season-id":
+                    return FakeResponse(
+                        {
+                            "success": True,
+                            "data": {
+                                "items": [
+                                    {"name": "Demo.S01E01.mkv", "fid": "video-1", "is_dir": False},
+                                    {"name": "Demo.S01E01.ass", "fid": "sub-1", "is_dir": False},
+                                    {"name": "Demo.S01E01.nfo", "fid": "nfo-1", "is_dir": False},
+                                ]
+                            },
+                        }
+                    )
+            raise AssertionError(f"unexpected url: {request.full_url}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = verify_mv3_cloud_media_sidecars("http://mv3.example", "token", path="/已整理/series/Demo")
+
+        rendered = render_mv3_cloud_media_sidecar_verify_report(report, "markdown")
+        self.assertFalse(report["ok"])
+        self.assertIn("cloud_media_metadata_sidecar_present", report["blockers"])
+        self.assertEqual(report["scan"]["video_file_count"], 1)
+        self.assertEqual(report["scan"]["subtitle_sidecar_file_count"], 1)
+        self.assertEqual(report["scan"]["metadata_sidecar_file_count"], 1)
+        self.assertIn("/已整理/series/Demo/Season 1/Demo.S01E01.nfo", rendered)
 
     def test_offline_status_reports_not_ready_until_task_done_and_folder_has_files(self) -> None:
         class FakeResponse:

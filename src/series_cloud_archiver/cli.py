@@ -66,6 +66,7 @@ from .mv3 import (
     regenerate_mv3_strm_records,
     render_mv3_capabilities_report,
     render_mv3_cloud_browse_report,
+    render_mv3_cloud_media_sidecar_verify_report,
     render_mv3_ensure_path_report,
     render_mv3_instances_report,
     render_mv3_offline_add_report,
@@ -87,6 +88,7 @@ from .mv3 import (
     repair_mv3_wrong_root,
     scan_mv3_organize_source,
     search_mv3_resources,
+    verify_mv3_cloud_media_sidecars,
 )
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
 from .qbittorrent import audit_dotqb_files, fetch_qb_torrents, render_dotqb_audit_report
@@ -262,6 +264,9 @@ def build_parser() -> argparse.ArgumentParser:
     hlink_cleanup_preview_parser.add_argument("--min-seed-days", type=int, default=7, help="Minimum qB seed days")
     hlink_cleanup_preview_parser.add_argument("--required-target-prefix", default="", help="Every STRM target must start with this prefix")
     hlink_cleanup_preview_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
+    hlink_cleanup_preview_parser.add_argument("--cloud-media-path", default="", help="MV3 cloud media path that must not contain NFO/JPG/PNG/WEBP before cleanup")
+    hlink_cleanup_preview_parser.add_argument("--cloud-media-folder-id", default="", help="MV3 cloud media folder id that must not contain NFO/JPG/PNG/WEBP before cleanup")
+    hlink_cleanup_preview_parser.add_argument("--cloud-media-storage", default="115-default", help="MV3 cloud storage slug for cloud media sidecar verification")
     hlink_cleanup_preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     hlink_cleanup_preview_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
@@ -288,6 +293,9 @@ def build_parser() -> argparse.ArgumentParser:
     hlink_orphan_preview_parser.add_argument("--expected-episode-max", type=int, required=True, help="Expected last STRM episode number")
     hlink_orphan_preview_parser.add_argument("--required-target-prefix", default="", help="Every STRM target must start with this prefix")
     hlink_orphan_preview_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
+    hlink_orphan_preview_parser.add_argument("--cloud-media-path", default="", help="MV3 cloud media path that must not contain NFO/JPG/PNG/WEBP before cleanup")
+    hlink_orphan_preview_parser.add_argument("--cloud-media-folder-id", default="", help="MV3 cloud media folder id that must not contain NFO/JPG/PNG/WEBP before cleanup")
+    hlink_orphan_preview_parser.add_argument("--cloud-media-storage", default="115-default", help="MV3 cloud storage slug for cloud media sidecar verification")
     hlink_orphan_preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     hlink_orphan_preview_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
@@ -652,6 +660,17 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_browse_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     cloud_browse_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     cloud_browse_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    cloud_sidecar_parser = subcommands.add_parser("mv3-cloud-media-sidecar-verify", help="Readonly recursive MV3 cloud media metadata sidecar verification")
+    cloud_sidecar_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    cloud_sidecar_parser.add_argument("--folder-id", default="", help="Cloud folder id to verify")
+    cloud_sidecar_parser.add_argument("--path", default="", help="Cloud media path to resolve before verifying")
+    cloud_sidecar_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    cloud_sidecar_parser.add_argument("--limit", type=int, default=1150, help="Maximum folder items per browse request")
+    cloud_sidecar_parser.add_argument("--max-depth", type=int, default=4, help="Maximum recursive folder depth")
+    cloud_sidecar_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    cloud_sidecar_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    cloud_sidecar_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     wrong_root_parser = subcommands.add_parser("mv3-repair-wrong-root", help="Dry-run or repair MV3 cloud files placed under a duplicated wrong root")
     wrong_root_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -1154,6 +1173,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             min_seed_days=args.min_seed_days,
             required_target_prefix=args.required_target_prefix,
             forbidden_target_prefixes=args.forbidden_target_prefix,
+            mv3_base_url=config.mv3_base_url,
+            mv3_token=config.mv3_token,
+            cloud_media_path=args.cloud_media_path,
+            cloud_media_folder_id=args.cloud_media_folder_id,
+            cloud_media_storage=args.cloud_media_storage,
         )
         rendered = render_cloud_hlink_cleanup(report, args.format)
         if args.output:
@@ -1190,6 +1214,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             config.qb_user,
             config.qb_pass,
             path_aliases=config.path_aliases,
+            mv3_base_url=config.mv3_base_url,
+            mv3_token=config.mv3_token,
             timeout=args.timeout,
         )
         rendered = render_cloud_hlink_cleanup(report, args.format)
@@ -1217,6 +1243,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             path_aliases=config.path_aliases,
             required_target_prefix=args.required_target_prefix,
             forbidden_target_prefixes=args.forbidden_target_prefix,
+            mv3_base_url=config.mv3_base_url,
+            mv3_token=config.mv3_token,
+            cloud_media_path=args.cloud_media_path,
+            cloud_media_folder_id=args.cloud_media_folder_id,
+            cloud_media_storage=args.cloud_media_storage,
         )
         rendered = render_cloud_hlink_cleanup(report, args.format)
         if args.output:
@@ -1248,6 +1279,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             config.qb_user,
             config.qb_pass,
             path_aliases=config.path_aliases,
+            mv3_base_url=config.mv3_base_url,
+            mv3_token=config.mv3_token,
         )
         rendered = render_cloud_hlink_cleanup(report, args.format)
         if args.output:
@@ -1947,6 +1980,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(rendered)
         return 0
+
+    if args.command == "mv3-cloud-media-sidecar-verify":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-cloud-media-sidecar-verify requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = verify_mv3_cloud_media_sidecars(
+            config.mv3_base_url,
+            config.mv3_token,
+            folder_id=args.folder_id,
+            path=args.path,
+            storage=args.storage,
+            limit=args.limit,
+            max_depth=args.max_depth,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_cloud_media_sidecar_verify_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
 
     if args.command == "mv3-repair-wrong-root":
         config = config_from_env(args.env_file, [])

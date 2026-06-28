@@ -65,6 +65,60 @@ class CloudHlinkCleanupTest(unittest.TestCase):
         self.assertEqual(report["qbittorrent"]["hashes"], ["feedface00001234567890"])
         self.assertEqual(report["hlink"]["video_count"], 1)
 
+    def test_preview_blocks_when_cloud_media_has_metadata_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "qb" / "TV" / "Show.S01"
+            source_file = source / "Show.S01E01.mkv"
+            write(source_file)
+            hlink_root = tmp_path / "hlink" / "TV" / "Show"
+            hlink_file = hlink_root / "Season 01" / "Show.S01E01.mkv"
+            hlink_file.parent.mkdir(parents=True)
+            os.link(source_file, hlink_file)
+            strm_root = tmp_path / "strm" / "series" / "Show" / "Season 01"
+            write(strm_root / "Show.S01E01.strm", "/已整理/series/Show/Season 1/Show.S01E01.mkv")
+            torrent = QBTorrentEvidence(
+                name="Show.S01",
+                hash="feedface00001234567890",
+                state="stalledUP",
+                save_path=str(tmp_path / "qb" / "TV"),
+                content_path=str(source),
+                progress=1.0,
+                seeding_time_seconds=86400 * 8,
+                seed_days=8.0,
+                size_bytes=source_file.stat().st_size,
+            )
+            cloud_report = {
+                "ok": False,
+                "blockers": ["cloud_media_metadata_sidecar_present"],
+                "warnings": [],
+                "scan": {"metadata_sidecar_file_count": 1},
+            }
+
+            with patch("series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[torrent]), patch(
+                "series_cloud_archiver.hlink_cleanup.verify_mv3_cloud_media_sidecars", return_value=cloud_report
+            ):
+                report = preview_cloud_hlink_cleanup(
+                    "Show",
+                    str(hlink_root),
+                    str(strm_root),
+                    expected_tmdbid=1,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                    min_seed_days=7,
+                    required_target_prefix="/已整理/series/Show",
+                    mv3_base_url="http://mv3.example",
+                    mv3_token="token",
+                    cloud_media_path="/已整理/series/Show",
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["ready_for_execute"])
+        self.assertIn("cloud_media_metadata_sidecar_present", report["blockers"])
+        self.assertEqual(report["cloud_media"]["scan"]["metadata_sidecar_file_count"], 1)
+
     def test_preview_blocks_when_qb_seed_time_is_too_short(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
