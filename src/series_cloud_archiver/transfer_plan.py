@@ -426,7 +426,7 @@ def _share_search_candidate(row: Dict[str, object], transfer_item: Dict[str, obj
     title = str(row.get("title") or "")
     expected_count = int(transfer_item.get("expected_count") or 0)
     local_size = int(transfer_item.get("size_bytes") or 0)
-    remote_size = _parse_size_bytes(row.get("size")) or _parse_size_bytes(title)
+    remote_size = _share_result_size_bytes(row.get("size"), title)
     score = 0
     reasons: List[str] = []
     blockers: List[str] = []
@@ -564,6 +564,22 @@ def _parse_size_bytes(value: object) -> int:
     if not matches:
         return int(float(compact)) if compact.isdigit() else 0
     return max(_size_match_bytes(match) for match in matches)
+
+
+def _share_result_size_bytes(size_value: object, title: str) -> int:
+    explicit_size = _parse_size_bytes(size_value)
+    if _looks_like_real_share_size(explicit_size):
+        return explicit_size
+    title_size = _parse_size_bytes(title)
+    if _looks_like_real_share_size(title_size):
+        return title_size
+    return 0
+
+
+def _looks_like_real_share_size(size_bytes: int) -> bool:
+    # Resource search providers sometimes expose 4K/4096 as a placeholder or
+    # video-quality token, not as a real share size.
+    return int(size_bytes or 0) >= 10 * 1024 * 1024
 
 
 def _size_match_bytes(match: re.Match[str]) -> int:

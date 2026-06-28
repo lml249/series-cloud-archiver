@@ -698,6 +698,44 @@ class TransferPlanTest(unittest.TestCase):
         self.assertIn("size_similar", recommended["reasons"])
         self.assertNotIn("size_far_from_local", recommended["blockers"])
 
+    def test_share_search_plan_treats_4k_placeholder_size_as_unknown(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "唐诡奇谭之长安县尉",
+                    "tmdbid": 305979,
+                    "season": 1,
+                    "size_bytes": int(2.1 * 1024**3),
+                    "expected_count": 56,
+                    "source_paths": ["/example/library-host/hlink/TV/唐诡奇谭之长安县尉"],
+                }
+            ],
+        }
+        search_reports = {
+            "唐诡奇谭之长安县尉": {
+                "ok": True,
+                "result_count": 1,
+                "items": [
+                    {
+                        "index": 1,
+                        "title": "唐诡奇谭之长安县尉（2025）全56集 4K SDR 竖屏微短剧",
+                        "size": "",
+                        "share_code_available": True,
+                    }
+                ],
+            }
+        }
+
+        plan = plan_mv3_share_search_from_transfer_plan(transfer_plan, search_reports, limit=1)
+
+        recommended = plan["items"][0]["recommended_candidate"]
+        self.assertEqual(plan["ready_items"], 1)
+        self.assertEqual(recommended["size_bytes"], 0)
+        self.assertIn("complete_marker", recommended["reasons"])
+        self.assertIn("remote_size_unknown", recommended["reasons"])
+        self.assertNotIn("size_far_from_local", recommended["blockers"])
+
     def test_share_search_plan_records_keyword_for_english_result(self) -> None:
         transfer_plan = {
             "mode": "readonly-mv3-transfer-plan",
