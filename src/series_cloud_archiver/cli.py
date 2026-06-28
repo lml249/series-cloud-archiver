@@ -692,6 +692,7 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_duplicate_cleanup_parser = subcommands.add_parser("mv3-cloud-duplicate-video-cleanup", help="Dry-run or delete duplicate MV3 cloud season videos protected by STRM targets")
     cloud_duplicate_cleanup_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
     cloud_duplicate_cleanup_parser.add_argument("--season-path", required=True, help="Cloud season path to inspect, e.g. /已整理/series/Demo/Season 1")
+    cloud_duplicate_cleanup_parser.add_argument("--folder-id", default="", help="Optional already-verified MV3 cloud season folder id")
     cloud_duplicate_cleanup_parser.add_argument("--strm-root", required=True, help="Local/DSM STRM season root whose targets must be protected")
     cloud_duplicate_cleanup_parser.add_argument("--expected-episode-count", type=int, required=True, help="Expected distinct episode count")
     cloud_duplicate_cleanup_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
@@ -2069,6 +2070,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             season_path=args.season_path,
             strm_root=args.strm_root,
             expected_episode_count=args.expected_episode_count,
+            folder_id=args.folder_id,
             storage=args.storage,
             limit=args.limit,
             timeout=args.timeout,

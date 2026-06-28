@@ -613,6 +613,7 @@ def cleanup_mv3_cloud_duplicate_videos(
     season_path: str,
     strm_root: str,
     expected_episode_count: int,
+    folder_id: str = "",
     storage: str = "115-default",
     limit: int = 1150,
     timeout: int = 60,
@@ -627,7 +628,7 @@ def cleanup_mv3_cloud_duplicate_videos(
     info: Dict[str, object] = {}
     info_status = 0
     info_content_type = ""
-    folder_id = ""
+    folder_id = str(folder_id or "")
 
     if not normalized_season_path:
         blockers.append("season_path_required")
@@ -636,11 +637,13 @@ def cleanup_mv3_cloud_duplicate_videos(
     if expected_episode_count <= 0:
         blockers.append("expected_episode_count_required")
 
-    if normalized_season_path:
+    if normalized_season_path and not folder_id:
         info, info_status, info_content_type = _read_cloud_info_status(client, "", normalized_season_path, storage)
         folder_id = _extract_folder_id(info)
         if not info or not folder_id:
             blockers.append("cloud_season_path_not_found")
+    elif folder_id:
+        info, info_status, info_content_type = _read_cloud_info_status(client, folder_id, "", storage)
 
     folder_summary = _empty_cloud_folder_summary(normalized_season_path, exists=bool(folder_id), status=info_status, content_type=info_content_type)
     if folder_id:

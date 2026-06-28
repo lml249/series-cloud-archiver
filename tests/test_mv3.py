@@ -305,6 +305,8 @@ class MV3WrongRootRepairTest(unittest.TestCase):
                         str(env_file),
                         "--season-path",
                         "/已整理/series/Demo/Season 1",
+                        "--folder-id",
+                        "season-id",
                         "--strm-root",
                         str(strm_root),
                         "--expected-episode-count",
@@ -452,7 +454,7 @@ def _fake_mv3_sidecar_cleanup_response(request, deleted=False):
     raise AssertionError(f"unexpected url: {request.full_url}")
 
 
-def _fake_mv3_duplicate_video_cleanup_response(request, deleted=False):
+def _fake_mv3_duplicate_video_cleanup_response(request, deleted=False, empty_info=False):
     class FakeResponse:
         status = 200
 
@@ -478,6 +480,8 @@ def _fake_mv3_duplicate_video_cleanup_response(request, deleted=False):
     if parsed.path.endswith("/api/v1/files/115/delete"):
         return FakeResponse({"success": True, "message": "ok", "data": None})
     if parsed.path.endswith("/api/v1/files/cloud/info"):
+        if empty_info:
+            return FakeResponse({"success": True, "data": {}})
         return FakeResponse(
             {
                 "success": True,
@@ -1074,6 +1078,33 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertIn("expected_delete_count_mismatch", report["blockers"])
             self.assertEqual(report["operation"], {"skipped": True, "reason": "blocked"})
             self.assertTrue(all("/api/v1/files/115/delete" not in url for url in calls))
+
+    def test_cloud_duplicate_video_cleanup_accepts_verified_folder_id_when_path_info_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm" / "Demo" / "Season 1"
+            root.mkdir(parents=True)
+            for episode in (1, 2):
+                (root / f"Demo - S01E{episode:02d}.strm").write_text(
+                    f"/已整理/series/Demo/Season 1/Demo - S01E{episode:02d}.mkv",
+                    encoding="utf-8",
+                )
+
+            def fake_urlopen(request, timeout):
+                return _fake_mv3_duplicate_video_cleanup_response(request, deleted=False, empty_info=True)
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                report = cleanup_mv3_cloud_duplicate_videos(
+                    "http://mv3.example",
+                    "token",
+                    season_path="/已整理/series/Demo/Season 1",
+                    folder_id="season-id",
+                    strm_root=str(root),
+                    expected_episode_count=2,
+                )
+
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["folder_id"], "season-id")
+            self.assertEqual(report["delete_plan"]["duplicate_video_count"], 2)
 
     def test_offline_status_reports_not_ready_until_task_done_and_folder_has_files(self) -> None:
         class FakeResponse:
