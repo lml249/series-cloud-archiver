@@ -10,6 +10,8 @@ import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+from .path_safety import looks_like_strm_side_path
+
 
 DEFAULT_PROBE_PATHS = ["/", "/api", "/api/v1", "/openapi.json", "/api/v1/openapi.json", "/api/v1/config"]
 DEFAULT_INSTANCE_PATHS = [
@@ -2204,6 +2206,8 @@ def generate_mv3_strm(
         blockers.append("target_dir_required")
     if normalized_target_dir.startswith("/已整理"):
         blockers.append("target_dir_looks_like_cloud_media_root")
+    if normalized_target_dir and not looks_like_strm_side_path(normalized_target_dir):
+        blockers.append("target_dir_must_be_strm_side")
     if cloud and normalized_source_dir.startswith("/volume"):
         blockers.append("source_dir_looks_like_local_strm_root")
     if organize:
@@ -5128,9 +5132,13 @@ def _materialize_strm_record(
     expected_strm_prefix = expected_strm_prefix.rstrip("/")
     expected_source_prefix = expected_source_prefix.rstrip("/")
     rewrite_from, rewrite_to = _parse_strm_rewrite_prefix(rewrite_strm_prefix)
+    if expected_strm_prefix and not looks_like_strm_side_path(expected_strm_prefix):
+        blockers.append("expected_strm_prefix_must_be_strm_side")
     if rewrite_strm_prefix and (not rewrite_from or not rewrite_to):
         blockers.append("rewrite_strm_prefix_invalid")
     elif rewrite_from:
+        if not looks_like_strm_side_path(rewrite_from) or not looks_like_strm_side_path(rewrite_to):
+            blockers.append("rewrite_strm_prefix_must_be_strm_side")
         if strm_path == rewrite_from:
             strm_path = rewrite_to
         elif strm_path.startswith(rewrite_from.rstrip("/") + "/"):
@@ -5146,10 +5154,14 @@ def _materialize_strm_record(
         blockers.append("strm_content_required")
     if expected_strm_prefix and not strm_path.startswith(expected_strm_prefix.rstrip("/") + "/") and strm_path != expected_strm_prefix:
         blockers.append("strm_path_prefix_mismatch")
+    if strm_path and not looks_like_strm_side_path(strm_path):
+        blockers.append("strm_path_must_be_strm_side")
     if expected_source_prefix and not source_path.startswith(expected_source_prefix.rstrip("/") + "/") and source_path != expected_source_prefix:
         blockers.append("source_path_prefix_mismatch")
     if not host_prefix or not mv3_prefix:
         blockers.append("host_strm_prefix_required")
+    elif not looks_like_strm_side_path(host_prefix) or not looks_like_strm_side_path(mv3_prefix):
+        blockers.append("host_strm_prefix_must_be_strm_side")
     elif strm_path and strm_path != mv3_prefix and not strm_path.startswith(mv3_prefix.rstrip("/") + "/"):
         blockers.append("host_strm_prefix_mismatch")
     elif strm_path:

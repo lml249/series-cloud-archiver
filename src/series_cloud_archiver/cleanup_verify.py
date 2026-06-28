@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 
 from .episode import episode_signal
 from .moviepilot import MPTransferHistoryRecord, MoviePilotClient, transfer_record_season_numbers
-from .path_safety import cloud_media_paths
+from .path_safety import cloud_media_paths, non_strm_side_paths
 from .qbittorrent import fetch_qb_torrents
 
 
@@ -149,12 +149,16 @@ def audit_strm_nfo_language(
     blockers: List[str] = []
     warnings: List[str] = []
     blocked_cloud_media_roots = cloud_media_paths(strm_roots)
+    blocked_non_strm_roots = non_strm_side_paths(strm_roots)
     roots = [_nfo_language_root_row(path, min_chinese_ratio=min_chinese_ratio, sample_limit=sample_limit) for path in strm_roots]
     if not strm_roots:
         blockers.append("strm_root_required")
     if blocked_cloud_media_roots:
         blockers.append("strm_nfo_root_must_be_strm_side")
         warnings.append("cloud_media_paths_are_transfer_and_strm_only")
+    if blocked_non_strm_roots:
+        blockers.append("strm_nfo_root_must_be_strm_side")
+        warnings.append("strm_nfo_roots_must_be_strm_side")
     if any(not item["exists"] for item in roots):
         blockers.append("strm_root_missing")
 
@@ -173,6 +177,7 @@ def audit_strm_nfo_language(
             "min_chinese_ratio": min_chinese_ratio,
             "sample_limit": sample_limit,
             "blocked_cloud_media_roots": blocked_cloud_media_roots,
+            "blocked_non_strm_roots": blocked_non_strm_roots,
         },
         "summary": {
             "root_count": len(roots),

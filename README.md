@@ -10,7 +10,7 @@
 
 云盘实体目录只做两件事：**转存资源** 和 **生成 STRM**。
 
-所有识别、刮削、NFO、海报和 Emby 入库都必须发生在 STRM 媒体库路径上，不能对 `/已整理`、`/未整理` 这类云盘实体目录做刮削。项目会阻断把云盘实体目录传给 Emby 刷新/刮削或 STRM NFO 语言审计的命令，并在整理转存时排除 `.nfo/.jpg/.jpeg/.png/.webp` 这类元数据旁挂。
+所有识别、刮削、NFO、海报和 Emby 入库都必须发生在 STRM 媒体库路径上，不能对 `/已整理`、`/未整理` 这类云盘实体目录做刮削。裸 `/series/...` 也不算 STRM 媒体库路径；STRM 侧路径应明确位于 `/strm`、`.../mv3/strm`、`cloud-strm` 或类似 STRM 根下。项目会阻断把非 STRM 侧路径传给 Emby 刷新/刮削或 STRM NFO 语言审计的命令，并在整理转存时排除 `.nfo/.jpg/.jpeg/.png/.webp` 这类元数据旁挂。
 
 ## 它要解决什么
 
@@ -544,11 +544,11 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-brows
 
 `mv3-organize-transfer-from-browse` 只负责把媒体文件交给 MV3 整理并生成 STRM。云盘只做转存和 STRM 生成，云盘媒体文件目录不做刮削，也不应生成旁挂 NFO/JPG；后续只让 MoviePilot/Emby 对 STRM 目录刮削入库。项目里的 MV3 分享接收、整理扫描、整理转存都会排除 `.nfo/.jpg/.jpeg/.png/.webp` 这类刮削旁挂，字幕旁挂仍可保留给播放使用。即使上游 browse 报告没有标出 `media_kind`，项目也会按扩展名重新判定，只把真实视频文件提交给 MV3 整理。
 
-换句话说，115/MV3 的实体目录只负责“资源在那里、STRM 指过去”；中文 NFO、海报、剧集信息和 Emby 入库都应该发生在 STRM 媒体库路径。任何把 `/已整理/...` 这类云盘媒体目录传给 Emby 刷新/刮削的命令都会被项目阻断。
+换句话说，115/MV3 的实体目录只负责“资源在那里、STRM 指过去”；中文 NFO、海报、剧集信息和 Emby 入库都应该发生在 STRM 媒体库路径。任何把 `/已整理/...` 这类云盘媒体目录，或裸 `/series/...` 这类非 STRM 侧目录，传给 Emby 刷新/刮削的命令都会被项目阻断。
 
 整理转存成功后，下一步必须先验证两边：云盘媒体目录只应该有视频和可播放用字幕旁挂，不能有 `.nfo/.jpg/.jpeg/.png/.webp`；STRM 目录才是后续刮削和 Emby 入库对象。也就是说，删除本地 hlink 或 qB 种子前，至少要同时拿到 `mv3-cloud-browse`、`mv3-cloud-media-sidecar-verify`、`strm-verify` 和局部 Emby 验证报告。
 
-单独调用 `mv3-strm-generate` 时也保持同样边界：只生成 STRM，不允许顺手整理或刮削云盘媒体。命令里的 `--organize` 会被项目阻断；即使传了旧版兼容参数 `--allow-organize` 也不会放行。正常迁移流程应先用 `mv3-organize-transfer-from-browse` 完成云盘整理和 STRM 生成，再只刷新/刮削 STRM 侧媒体库。
+单独调用 `mv3-strm-generate` 时也保持同样边界：只生成 STRM，不允许顺手整理或刮削云盘媒体。`--target-dir` 必须是 STRM 侧根目录，不能传 `/已整理`、`/未整理` 或 `/series`。命令里的 `--organize` 会被项目阻断；即使传了旧版兼容参数 `--allow-organize` 也不会放行。正常迁移流程应先用 `mv3-organize-transfer-from-browse` 完成云盘整理和 STRM 生成，再只刷新/刮削 STRM 侧媒体库。
 
 如果发现云盘媒体目录里已经出现 `.nfo/.jpg/.jpeg/.png/.webp` 等刮削旁挂，先用 dry-run 列出将要删除的元数据文件：
 

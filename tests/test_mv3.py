@@ -3790,6 +3790,19 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("organize flag is always blocked", report["safety"])
         fake_urlopen.assert_not_called()
 
+    def test_strm_generate_blocks_non_strm_target_dir(self) -> None:
+        with patch("urllib.request.urlopen") as fake_urlopen:
+            report = generate_mv3_strm(
+                "http://mv3.example",
+                "token",
+                source_dir="/已整理/series/Demo/Season 1",
+                target_dir="/series/Demo",
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("target_dir_must_be_strm_side", report["blockers"])
+        fake_urlopen.assert_not_called()
+
     def test_strm_records_regenerate_posts_record_ids(self) -> None:
         seen = {}
 
@@ -4181,6 +4194,7 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertEqual(report["writes"][0]["record_id"], 16868)
             self.assertEqual(report["writes"][0]["action"], "written")
             self.assertNotIn("pickcode=secret", rendered)
+            self.assertEqual(report["writes"][0]["source_path"], "/已整理/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.mkv")
 
     def test_strm_records_materialize_blocks_prefix_mismatch(self) -> None:
         class FakeResponse:
@@ -4227,6 +4241,53 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertIn("strm_path_prefix_mismatch", report["blockers"])
         self.assertIn("source_path_prefix_mismatch", report["blockers"])
+
+    def test_strm_records_materialize_blocks_non_strm_host_prefix(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                payload = {
+                    "success": True,
+                    "data": {
+                        "items": [
+                            {
+                                "id": 16868,
+                                "strm_path": "/已整理/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.strm",
+                                "source_path": "/已整理/series/八千里路云和月/Season 1/八千里路云和月 - S01E37.mkv",
+                                "strm_content": "https://mv3.example/redirect?path=/已整理/series/八千里路云和月/Season%201/E37.mkv",
+                            }
+                        ]
+                    },
+                }
+                return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                report = materialize_mv3_strm_records(
+                    "http://mv3.example",
+                    "token",
+                    record_ids=[16868],
+                    expected_record_ids=[16868],
+                    expected_strm_prefix="/已整理/series/八千里路云和月",
+                    expected_source_prefix="/已整理/series/八千里路云和月",
+                    host_strm_prefix=f"{tmp}=/已整理",
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("expected_strm_prefix_must_be_strm_side", report["blockers"])
+        self.assertIn("strm_path_must_be_strm_side", report["blockers"])
+        self.assertIn("host_strm_prefix_must_be_strm_side", report["blockers"])
 
     def test_strm_records_materialize_can_rewrite_strm_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

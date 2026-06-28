@@ -76,7 +76,9 @@ must happen against STRM-backed library paths, not beside the cloud media files.
   treated as metadata sidecars, not cleanup evidence.
 - STRM NFO language or scraping-quality audits must run against STRM-backed
   library paths only. Passing cloud media paths such as `/已整理` or `/未整理`
-  is blocked because cloud media metadata is not the source of truth.
+  is blocked because cloud media metadata is not the source of truth. Bare
+  `/series/...` paths are also rejected; STRM-side paths must live under a
+  clear STRM root such as `/strm`, `.../mv3/strm`, or `cloud-strm`.
 - Local cleanup must stay blocked while cloud media metadata sidecars are
   present.
 - Removing cloud media metadata sidecars requires a dry-run report, an explicit
@@ -85,4 +87,5 @@ must happen against STRM-backed library paths, not beside the cloud media files.
 - Standalone MV3 STRM generation is STRM-only. Its `organize` parameter is
   always blocked, even when an old command passes the compatibility
   `allow-organize` flag, so cloud media organization remains confined to the
-  audited organize-transfer flow.
+  audited organize-transfer flow. Its target directory must be STRM-side, never
+  a cloud media or bare category directory.

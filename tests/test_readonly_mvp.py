@@ -910,6 +910,37 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
         self.assertIn("cloud_media_paths_are_transfer_and_strm_only", report["warnings"])
         self.assertEqual(report["notify"]["request"]["blocked_paths"], ["/已整理/series/甄嬛传 (2011) {tmdbid=50878}"])
 
+    def test_emby_media_updated_blocks_non_strm_scrape_path(self) -> None:
+        calls = []
+
+        class FakeClient:
+            def __init__(self, base_url, api_key, timeout=20):
+                pass
+
+            def notify_media_updated(self, paths, update_type="Created"):
+                calls.append({"paths": paths, "update_type": update_type})
+                raise AssertionError("non-STRM paths must not be sent to Emby media-updated")
+
+            def items_by_search(self, search_term):
+                return []
+
+        with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+            report = notify_and_verify_emby_media_updated(
+                "http://emby.example",
+                "token",
+                title="甄嬛传",
+                updated_paths=["/series/甄嬛传 (2011) {tmdbid=50878}"],
+                stale_path_prefixes=[],
+                strm_path_prefixes=["/series/甄嬛传 (2011) {tmdbid=50878}"],
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(calls, [])
+        self.assertIn("emby_updated_path_must_be_strm_side", report["blockers"])
+        self.assertIn("emby_strm_path_prefix_must_be_strm_side", report["blockers"])
+        self.assertIn("emby_updated_paths_must_be_strm_side", report["warnings"])
+        self.assertEqual(report["notify"]["request"]["non_strm_paths"], ["/series/甄嬛传 (2011) {tmdbid=50878}"])
+
     def test_emby_refresh_verify_blocks_cloud_media_strm_prefix(self) -> None:
         calls = []
 
@@ -2486,6 +2517,22 @@ class MoviePilotEvidenceTest(unittest.TestCase):
             self.assertIn("cloud_media_paths_are_transfer_and_strm_only", report["warnings"])
             self.assertEqual(report["expected"]["blocked_cloud_media_roots"], [str(cloud_root)])
             self.assertIn("Blocked cloud media roots", rendered)
+
+    def test_strm_nfo_language_audit_blocks_non_strm_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            non_strm_root = Path(tmp) / "series" / "Demo (2026) {tmdbid=1}" / "Season 01"
+            non_strm_root.mkdir(parents=True)
+            (non_strm_root / "Demo S01E01.nfo").write_text(
+                "<episodedetails><title>第一集</title><plot>这个路径不是 STRM 媒体库路径，不能作为刮削验收依据。</plot></episodedetails>",
+                encoding="utf-8",
+            )
+
+            report = audit_strm_nfo_language([str(non_strm_root)])
+
+            self.assertFalse(report["ok"])
+            self.assertIn("strm_nfo_root_must_be_strm_side", report["blockers"])
+            self.assertIn("strm_nfo_roots_must_be_strm_side", report["warnings"])
+            self.assertEqual(report["expected"]["blocked_non_strm_roots"], [str(non_strm_root)])
 
     def test_strm_nfo_language_audit_cli_writes_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Sequence
 
 from .episode import episode_signal
 from .models import EmbyEvidence, FileSystemSeries
-from .path_safety import cloud_media_paths
+from .path_safety import cloud_media_paths, non_strm_side_paths
 from .redaction import redact_sensitive_text
 
 
@@ -255,9 +255,13 @@ def refresh_and_verify_emby_library(
     warnings: List[str] = []
     normalized_strm_prefixes = _normalize_prefixes(strm_path_prefixes)
     blocked_strm_prefixes = _cloud_media_paths_forbidden_for_emby_scrape(normalized_strm_prefixes)
+    non_strm_prefixes = _non_strm_side_paths_for_emby_scrape(normalized_strm_prefixes)
     if blocked_strm_prefixes:
         blockers.append("emby_strm_path_prefix_must_be_strm_side")
         warnings.append("cloud_media_paths_are_transfer_and_strm_only")
+    if non_strm_prefixes:
+        blockers.append("emby_strm_path_prefix_must_be_strm_side")
+        warnings.append("emby_strm_path_prefixes_must_be_strm_side")
     full_refresh_requires_approval = not skip_refresh and not approve_full_library_refresh
     if full_refresh_requires_approval:
         blockers.append("emby_full_library_refresh_requires_approval")
@@ -266,7 +270,7 @@ def refresh_and_verify_emby_library(
         "requested": not skip_refresh,
         "approved_full_library_refresh": approve_full_library_refresh,
     }
-    if not skip_refresh and not blocked_strm_prefixes and not full_refresh_requires_approval:
+    if not skip_refresh and not blocked_strm_prefixes and not non_strm_prefixes and not full_refresh_requires_approval:
         result = client.refresh_library()
         refresh["request"] = result
         if not result.get("ok"):
@@ -286,6 +290,7 @@ def refresh_and_verify_emby_library(
         refresh["request"] = {
             "skipped": True,
             "blocked_strm_path_prefixes": blocked_strm_prefixes,
+            "non_strm_path_prefixes": non_strm_prefixes,
             "reason": "full_library_refresh_requires_approval" if full_refresh_requires_approval else "",
         }
         if blocked_strm_prefixes or full_refresh_requires_approval:
@@ -472,22 +477,36 @@ def notify_and_verify_emby_media_updated(
     if not normalized_updated_paths:
         blockers.append("emby_updated_path_required")
     blocked_updated_paths = _cloud_media_paths_forbidden_for_emby_scrape(normalized_updated_paths)
+    non_strm_updated_paths = _non_strm_side_paths_for_emby_scrape(normalized_updated_paths)
     if blocked_updated_paths:
         blockers.append("emby_updated_path_must_be_strm_side")
         warnings.append("cloud_media_paths_are_transfer_and_strm_only")
+    if non_strm_updated_paths:
+        blockers.append("emby_updated_path_must_be_strm_side")
+        warnings.append("emby_updated_paths_must_be_strm_side")
     normalized_strm_prefixes = _normalize_prefixes(strm_path_prefixes)
     blocked_strm_prefixes = _cloud_media_paths_forbidden_for_emby_scrape(normalized_strm_prefixes)
+    non_strm_prefixes = _non_strm_side_paths_for_emby_scrape(normalized_strm_prefixes)
     if blocked_strm_prefixes:
         blockers.append("emby_strm_path_prefix_must_be_strm_side")
         warnings.append("cloud_media_paths_are_transfer_and_strm_only")
+    if non_strm_prefixes:
+        blockers.append("emby_strm_path_prefix_must_be_strm_side")
+        warnings.append("emby_strm_path_prefixes_must_be_strm_side")
     notify = {"requested": bool(normalized_updated_paths), "update_type": update_type, "paths": normalized_updated_paths}
-    if normalized_updated_paths and not blocked_updated_paths and not blocked_strm_prefixes:
+    if normalized_updated_paths and not blocked_updated_paths and not non_strm_updated_paths and not blocked_strm_prefixes and not non_strm_prefixes:
         result = client.notify_media_updated(normalized_updated_paths, update_type=update_type)
         notify["request"] = result
         if not result.get("ok"):
             blockers.append("emby_media_updated_request_failed")
     else:
-        notify["request"] = {"skipped": True, "blocked_paths": blocked_updated_paths, "blocked_strm_path_prefixes": blocked_strm_prefixes}
+        notify["request"] = {
+            "skipped": True,
+            "blocked_paths": blocked_updated_paths,
+            "non_strm_paths": non_strm_updated_paths,
+            "blocked_strm_path_prefixes": blocked_strm_prefixes,
+            "non_strm_path_prefixes": non_strm_prefixes,
+        }
 
     verification = verify_emby_library_paths(
         client,
@@ -538,9 +557,13 @@ def refresh_and_verify_emby_item(
     warnings: List[str] = []
     normalized_strm_prefixes = _normalize_prefixes(strm_path_prefixes)
     blocked_strm_prefixes = _cloud_media_paths_forbidden_for_emby_scrape(normalized_strm_prefixes)
+    non_strm_prefixes = _non_strm_side_paths_for_emby_scrape(normalized_strm_prefixes)
     if blocked_strm_prefixes:
         blockers.append("emby_strm_path_prefix_must_be_strm_side")
         warnings.append("cloud_media_paths_are_transfer_and_strm_only")
+    if non_strm_prefixes:
+        blockers.append("emby_strm_path_prefix_must_be_strm_side")
+        warnings.append("emby_strm_path_prefixes_must_be_strm_side")
     refresh = {
         "requested": bool(item_id),
         "item_id": item_id,
@@ -553,8 +576,12 @@ def refresh_and_verify_emby_item(
     if not item_id:
         blockers.append("emby_item_id_required")
         refresh["request"] = {"skipped": True}
-    elif blocked_strm_prefixes:
-        refresh["request"] = {"skipped": True, "blocked_strm_path_prefixes": blocked_strm_prefixes}
+    elif blocked_strm_prefixes or non_strm_prefixes:
+        refresh["request"] = {
+            "skipped": True,
+            "blocked_strm_path_prefixes": blocked_strm_prefixes,
+            "non_strm_path_prefixes": non_strm_prefixes,
+        }
     else:
         result = client.refresh_item(
             item_id,
@@ -1057,11 +1084,20 @@ def _build_path_verification(
     blockers: List[str] = []
     warnings: List[str] = []
     stale_paths = [_prefix_summary(prefix, stale_rows) for prefix in _normalize_prefixes(stale_path_prefixes)]
-    strm_paths = [_prefix_summary(prefix, strm_rows) for prefix in _normalize_prefixes(strm_path_prefixes)]
+    normalized_strm_prefixes = _normalize_prefixes(strm_path_prefixes)
+    strm_paths = [_prefix_summary(prefix, strm_rows) for prefix in normalized_strm_prefixes]
     stale_count = len(stale_rows)
     strm_count = len(strm_rows)
     episodes = _episode_numbers_from_rows(strm_rows)
     strm = _episode_summary(episodes)
+    blocked_strm_prefixes = _cloud_media_paths_forbidden_for_emby_scrape(normalized_strm_prefixes)
+    non_strm_prefixes = _non_strm_side_paths_for_emby_scrape(normalized_strm_prefixes)
+    if blocked_strm_prefixes:
+        blockers.append("emby_strm_path_prefix_must_be_strm_side")
+        warnings.append("cloud_media_paths_are_transfer_and_strm_only")
+    if non_strm_prefixes:
+        blockers.append("emby_strm_path_prefix_must_be_strm_side")
+        warnings.append("emby_strm_path_prefixes_must_be_strm_side")
     if stale_count:
         blockers.append("emby_stale_path_records_present")
     if strm_path_prefixes and strm_count == 0:
@@ -1083,6 +1119,8 @@ def _build_path_verification(
         "strm_paths": strm_paths,
         "strm": strm,
         "totals": {"stale_records": stale_count, "strm_records": strm_count},
+        "blocked_strm_path_prefixes": blocked_strm_prefixes,
+        "non_strm_path_prefixes": non_strm_prefixes,
         "blockers": sorted(set(blockers)),
         "warnings": warnings,
     }
@@ -1151,6 +1189,10 @@ def _normalize_prefixes(prefixes: Sequence[str]) -> List[str]:
 
 def _cloud_media_paths_forbidden_for_emby_scrape(paths: Sequence[str]) -> List[str]:
     return cloud_media_paths(paths)
+
+
+def _non_strm_side_paths_for_emby_scrape(paths: Sequence[str]) -> List[str]:
+    return non_strm_side_paths(paths)
 
 
 def _stale_root_rows(rows: Sequence[Dict[str, object]], stale_path_prefixes: Sequence[str]) -> List[Dict[str, object]]:
