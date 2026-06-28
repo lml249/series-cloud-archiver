@@ -831,6 +831,68 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["notify"]["paths"], ["/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}"])
 
+    def test_emby_media_updated_blocks_cloud_media_scrape_path(self) -> None:
+        calls = []
+
+        class FakeClient:
+            def __init__(self, base_url, api_key, timeout=20):
+                pass
+
+            def notify_media_updated(self, paths, update_type="Created"):
+                calls.append({"paths": paths, "update_type": update_type})
+                raise AssertionError("cloud media paths must not be sent to Emby media-updated")
+
+            def items_by_search(self, search_term):
+                return []
+
+        with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+            report = notify_and_verify_emby_media_updated(
+                "http://emby.example",
+                "token",
+                title="甄嬛传",
+                updated_paths=["/已整理/series/甄嬛传 (2011) {tmdbid=50878}"],
+                stale_path_prefixes=[],
+                strm_path_prefixes=["/example/strm/series/甄嬛传 (2011) {tmdbid=50878}"],
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(calls, [])
+        self.assertIn("emby_updated_path_must_be_strm_side", report["blockers"])
+        self.assertIn("cloud_media_paths_are_transfer_and_strm_only", report["warnings"])
+        self.assertEqual(report["notify"]["request"]["blocked_paths"], ["/已整理/series/甄嬛传 (2011) {tmdbid=50878}"])
+
+    def test_emby_refresh_verify_blocks_cloud_media_strm_prefix(self) -> None:
+        calls = []
+
+        class FakeClient:
+            def __init__(self, base_url, api_key, timeout=20):
+                pass
+
+            def refresh_library(self):
+                calls.append("refresh_library")
+                raise AssertionError("cloud media paths must not be used as STRM verification prefixes")
+
+            def task_by_key(self, key):
+                calls.append("task_by_key")
+                return {}
+
+            def items_by_search(self, search_term):
+                return []
+
+        with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+            report = refresh_and_verify_emby_library(
+                "http://emby.example",
+                "token",
+                title="甄嬛传",
+                stale_path_prefixes=[],
+                strm_path_prefixes=["/已整理/series/甄嬛传 (2011) {tmdbid=50878}"],
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(calls, [])
+        self.assertIn("emby_strm_path_prefix_must_be_strm_side", report["blockers"])
+        self.assertEqual(report["refresh"]["request"]["blocked_strm_path_prefixes"], ["/已整理/series/甄嬛传 (2011) {tmdbid=50878}"])
+
     def test_refresh_and_verify_emby_item_uses_item_refresh_without_full_scan(self) -> None:
         calls = []
 
@@ -973,6 +1035,44 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["refresh"]["item_id"], "7")
+
+    def test_emby_item_refresh_blocks_cloud_media_strm_prefix(self) -> None:
+        calls = []
+
+        class FakeClient:
+            def __init__(self, base_url, api_key, timeout=20):
+                pass
+
+            def refresh_item(
+                self,
+                item_id,
+                recursive=True,
+                metadata_refresh_mode="Default",
+                image_refresh_mode="Default",
+                replace_all_metadata=False,
+                replace_all_images=False,
+            ):
+                calls.append(item_id)
+                raise AssertionError("cloud media paths must not be refreshed as the scraping target")
+
+            def items_by_search(self, search_term):
+                return []
+
+        with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+            report = refresh_and_verify_emby_item(
+                "http://emby.example",
+                "token",
+                title="甄嬛传",
+                item_id="7",
+                stale_path_prefixes=[],
+                strm_path_prefixes=["/已整理/series/甄嬛传 (2011) {tmdbid=50878}"],
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(calls, [])
+        self.assertIn("emby_strm_path_prefix_must_be_strm_side", report["blockers"])
+        self.assertIn("cloud_media_paths_are_transfer_and_strm_only", report["warnings"])
+        self.assertEqual(report["refresh"]["request"]["blocked_strm_path_prefixes"], ["/已整理/series/甄嬛传 (2011) {tmdbid=50878}"])
 
     def test_emby_client_uses_token_header_without_query_api_key(self) -> None:
         seen = {}

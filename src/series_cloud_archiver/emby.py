@@ -251,8 +251,13 @@ def refresh_and_verify_emby_library(
     client = EmbyClient(base_url, api_key, timeout=timeout)
     blockers: List[str] = []
     warnings: List[str] = []
+    normalized_strm_prefixes = _normalize_prefixes(strm_path_prefixes)
+    blocked_strm_prefixes = _cloud_media_paths_forbidden_for_emby_scrape(normalized_strm_prefixes)
+    if blocked_strm_prefixes:
+        blockers.append("emby_strm_path_prefix_must_be_strm_side")
+        warnings.append("cloud_media_paths_are_transfer_and_strm_only")
     refresh: Dict[str, object] = {"requested": not skip_refresh}
-    if not skip_refresh:
+    if not skip_refresh and not blocked_strm_prefixes:
         result = client.refresh_library()
         refresh["request"] = result
         if not result.get("ok"):
@@ -269,11 +274,14 @@ def refresh_and_verify_emby_library(
             if task.get("timed_out"):
                 blockers.append("emby_refresh_task_timeout")
     else:
-        refresh["request"] = {"skipped": True}
-        try:
-            refresh["task"] = _summarize_task_wait({"final_task": client.task_by_key(REFRESH_LIBRARY_TASK_KEY), "polls": [], "timed_out": False})
-        except Exception as exc:  # pragma: no cover - integration guard
-            warnings.append(f"emby_task_check_failed:{type(exc).__name__}:{exc}")
+        refresh["request"] = {"skipped": True, "blocked_strm_path_prefixes": blocked_strm_prefixes}
+        if blocked_strm_prefixes:
+            refresh["task"] = {"skipped": True}
+        else:
+            try:
+                refresh["task"] = _summarize_task_wait({"final_task": client.task_by_key(REFRESH_LIBRARY_TASK_KEY), "polls": [], "timed_out": False})
+            except Exception as exc:  # pragma: no cover - integration guard
+                warnings.append(f"emby_task_check_failed:{type(exc).__name__}:{exc}")
 
     verification = verify_emby_library_paths(
         client,
@@ -296,7 +304,7 @@ def refresh_and_verify_emby_library(
         "verification": verification,
         "blockers": sorted(set(blockers)),
         "warnings": warnings,
-        "safety": "Emby library refresh trigger and readonly verification only; no filesystem deletion, qBittorrent action, MoviePilot cleanup, or direct Emby database write is performed",
+        "safety": "Emby library refresh trigger and readonly verification only; STRM verification prefixes must be STRM-side paths. Cloud media directories are transfer and STRM-generation sources only, never scraping targets. No filesystem deletion, qBittorrent action, MoviePilot cleanup, or direct Emby database write is performed",
     }
     return report
 
@@ -450,14 +458,23 @@ def notify_and_verify_emby_media_updated(
     normalized_updated_paths = _normalize_prefixes(updated_paths)
     if not normalized_updated_paths:
         blockers.append("emby_updated_path_required")
+    blocked_updated_paths = _cloud_media_paths_forbidden_for_emby_scrape(normalized_updated_paths)
+    if blocked_updated_paths:
+        blockers.append("emby_updated_path_must_be_strm_side")
+        warnings.append("cloud_media_paths_are_transfer_and_strm_only")
+    normalized_strm_prefixes = _normalize_prefixes(strm_path_prefixes)
+    blocked_strm_prefixes = _cloud_media_paths_forbidden_for_emby_scrape(normalized_strm_prefixes)
+    if blocked_strm_prefixes:
+        blockers.append("emby_strm_path_prefix_must_be_strm_side")
+        warnings.append("cloud_media_paths_are_transfer_and_strm_only")
     notify = {"requested": bool(normalized_updated_paths), "update_type": update_type, "paths": normalized_updated_paths}
-    if normalized_updated_paths:
+    if normalized_updated_paths and not blocked_updated_paths and not blocked_strm_prefixes:
         result = client.notify_media_updated(normalized_updated_paths, update_type=update_type)
         notify["request"] = result
         if not result.get("ok"):
             blockers.append("emby_media_updated_request_failed")
     else:
-        notify["request"] = {"skipped": True}
+        notify["request"] = {"skipped": True, "blocked_paths": blocked_updated_paths, "blocked_strm_path_prefixes": blocked_strm_prefixes}
 
     verification = verify_emby_library_paths(
         client,
@@ -480,7 +497,7 @@ def notify_and_verify_emby_media_updated(
         "verification": verification,
         "blockers": sorted(set(blockers)),
         "warnings": warnings,
-        "safety": "Emby media-updated notification and readonly verification only; no filesystem deletion, qBittorrent action, MoviePilot cleanup, full-library scan request, or direct Emby database write is performed",
+        "safety": "Emby media-updated notification and readonly verification only; updated paths must be STRM-side paths. Cloud media directories are transfer and STRM-generation sources only, never scraping targets. No filesystem deletion, qBittorrent action, MoviePilot cleanup, full-library scan request, or direct Emby database write is performed",
     }
 
 
@@ -506,6 +523,11 @@ def refresh_and_verify_emby_item(
     client = EmbyClient(base_url, api_key, timeout=timeout)
     blockers: List[str] = []
     warnings: List[str] = []
+    normalized_strm_prefixes = _normalize_prefixes(strm_path_prefixes)
+    blocked_strm_prefixes = _cloud_media_paths_forbidden_for_emby_scrape(normalized_strm_prefixes)
+    if blocked_strm_prefixes:
+        blockers.append("emby_strm_path_prefix_must_be_strm_side")
+        warnings.append("cloud_media_paths_are_transfer_and_strm_only")
     refresh = {
         "requested": bool(item_id),
         "item_id": item_id,
@@ -518,6 +540,8 @@ def refresh_and_verify_emby_item(
     if not item_id:
         blockers.append("emby_item_id_required")
         refresh["request"] = {"skipped": True}
+    elif blocked_strm_prefixes:
+        refresh["request"] = {"skipped": True, "blocked_strm_path_prefixes": blocked_strm_prefixes}
     else:
         result = client.refresh_item(
             item_id,
@@ -552,7 +576,7 @@ def refresh_and_verify_emby_item(
         "verification": verification,
         "blockers": sorted(set(blockers)),
         "warnings": warnings,
-        "safety": "Emby item refresh request and readonly verification only; no filesystem deletion, qBittorrent action, MoviePilot cleanup, full-library scan request, or direct Emby database write is performed",
+        "safety": "Emby item refresh request and readonly verification only; verification prefixes must be STRM-side paths. Cloud media directories are transfer and STRM-generation sources only, never scraping targets. No filesystem deletion, qBittorrent action, MoviePilot cleanup, full-library scan request, or direct Emby database write is performed",
     }
 
 
@@ -1094,6 +1118,27 @@ def _episode_summary(episodes: Sequence[int]) -> Dict[str, object]:
 
 def _normalize_prefixes(prefixes: Sequence[str]) -> List[str]:
     return [prefix.rstrip("/") for prefix in prefixes if prefix]
+
+
+def _cloud_media_paths_forbidden_for_emby_scrape(paths: Sequence[str]) -> List[str]:
+    return [path for path in paths if _looks_like_cloud_media_path(path)]
+
+
+def _looks_like_cloud_media_path(path: str) -> bool:
+    normalized = str(path or "").strip().replace("\\", "/").rstrip("/")
+    if not normalized:
+        return False
+    if normalized == "/已整理" or normalized.startswith("/已整理/"):
+        return True
+    if normalized == "/未整理" or normalized.startswith("/未整理/"):
+        return True
+    lowered = normalized.lower()
+    cloud_media_markers = (
+        "/media/cloud-media",
+        "/cloud/media",
+        "/115/media",
+    )
+    return any(marker in lowered for marker in cloud_media_markers)
 
 
 def _stale_root_rows(rows: Sequence[Dict[str, object]], stale_path_prefixes: Sequence[str]) -> List[Dict[str, object]]:
