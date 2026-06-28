@@ -11,6 +11,7 @@ from series_cloud_archiver.mv3 import (
     MV3Client,
     add_mv3_offline_task,
     browse_mv3_cloud_folder,
+    batch_verify_mv3_cloud_media_sidecars,
     check_mv3_offline_task,
     cleanup_mv3_cloud_duplicate_videos,
     cleanup_mv3_cloud_media_sidecars,
@@ -24,6 +25,7 @@ from series_cloud_archiver.mv3 import (
     render_mv3_capabilities_report,
     render_mv3_cloud_browse_report,
     render_mv3_cloud_duplicate_video_cleanup_report,
+    render_mv3_cloud_media_sidecar_batch_verify_report,
     render_mv3_cloud_media_sidecar_cleanup_report,
     render_mv3_cloud_media_sidecar_verify_report,
     render_mv3_ensure_path_report,
@@ -254,6 +256,87 @@ class MV3WrongRootRepairTest(unittest.TestCase):
             self.assertTrue(payload["dry_run"])
             self.assertEqual(payload["delete_plan"]["metadata_sidecar_count"], 2)
             self.assertEqual(payload["delete_plan"]["file_ids"], ["nfo-1", "poster-1"])
+
+    def test_cli_writes_cloud_sidecar_batch_verify_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "batch.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            class FakeResponse:
+                status = 200
+
+                def __init__(self, payload):
+                    self.payload = payload
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return json.dumps(self.payload).encode("utf-8")
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            def fake_urlopen(request, timeout):
+                parsed = urllib.parse.urlparse(request.full_url)
+                query = urllib.parse.parse_qs(parsed.query)
+                cid = query.get("cid", [""])[0]
+                if parsed.path.endswith("/api/v1/files/cloud/browse"):
+                    if cid == "root-id":
+                        return FakeResponse(
+                            {
+                                "success": True,
+                                "data": {
+                                    "items": [
+                                        {"fn": "Dirty (2026) {tmdbid=2}", "fid": "dirty-id", "pid": "root-id", "fc": "0"},
+                                    ]
+                                },
+                            }
+                        )
+                    if cid == "dirty-id":
+                        return FakeResponse({"success": True, "data": {"items": [{"fn": "Season 1", "fid": "dirty-season", "pid": "dirty-id", "fc": "0"}]}})
+                    if cid == "dirty-season":
+                        return FakeResponse(
+                            {
+                                "success": True,
+                                "data": {
+                                    "items": [
+                                        {"fn": "Dirty.S01E01.mkv", "fid": "video-2", "pid": "dirty-season", "s": 1000, "sha1": "b"},
+                                        {"fn": "Dirty.S01E01.nfo", "fid": "nfo-2", "pid": "dirty-season", "s": 10, "sha1": "c"},
+                                    ]
+                                },
+                            }
+                        )
+                raise AssertionError(f"unexpected url: {request.full_url}")
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                code = main(
+                    [
+                        "mv3-cloud-media-sidecar-batch-verify",
+                        "--env-file",
+                        str(env_file),
+                        "--root-folder-id",
+                        "root-id",
+                        "--root-path",
+                        "/已整理/series",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["summary"]["metadata_sidecar_file_count"], 1)
+            self.assertEqual(payload["items"][0]["folder_id"], "dirty-id")
 
     def test_cli_refuses_cloud_duplicate_video_cleanup_approval_without_expected_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -927,6 +1010,85 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["scan"]["visited_folder_count"], 3)
         self.assertEqual(report["scan"]["video_file_count"], 1)
         self.assertEqual(report["scan"]["metadata_sidecar_file_count"], 1)
+
+    def test_cloud_sidecar_batch_verify_scans_title_folders(self) -> None:
+        calls = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            calls.append((request.get_method(), request.full_url))
+            parsed = urllib.parse.urlparse(request.full_url)
+            query = urllib.parse.parse_qs(parsed.query)
+            cid = query.get("cid", [""])[0]
+            if parsed.path.endswith("/api/v1/files/cloud/browse"):
+                if cid == "root-id":
+                    return FakeResponse(
+                        {
+                            "success": True,
+                            "data": {
+                                "items": [
+                                    {"fn": "Clean (2026) {tmdbid=1}", "fid": "clean-id", "pid": "root-id", "fc": "0"},
+                                    {"fn": "Dirty (2026) {tmdbid=2}", "fid": "dirty-id", "pid": "root-id", "fc": "0"},
+                                ]
+                            },
+                        }
+                    )
+                if cid == "clean-id":
+                    return FakeResponse({"success": True, "data": {"items": [{"fn": "Season 1", "fid": "clean-season", "pid": "clean-id", "fc": "0"}]}})
+                if cid == "clean-season":
+                    return FakeResponse({"success": True, "data": {"items": [{"fn": "Clean.S01E01.mkv", "fid": "video-1", "pid": "clean-season", "s": 1000, "sha1": "a"}]}})
+                if cid == "dirty-id":
+                    return FakeResponse({"success": True, "data": {"items": [{"fn": "Season 1", "fid": "dirty-season", "pid": "dirty-id", "fc": "0"}]}})
+                if cid == "dirty-season":
+                    return FakeResponse(
+                        {
+                            "success": True,
+                            "data": {
+                                "items": [
+                                    {"fn": "Dirty.S01E01.mkv", "fid": "video-2", "pid": "dirty-season", "s": 1000, "sha1": "b"},
+                                    {"fn": "Dirty.S01E01.nfo", "fid": "nfo-2", "pid": "dirty-season", "s": 10, "sha1": "c"},
+                                ]
+                            },
+                        }
+                    )
+            raise AssertionError(f"unexpected url: {request.full_url}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = batch_verify_mv3_cloud_media_sidecars(
+                "http://mv3.example",
+                "token",
+                root_folder_id="root-id",
+                root_path="/已整理/series",
+                max_depth=3,
+            )
+
+        rendered = render_mv3_cloud_media_sidecar_batch_verify_report(report, "markdown")
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["summary"]["root_title_count"], 2)
+        self.assertEqual(report["summary"]["scanned_title_count"], 2)
+        self.assertEqual(report["summary"]["titles_with_metadata_sidecars"], 1)
+        self.assertEqual(report["summary"]["metadata_sidecar_file_count"], 1)
+        self.assertEqual([item["title"] for item in report["items"]], ["Dirty (2026) {tmdbid=2}"])
+        self.assertIn("/已整理/series/Dirty (2026) {tmdbid=2}/Season 1/Dirty.S01E01.nfo", rendered)
+        self.assertFalse(any(method != "GET" for method, _url in calls))
 
     def test_cloud_browse_marks_metadata_sidecars_separately(self) -> None:
         class FakeResponse:

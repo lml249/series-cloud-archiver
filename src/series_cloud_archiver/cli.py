@@ -52,6 +52,7 @@ from .moviepilot import (
 )
 from .mv3 import (
     add_mv3_offline_task,
+    batch_verify_mv3_cloud_media_sidecars,
     browse_mv3_cloud_folder,
     cleanup_mv3_cloud_duplicate_videos,
     cleanup_mv3_cloud_media_sidecars,
@@ -69,6 +70,7 @@ from .mv3 import (
     render_mv3_capabilities_report,
     render_mv3_cloud_browse_report,
     render_mv3_cloud_duplicate_video_cleanup_report,
+    render_mv3_cloud_media_sidecar_batch_verify_report,
     render_mv3_cloud_media_sidecar_cleanup_report,
     render_mv3_cloud_media_sidecar_verify_report,
     render_mv3_ensure_path_report,
@@ -676,6 +678,19 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_sidecar_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     cloud_sidecar_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     cloud_sidecar_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    cloud_sidecar_batch_parser = subcommands.add_parser("mv3-cloud-media-sidecar-batch-verify", help="Readonly MV3 cloud media metadata sidecar verification by first-level title folders")
+    cloud_sidecar_batch_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    cloud_sidecar_batch_parser.add_argument("--root-folder-id", default="", help="Cloud root folder id to verify")
+    cloud_sidecar_batch_parser.add_argument("--root-path", default="", help="Cloud media root path to resolve before verifying")
+    cloud_sidecar_batch_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    cloud_sidecar_batch_parser.add_argument("--limit", type=int, default=1150, help="Maximum folder items per browse request")
+    cloud_sidecar_batch_parser.add_argument("--max-depth", type=int, default=3, help="Maximum recursive folder depth under each title folder")
+    cloud_sidecar_batch_parser.add_argument("--start-index", type=int, default=1, help="1-based first title-folder index to scan")
+    cloud_sidecar_batch_parser.add_argument("--title-limit", type=int, default=0, help="Maximum title folders to scan; 0 means all from start-index")
+    cloud_sidecar_batch_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    cloud_sidecar_batch_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    cloud_sidecar_batch_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     cloud_sidecar_cleanup_parser = subcommands.add_parser("mv3-cloud-media-sidecar-cleanup", help="Dry-run or delete MV3 cloud media metadata sidecars only")
     cloud_sidecar_cleanup_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -2029,6 +2044,29 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_cloud_media_sidecar_verify_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "mv3-cloud-media-sidecar-batch-verify":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-cloud-media-sidecar-batch-verify requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = batch_verify_mv3_cloud_media_sidecars(
+            config.mv3_base_url,
+            config.mv3_token,
+            root_folder_id=args.root_folder_id,
+            root_path=args.root_path,
+            storage=args.storage,
+            limit=args.limit,
+            max_depth=args.max_depth,
+            start_index=args.start_index,
+            title_limit=args.title_limit,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_cloud_media_sidecar_batch_verify_report(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

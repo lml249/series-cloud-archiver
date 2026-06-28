@@ -498,6 +498,158 @@ def verify_mv3_cloud_media_sidecars(
     }
 
 
+def batch_verify_mv3_cloud_media_sidecars(
+    base_url: str,
+    token: str,
+    root_path: str = "",
+    root_folder_id: str = "",
+    storage: str = "115-default",
+    limit: int = 1150,
+    max_depth: int = 3,
+    title_limit: int = 0,
+    start_index: int = 1,
+    timeout: int = 60,
+) -> Dict[str, object]:
+    client = MV3Client(base_url, token, timeout=timeout)
+    warnings: List[str] = []
+    blockers: List[str] = []
+    normalized_root_path = _normalize_cloud_path(root_path) if root_path else ""
+    root_id = str(root_folder_id or "")
+    info: Dict[str, object] = {}
+    info_status = 0
+    info_content_type = ""
+    if not root_id and normalized_root_path:
+        info, info_status, info_content_type = _read_cloud_info_status(client, "", normalized_root_path, storage)
+        root_id = _extract_folder_id(info)
+        if not info:
+            blockers.append("cloud_media_root_path_not_found")
+    if not root_id:
+        blockers.append("cloud_media_root_folder_required")
+
+    browse_status = 0
+    browse_content_type = ""
+    rows: List[Dict[str, object]] = []
+    if root_id:
+        folder_payload, browse_status, browse_content_type = _read_cloud_folder_status(client, root_id, storage, limit)
+        rows = _cloud_rows(folder_payload)
+        if not (200 <= browse_status < 300):
+            blockers.append("cloud_media_root_browse_failed")
+        if len(rows) >= limit:
+            warnings.append("cloud_media_root_browse_may_be_truncated")
+            blockers.append("cloud_media_root_browse_truncated")
+
+    title_rows = [row for row in rows if isinstance(row, dict) and _cloud_item_kind(row) == "folder"]
+    safe_start_index = max(1, int(start_index or 1))
+    start_offset = safe_start_index - 1
+    selected_rows = title_rows[start_offset:]
+    if title_limit and title_limit > 0:
+        selected_rows = selected_rows[:title_limit]
+
+    items: List[Dict[str, object]] = []
+    total_metadata_sidecars = 0
+    total_video_files = 0
+    total_subtitle_sidecars = 0
+    total_other_files = 0
+    total_visited_folders = 0
+    truncated_count = 0
+    for offset, row in enumerate(selected_rows, start=safe_start_index):
+        title = _cloud_name(row)
+        folder_id = _extract_folder_id(row)
+        title_path = _cloud_join_path(normalized_root_path, title)
+        scan = _empty_cloud_sidecar_scan()
+        item_blockers: List[str] = []
+        item_warnings: List[str] = []
+        if not folder_id:
+            item_blockers.append("title_folder_id_missing")
+        else:
+            scan = _scan_mv3_cloud_media_sidecars(
+                client,
+                folder_id,
+                title_path,
+                storage,
+                limit=max(1, limit),
+                max_depth=max(0, max_depth),
+            )
+            item_warnings.extend(str(warning) for warning in scan.get("warnings", []) if warning)
+            if scan.get("truncated"):
+                item_blockers.append("cloud_media_scan_truncated")
+                truncated_count += 1
+        metadata_count = int(scan.get("metadata_sidecar_file_count") or 0)
+        total_metadata_sidecars += metadata_count
+        total_video_files += int(scan.get("video_file_count") or 0)
+        total_subtitle_sidecars += int(scan.get("subtitle_sidecar_file_count") or 0)
+        total_other_files += int(scan.get("other_file_count") or 0)
+        total_visited_folders += int(scan.get("visited_folder_count") or 0)
+        if metadata_count > 0:
+            item_blockers.append("cloud_media_metadata_sidecar_present")
+        if item_blockers:
+            blockers.extend(item_blockers)
+        warnings.extend(item_warnings)
+        if metadata_count > 0 or item_blockers or item_warnings:
+            items.append(
+                {
+                    "index": offset,
+                    "title": title,
+                    "path": title_path,
+                    "folder_id": folder_id,
+                    "ok": not item_blockers,
+                    "scan": {
+                        "visited_folder_count": int(scan.get("visited_folder_count") or 0),
+                        "video_file_count": int(scan.get("video_file_count") or 0),
+                        "subtitle_sidecar_file_count": int(scan.get("subtitle_sidecar_file_count") or 0),
+                        "metadata_sidecar_file_count": metadata_count,
+                        "other_file_count": int(scan.get("other_file_count") or 0),
+                        "metadata_sidecars": list(scan.get("metadata_sidecars", []))[:50] if isinstance(scan.get("metadata_sidecars"), list) else [],
+                        "truncated": bool(scan.get("truncated")),
+                    },
+                    "blockers": sorted(set(item_blockers)),
+                    "warnings": sorted(set(item_warnings)),
+                }
+            )
+
+    summary = {
+        "root_item_count": len(rows),
+        "root_title_count": len(title_rows),
+        "scanned_title_count": len(selected_rows),
+        "start_index": safe_start_index,
+        "title_limit": title_limit,
+        "titles_with_metadata_sidecars": sum(
+            1
+            for item in items
+            if isinstance(item.get("scan"), dict) and int(item["scan"].get("metadata_sidecar_file_count") or 0) > 0
+        ),
+        "metadata_sidecar_file_count": total_metadata_sidecars,
+        "video_file_count": total_video_files,
+        "subtitle_sidecar_file_count": total_subtitle_sidecars,
+        "other_file_count": total_other_files,
+        "visited_folder_count": total_visited_folders,
+        "truncated_title_count": truncated_count,
+    }
+    return {
+        "mode": "readonly-mv3-cloud-media-sidecar-batch-verify",
+        "endpoint": {"method": "GET", "path": "/api/v1/files/cloud/browse"},
+        "ok": not blockers,
+        "root_path": normalized_root_path,
+        "root_folder_id": root_id,
+        "storage": storage,
+        "limit": limit,
+        "max_depth": max_depth,
+        "info_status": info_status,
+        "info_content_type": info_content_type,
+        "browse_status": browse_status,
+        "browse_content_type": browse_content_type,
+        "folder_info": _cloud_info_summary(info) if info else {},
+        "summary": summary,
+        "items": items,
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "safety": (
+            "readonly batch cloud media sidecar verification only; each first-level title folder is scanned separately. "
+            "No cloud media move/delete, STRM generation, qBittorrent action, hlink deletion, local filesystem deletion, or scraping is performed."
+        ),
+    }
+
+
 def cleanup_mv3_cloud_media_sidecars(
     base_url: str,
     token: str,
@@ -896,6 +1048,66 @@ def render_mv3_cloud_media_sidecar_verify_report(report: Dict[str, object], outp
     if isinstance(warnings, list) and warnings:
         lines.extend(["", "## Warnings", ""])
         lines.extend(f"- `{warning}`" for warning in warnings)
+    return "\n".join(lines)
+
+
+def render_mv3_cloud_media_sidecar_batch_verify_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    lines = [
+        "# MV3 Cloud Media Sidecar Batch Verify",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Root path: `{report.get('root_path', '')}`",
+        f"- Root folder ID: `{report.get('root_folder_id', '')}`",
+        f"- Titles scanned: `{summary.get('scanned_title_count', 0)}/{summary.get('root_title_count', 0)}`",
+        f"- Start index: `{summary.get('start_index', 1)}`",
+        f"- Title limit: `{summary.get('title_limit', 0)}`",
+        f"- Titles with metadata sidecars: `{summary.get('titles_with_metadata_sidecars', 0)}`",
+        f"- Metadata sidecars: `{summary.get('metadata_sidecar_file_count', 0)}`",
+        f"- Video files: `{summary.get('video_file_count', 0)}`",
+        f"- Subtitle sidecars: `{summary.get('subtitle_sidecar_file_count', 0)}`",
+        f"- Truncated titles: `{summary.get('truncated_title_count', 0)}`",
+        "- Safety: readonly batch cloud media sidecar verification only; no writes were performed.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    items = report.get("items")
+    if isinstance(items, list) and items:
+        lines.extend(
+            [
+                "",
+                "## Flagged Titles",
+                "",
+                "| # | Title | Metadata sidecars | Truncated | Blockers |",
+                "| ---: | --- | ---: | --- | --- |",
+            ]
+        )
+        for item in items[:80]:
+            if not isinstance(item, dict):
+                continue
+            scan = item.get("scan") if isinstance(item.get("scan"), dict) else {}
+            lines.append(
+                "| {index} | {title} | {metadata} | {truncated} | {blockers} |".format(
+                    index=item.get("index") or "",
+                    title=_escape(str(item.get("title") or "")),
+                    metadata=scan.get("metadata_sidecar_file_count", 0),
+                    truncated=bool(scan.get("truncated")),
+                    blockers=_escape(", ".join(str(blocker) for blocker in item.get("blockers", []) if blocker)),
+                )
+            )
+            sidecars = scan.get("metadata_sidecars")
+            if isinstance(sidecars, list):
+                for sidecar in sidecars[:5]:
+                    if isinstance(sidecar, dict):
+                        lines.append(f"  - `{sidecar.get('path', '')}`")
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings[:80])
     return "\n".join(lines)
 
 
