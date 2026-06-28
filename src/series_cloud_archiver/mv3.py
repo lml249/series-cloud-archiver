@@ -607,6 +607,224 @@ def cleanup_mv3_cloud_media_sidecars(
     }
 
 
+def cleanup_mv3_cloud_duplicate_videos(
+    base_url: str,
+    token: str,
+    season_path: str,
+    strm_root: str,
+    expected_episode_count: int,
+    storage: str = "115-default",
+    limit: int = 1150,
+    timeout: int = 60,
+    approve_delete: bool = False,
+    expected_delete_count: int = -1,
+) -> Dict[str, object]:
+    client = MV3Client(base_url, token, timeout=timeout)
+    warnings: List[str] = []
+    blockers: List[str] = []
+    normalized_season_path = _normalize_cloud_path(season_path)
+    normalized_strm_root = str(strm_root or "").rstrip("/")
+    info: Dict[str, object] = {}
+    info_status = 0
+    info_content_type = ""
+    folder_id = ""
+
+    if not normalized_season_path:
+        blockers.append("season_path_required")
+    if not normalized_strm_root:
+        blockers.append("strm_root_required")
+    if expected_episode_count <= 0:
+        blockers.append("expected_episode_count_required")
+
+    if normalized_season_path:
+        info, info_status, info_content_type = _read_cloud_info_status(client, "", normalized_season_path, storage)
+        folder_id = _extract_folder_id(info)
+        if not info or not folder_id:
+            blockers.append("cloud_season_path_not_found")
+
+    folder_summary = _empty_cloud_folder_summary(normalized_season_path, exists=bool(folder_id), status=info_status, content_type=info_content_type)
+    if folder_id:
+        folder_summary = _cloud_folder_summary_by_id(
+            client,
+            folder_id,
+            normalized_season_path,
+            storage,
+            limit=max(1, limit),
+            info=info,
+            info_status=info_status,
+            info_content_type=info_content_type,
+        )
+        if not bool(folder_summary.get("browse_ok")):
+            blockers.append("cloud_season_browse_failed")
+        if int(folder_summary.get("folder_count") or 0) > 0:
+            blockers.append("cloud_season_contains_child_folders")
+
+    media_items = [item for item in folder_summary.get("media_items", []) if isinstance(item, dict)]
+    protected_targets = _protected_cloud_file_names_from_strm_root(normalized_strm_root, normalized_season_path)
+    protected_names = set(protected_targets.get("names", []))
+    strm_files = list(protected_targets.get("strm_files", []))
+    if protected_targets.get("warnings"):
+        warnings.extend(str(item) for item in protected_targets.get("warnings", []))
+    if len(strm_files) != expected_episode_count:
+        blockers.append("strm_file_count_mismatch")
+    if len(protected_names) != expected_episode_count:
+        blockers.append("protected_strm_target_count_mismatch")
+
+    by_episode: Dict[int, List[Dict[str, object]]] = {}
+    for item in media_items:
+        episode = item.get("episode")
+        if isinstance(episode, int) and episode > 0:
+            by_episode.setdefault(episode, []).append(item)
+    episode_numbers = sorted(by_episode)
+    duplicate_episodes = [episode for episode, items in by_episode.items() if len(items) > 1]
+    if len(episode_numbers) != expected_episode_count:
+        blockers.append("cloud_episode_count_mismatch")
+    missing_episodes = _missing_episode_numbers(episode_numbers)
+    if missing_episodes:
+        blockers.append("cloud_episode_gap_detected")
+
+    delete_items: List[Dict[str, object]] = []
+    protected_items: List[Dict[str, object]] = []
+    ambiguous_episodes: List[int] = []
+    for episode, items in sorted(by_episode.items()):
+        protected_for_episode = [item for item in items if str(item.get("name") or "") in protected_names]
+        if len(items) == 1:
+            protected_items.extend(_public_cloud_duplicate_video_item(item, "single") for item in items)
+            continue
+        if len(protected_for_episode) != 1:
+            ambiguous_episodes.append(episode)
+            continue
+        protected_item = protected_for_episode[0]
+        protected_items.append(_public_cloud_duplicate_video_item(protected_item, "strm_target"))
+        for item in items:
+            if item is protected_item:
+                continue
+            delete_items.append(_public_cloud_duplicate_video_item(item, "duplicate_not_referenced_by_strm"))
+
+    if ambiguous_episodes:
+        blockers.append("ambiguous_duplicate_episode_protection")
+    if any(not str(item.get("file_id") or "") for item in delete_items):
+        blockers.append("duplicate_video_file_ids_incomplete")
+    if expected_delete_count >= 0 and len(delete_items) != expected_delete_count:
+        blockers.append("expected_delete_count_mismatch")
+
+    operation: Dict[str, object] = {"skipped": True, "reason": "dry_run"}
+    post_verify: Dict[str, object] = {}
+    if approve_delete:
+        if not delete_items:
+            operation = {"skipped": True, "reason": "no_duplicate_videos"}
+        elif not blockers:
+            operation = _mv3_delete_115(client, [str(item.get("file_id") or "") for item in delete_items], storage)
+            post_folder = _cloud_folder_summary_by_id(client, folder_id, normalized_season_path, storage, limit=max(1, limit))
+            post_media_items = [item for item in post_folder.get("media_items", []) if isinstance(item, dict)]
+            post_episodes = sorted({item["episode"] for item in post_media_items if isinstance(item.get("episode"), int)})
+            post_names = {str(item.get("name") or "") for item in post_media_items}
+            post_missing_protected = sorted(name for name in protected_names if name not in post_names)
+            post_duplicate_episodes = sorted(
+                episode
+                for episode in post_episodes
+                if sum(1 for item in post_media_items if item.get("episode") == episode) > 1
+            )
+            post_verify = {
+                "video_file_count": len(post_media_items),
+                "episode_count": len(post_episodes),
+                "episodes": post_episodes,
+                "missing_in_range": _missing_episode_numbers(post_episodes),
+                "duplicate_episodes": post_duplicate_episodes,
+                "missing_protected_strm_targets": post_missing_protected,
+                "browse_ok": bool(post_folder.get("browse_ok")),
+            }
+            if len(post_media_items) != expected_episode_count:
+                blockers.append("post_delete_video_count_mismatch")
+            if len(post_episodes) != expected_episode_count:
+                blockers.append("post_delete_episode_count_mismatch")
+            if post_verify["missing_in_range"]:
+                blockers.append("post_delete_episode_gap_detected")
+            if post_duplicate_episodes:
+                blockers.append("post_delete_duplicate_episodes_still_present")
+            if post_missing_protected:
+                blockers.append("post_delete_missing_protected_strm_targets")
+        else:
+            operation = {"skipped": True, "reason": "blocked"}
+
+    ok = not blockers and (not approve_delete or bool(operation.get("ok")) or not delete_items)
+    return {
+        "mode": "mv3-cloud-duplicate-video-cleanup-result",
+        "ok": ok,
+        "dry_run": not approve_delete,
+        "season_path": normalized_season_path,
+        "strm_root": normalized_strm_root,
+        "folder_id": folder_id,
+        "storage": storage,
+        "limit": limit,
+        "expected_episode_count": expected_episode_count,
+        "info_status": info_status,
+        "info_content_type": info_content_type,
+        "summary": {
+            "video_file_count": len(media_items),
+            "episode_count": len(episode_numbers),
+            "episodes": episode_numbers,
+            "missing_in_range": missing_episodes,
+            "duplicate_episodes": duplicate_episodes,
+            "protected_strm_target_count": len(protected_names),
+            "strm_file_count": len(strm_files),
+        },
+        "delete_plan": {
+            "duplicate_video_count": len(delete_items),
+            "expected_delete_count": expected_delete_count,
+            "items": delete_items,
+        },
+        "protected_items": protected_items,
+        "protected_strm_targets": protected_targets,
+        "operation": operation,
+        "post_verify": post_verify,
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "safety": (
+            "default dry-run; approved execution deletes only duplicate MV3 cloud video files in one season "
+            "when every episode still has exactly one STRM-referenced protected video. STRM target files are never selected."
+        ),
+    }
+
+
+def render_mv3_cloud_duplicate_video_cleanup_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    plan = report.get("delete_plan") if isinstance(report.get("delete_plan"), dict) else {}
+    operation = report.get("operation") if isinstance(report.get("operation"), dict) else {}
+    lines = [
+        "# MV3 Cloud Duplicate Video Cleanup",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Dry run: `{bool(report.get('dry_run'))}`",
+        f"- Season path: `{report.get('season_path', '')}`",
+        f"- STRM root: `{report.get('strm_root', '')}`",
+        f"- Video files: `{summary.get('video_file_count', 0)}`",
+        f"- Episodes: `{summary.get('episode_count', 0)}`",
+        f"- Duplicate episodes: `{summary.get('duplicate_episodes', [])}`",
+        f"- Duplicate videos planned: `{plan.get('duplicate_video_count', 0)}`",
+        f"- Expected delete count: `{plan.get('expected_delete_count', -1)}`",
+        f"- Delete submitted: `{bool(operation.get('ok'))}`",
+        "- Safety: only duplicate videos not referenced by STRM are selected.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    items = plan.get("items") if isinstance(plan.get("items"), list) else []
+    if items:
+        lines.extend(["", "## Planned Duplicate Video Deletes", ""])
+        for item in items[:80]:
+            if isinstance(item, dict):
+                lines.append(f"- `E{int(item.get('episode') or 0):02d}` `{item.get('name', '')}` `{item.get('file_id', '')}`")
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    return "\n".join(lines)
+
+
 def render_mv3_cloud_media_sidecar_cleanup_report(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -2858,6 +3076,76 @@ def _empty_cloud_sidecar_scan() -> Dict[str, object]:
         "folders": [],
         "truncated": False,
         "warnings": [],
+    }
+
+
+def _protected_cloud_file_names_from_strm_root(strm_root: str, expected_cloud_prefix: str) -> Dict[str, object]:
+    root = Path(strm_root) if strm_root else Path("__missing__")
+    warnings: List[str] = []
+    records: List[Dict[str, object]] = []
+    names: Set[str] = set()
+    if not root.exists():
+        return {"root": str(root), "names": [], "records": [], "strm_files": [], "warnings": ["strm_root_missing"]}
+    files = sorted(root.rglob("*.strm"))
+    normalized_prefix = _normalize_cloud_path(expected_cloud_prefix)
+    for path in files:
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError as exc:
+            warnings.append(f"strm_read_failed:{path}:{exc}")
+            continue
+        target = _cloud_path_from_strm_content(content)
+        if not target:
+            warnings.append(f"strm_target_path_missing:{path}")
+            continue
+        name = Path(urllib.parse.unquote(target)).name
+        if normalized_prefix and not _path_has_prefix(_normalize_cloud_path(target), normalized_prefix):
+            warnings.append(f"strm_target_prefix_mismatch:{path}")
+        if name:
+            names.add(name)
+        records.append(
+            {
+                "strm_file": str(path),
+                "episode": _episode_number_from_text(path.name),
+                "target_path": _sanitize_cloud_path_for_report(target),
+                "target_name": name,
+            }
+        )
+    return {
+        "root": str(root),
+        "names": sorted(names),
+        "records": records[:200],
+        "strm_files": [str(item) for item in files[:200]],
+        "warnings": warnings,
+    }
+
+
+def _cloud_path_from_strm_content(content: str) -> str:
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    parsed = urllib.parse.urlparse(text)
+    if parsed.query:
+        query = urllib.parse.parse_qs(parsed.query)
+        values = query.get("path") or query.get("file") or query.get("source")
+        if values:
+            return urllib.parse.unquote(str(values[0]))
+    if text.startswith("/"):
+        return urllib.parse.unquote(text)
+    return ""
+
+
+def _sanitize_cloud_path_for_report(path: str) -> str:
+    return urllib.parse.unquote(str(path or "")).split("&pickcode=", 1)[0]
+
+
+def _public_cloud_duplicate_video_item(item: Dict[str, object], reason: str) -> Dict[str, object]:
+    return {
+        "name": str(item.get("name") or ""),
+        "episode": item.get("episode"),
+        "file_id": str(item.get("file_id") or ""),
+        "size": str(item.get("size") or ""),
+        "reason": reason,
     }
 
 

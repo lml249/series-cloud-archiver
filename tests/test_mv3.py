@@ -12,6 +12,7 @@ from series_cloud_archiver.mv3 import (
     add_mv3_offline_task,
     browse_mv3_cloud_folder,
     check_mv3_offline_task,
+    cleanup_mv3_cloud_duplicate_videos,
     cleanup_mv3_cloud_media_sidecars,
     ensure_mv3_115_path,
     inspect_mv3_capabilities,
@@ -22,6 +23,7 @@ from series_cloud_archiver.mv3 import (
     redirect_mv3_strm_records,
     render_mv3_capabilities_report,
     render_mv3_cloud_browse_report,
+    render_mv3_cloud_duplicate_video_cleanup_report,
     render_mv3_cloud_media_sidecar_cleanup_report,
     render_mv3_cloud_media_sidecar_verify_report,
     render_mv3_ensure_path_report,
@@ -253,6 +255,72 @@ class MV3WrongRootRepairTest(unittest.TestCase):
             self.assertEqual(payload["delete_plan"]["metadata_sidecar_count"], 2)
             self.assertEqual(payload["delete_plan"]["file_ids"], ["nfo-1", "poster-1"])
 
+    def test_cli_refuses_cloud_duplicate_video_cleanup_approval_without_expected_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            strm_root = tmp_path / "strm"
+            strm_root.mkdir()
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            with patch("urllib.request.urlopen") as fake_urlopen:
+                with self.assertRaises(SystemExit) as caught:
+                    main(
+                        [
+                            "mv3-cloud-duplicate-video-cleanup",
+                            "--env-file",
+                            str(env_file),
+                            "--season-path",
+                            "/已整理/series/Demo/Season 1",
+                            "--strm-root",
+                            str(strm_root),
+                            "--expected-episode-count",
+                            "2",
+                            "--approve-delete",
+                        ]
+                    )
+
+            self.assertNotEqual(caught.exception.code, 0)
+            fake_urlopen.assert_not_called()
+
+    def test_cli_writes_cloud_duplicate_video_cleanup_dry_run_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "duplicate.json"
+            strm_root = tmp_path / "strm"
+            strm_root.mkdir()
+            for episode in (1, 2):
+                (strm_root / f"Demo - S01E{episode:02d}.strm").write_text(
+                    f"/已整理/series/Demo/Season 1/Demo - S01E{episode:02d}.mkv",
+                    encoding="utf-8",
+                )
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            with patch("urllib.request.urlopen", lambda request, timeout: _fake_mv3_duplicate_video_cleanup_response(request, deleted=False)):
+                code = main(
+                    [
+                        "mv3-cloud-duplicate-video-cleanup",
+                        "--env-file",
+                        str(env_file),
+                        "--season-path",
+                        "/已整理/series/Demo/Season 1",
+                        "--strm-root",
+                        str(strm_root),
+                        "--expected-episode-count",
+                        "2",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["dry_run"])
+            self.assertEqual(payload["delete_plan"]["duplicate_video_count"], 2)
+
 
 def _fake_mv3_wrong_root_response(request, move_case=False, deleted=False, moved=False):
     class FakeResponse:
@@ -378,6 +446,50 @@ def _fake_mv3_sidecar_cleanup_response(request, deleted=False):
                     [
                         {"name": "Demo.S01E01.nfo", "fid": "nfo-1", "is_dir": False},
                         {"name": "poster.jpg", "fid": "poster-1", "is_dir": False},
+                    ]
+                )
+            return FakeResponse({"success": True, "data": {"items": items}})
+    raise AssertionError(f"unexpected url: {request.full_url}")
+
+
+def _fake_mv3_duplicate_video_cleanup_response(request, deleted=False):
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            return False
+
+        def read(self, _limit=-1):
+            return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+
+        @property
+        def headers(self):
+            return {"Content-Type": "application/json"}
+
+    parsed = urllib.parse.urlparse(request.full_url)
+    query = urllib.parse.parse_qs(parsed.query)
+    cid = query.get("cid", [""])[0]
+    if parsed.path.endswith("/api/v1/files/115/delete"):
+        return FakeResponse({"success": True, "message": "ok", "data": None})
+    if parsed.path.endswith("/api/v1/files/cloud/info"):
+        return FakeResponse({"success": True, "data": {"file_name": "Season 1", "file_id": "season-id", "is_dir": True}})
+    if parsed.path.endswith("/api/v1/files/cloud/browse"):
+        if cid == "season-id":
+            items = [
+                {"name": "Demo - S01E01.mkv", "fid": "video-1", "is_dir": False},
+                {"name": "Demo - S01E02.mkv", "fid": "video-2", "is_dir": False},
+            ]
+            if not deleted:
+                items.extend(
+                    [
+                        {"name": "Demo - S01E01(1).mkv", "fid": "dup-1", "is_dir": False},
+                        {"name": "Demo - S01E02(1).mkv", "fid": "dup-2", "is_dir": False},
                     ]
                 )
             return FakeResponse({"success": True, "data": {"items": items}})
@@ -846,6 +958,107 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("expected_delete_count_mismatch", report["blockers"])
         self.assertEqual(report["operation"], {"skipped": True, "reason": "blocked"})
         self.assertTrue(all("/api/v1/files/115/delete" not in url for url in calls))
+
+    def test_cloud_duplicate_video_cleanup_dry_run_protects_strm_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm" / "Demo" / "Season 1"
+            root.mkdir(parents=True)
+            for episode in (1, 2):
+                (root / f"Demo - S01E{episode:02d}.strm").write_text(
+                    f"https://mv3.example/redirect?path=/已整理/series/Demo/Season%201/Demo%20-%20S01E{episode:02d}.mkv&pickcode=secret-{episode}",
+                    encoding="utf-8",
+                )
+            calls = []
+
+            def fake_urlopen(request, timeout):
+                calls.append((request.get_method(), request.full_url, getattr(request, "data", None)))
+                return _fake_mv3_duplicate_video_cleanup_response(request, deleted=False)
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                report = cleanup_mv3_cloud_duplicate_videos(
+                    "http://mv3.example",
+                    "token",
+                    season_path="/已整理/series/Demo/Season 1",
+                    strm_root=str(root),
+                    expected_episode_count=2,
+                )
+
+            rendered = render_mv3_cloud_duplicate_video_cleanup_report(report, "json")
+            self.assertTrue(report["ok"])
+            self.assertTrue(report["dry_run"])
+            self.assertEqual(report["summary"]["video_file_count"], 4)
+            self.assertEqual(report["summary"]["duplicate_episodes"], [1, 2])
+            self.assertEqual([item["file_id"] for item in report["delete_plan"]["items"]], ["dup-1", "dup-2"])
+            self.assertFalse(any("/api/v1/files/115/delete" in url for _method, url, _body in calls))
+            self.assertNotIn("secret-1", rendered)
+
+    def test_cloud_duplicate_video_cleanup_deletes_unreferenced_duplicates_with_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm" / "Demo" / "Season 1"
+            root.mkdir(parents=True)
+            for episode in (1, 2):
+                (root / f"Demo - S01E{episode:02d}.strm").write_text(
+                    f"https://mv3.example/redirect?path=/已整理/series/Demo/Season%201/Demo%20-%20S01E{episode:02d}.mkv&pickcode=secret-{episode}",
+                    encoding="utf-8",
+                )
+            posted = []
+            state = {"deleted": False}
+
+            def fake_urlopen(request, timeout):
+                if getattr(request, "data", None):
+                    posted.append((request.full_url, json.loads(request.data.decode("utf-8"))))
+                    if request.full_url.endswith("/api/v1/files/115/delete"):
+                        state["deleted"] = True
+                return _fake_mv3_duplicate_video_cleanup_response(request, deleted=state["deleted"])
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                report = cleanup_mv3_cloud_duplicate_videos(
+                    "http://mv3.example",
+                    "token",
+                    season_path="/已整理/series/Demo/Season 1",
+                    strm_root=str(root),
+                    expected_episode_count=2,
+                    approve_delete=True,
+                    expected_delete_count=2,
+                )
+
+            self.assertTrue(report["ok"])
+            delete_bodies = [body for url, body in posted if url.endswith("/api/v1/files/115/delete")]
+            self.assertEqual(delete_bodies[0]["file_ids"], ["dup-1", "dup-2"])
+            self.assertEqual(report["post_verify"]["video_file_count"], 2)
+            self.assertEqual(report["post_verify"]["duplicate_episodes"], [])
+            self.assertEqual(report["post_verify"]["missing_protected_strm_targets"], [])
+
+    def test_cloud_duplicate_video_cleanup_blocks_unexpected_delete_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm" / "Demo" / "Season 1"
+            root.mkdir(parents=True)
+            for episode in (1, 2):
+                (root / f"Demo - S01E{episode:02d}.strm").write_text(
+                    f"/已整理/series/Demo/Season 1/Demo - S01E{episode:02d}.mkv",
+                    encoding="utf-8",
+                )
+            calls = []
+
+            def fake_urlopen(request, timeout):
+                calls.append(request.full_url)
+                return _fake_mv3_duplicate_video_cleanup_response(request, deleted=False)
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                report = cleanup_mv3_cloud_duplicate_videos(
+                    "http://mv3.example",
+                    "token",
+                    season_path="/已整理/series/Demo/Season 1",
+                    strm_root=str(root),
+                    expected_episode_count=2,
+                    approve_delete=True,
+                    expected_delete_count=1,
+                )
+
+            self.assertFalse(report["ok"])
+            self.assertIn("expected_delete_count_mismatch", report["blockers"])
+            self.assertEqual(report["operation"], {"skipped": True, "reason": "blocked"})
+            self.assertTrue(all("/api/v1/files/115/delete" not in url for url in calls))
 
     def test_offline_status_reports_not_ready_until_task_done_and_folder_has_files(self) -> None:
         class FakeResponse:
