@@ -1434,6 +1434,50 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertNotIn("parsed-code", rendered)
         self.assertNotIn("abcd", rendered)
 
+    def test_share_preview_fails_when_browse_returns_no_items(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.replace("http://mv3.example", "")
+            if path == "/api/v1/resource-search/search":
+                return FakeResponse({"success": True, "data": {"items": [{"title": "Demo", "share_link": "https://example.test/s/private"}]}})
+            if path == "/api/v1/share-transfer/parse":
+                return FakeResponse({"success": True, "data": {"share_code": "parsed-code", "receive_code": "abcd"}})
+            if path == "/api/v1/share-transfer/browse":
+                return FakeResponse({"success": False, "data": None, "message": "cannot browse share"})
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = preview_mv3_share(
+                "http://mv3.example",
+                "token",
+                "Demo",
+                selection_index=1,
+                expected_title_contains="Demo",
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["parse"]["ok"])
+        self.assertFalse(report["browse"]["ok"])
+        self.assertEqual(report["browse"]["item_count"], 0)
+
     def test_share_receive_requires_selected_browse_item_and_redacts_report(self) -> None:
         seen = []
 

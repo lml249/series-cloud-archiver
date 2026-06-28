@@ -1143,7 +1143,8 @@ def preview_mv3_share(
     parse_ok = bool(parse_report.get("ok")) if not parse_report.get("skipped") else False
     browse_ok = bool(browse_report.get("ok")) if not browse_report.get("skipped") else False
     report["mode"] = "readonly-mv3-share-preview"
-    report["ok"] = bool(search.get("ok")) and bool(selected_summary) and (parse_ok or browse_ok)
+    browse_item_count = int(browse_report.get("item_count") or 0) if isinstance(browse_report.get("item_count"), int) else 0
+    report["ok"] = bool(search.get("ok")) and bool(selected_summary) and parse_ok and browse_ok and browse_item_count > 0
     report["safety"] = "search + share parse/browse preview only; no share receive/transfer, offline task, STRM generation, file operation, qBittorrent action, hlink deletion, or filesystem deletion is performed"
     return report
 
