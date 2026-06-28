@@ -62,6 +62,7 @@ from .mv3 import (
     generate_mv3_strm,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
+    index_mv3_cloud_root_for_transfer_plan,
     list_mv3_strm_records,
     materialize_mv3_strm_records,
     probe_mv3,
@@ -70,6 +71,7 @@ from .mv3 import (
     render_mv3_capabilities_report,
     render_mv3_cloud_browse_report,
     render_mv3_cloud_duplicate_video_cleanup_report,
+    render_mv3_cloud_index_plan_report,
     render_mv3_cloud_media_sidecar_batch_verify_report,
     render_mv3_cloud_media_sidecar_cleanup_report,
     render_mv3_cloud_media_sidecar_verify_report,
@@ -695,6 +697,19 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_search_plan_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     cloud_search_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     cloud_search_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    cloud_index_plan_parser = subcommands.add_parser("mv3-cloud-index-plan", help="Readonly MV3 cloud root index match for transfer-plan rows")
+    cloud_index_plan_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    cloud_index_plan_parser.add_argument("--transfer-plan", required=True, help="JSON report from plan-mv3-transfer")
+    cloud_index_plan_parser.add_argument("--root-folder-id", required=True, help="Cloud root folder id to index")
+    cloud_index_plan_parser.add_argument("--root-path", default="", help="Optional cloud root path used only for path hints")
+    cloud_index_plan_parser.add_argument("--offset", type=int, default=0, help="Skip this many transfer rows before matching")
+    cloud_index_plan_parser.add_argument("--limit", type=int, default=0, help="Maximum transfer rows to match; 0 means all rows")
+    cloud_index_plan_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    cloud_index_plan_parser.add_argument("--browse-limit", type=int, default=2000, help="Maximum root folder items to request")
+    cloud_index_plan_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    cloud_index_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    cloud_index_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     cloud_sidecar_parser = subcommands.add_parser("mv3-cloud-media-sidecar-verify", help="Readonly recursive MV3 cloud media metadata sidecar verification")
     cloud_sidecar_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -2095,6 +2110,29 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_cloud_search_plan_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mv3-cloud-index-plan":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-cloud-index-plan requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = index_mv3_cloud_root_for_transfer_plan(
+            config.mv3_base_url,
+            config.mv3_token,
+            load_mv3_transfer_plan(args.transfer_plan),
+            root_folder_id=args.root_folder_id,
+            root_path=args.root_path,
+            offset=args.offset,
+            limit=args.limit,
+            storage=args.storage,
+            browse_limit=args.browse_limit,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_cloud_index_plan_report(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

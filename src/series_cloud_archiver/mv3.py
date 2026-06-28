@@ -594,6 +594,118 @@ def render_mv3_cloud_search_plan_report(report: Dict[str, object], output_format
     return "\n".join(lines)
 
 
+def index_mv3_cloud_root_for_transfer_plan(
+    base_url: str,
+    token: str,
+    transfer_plan: Dict[str, object],
+    root_folder_id: str,
+    root_path: str = "",
+    offset: int = 0,
+    limit: int = 0,
+    storage: str = "115-default",
+    browse_limit: int = 2000,
+    timeout: int = 60,
+) -> Dict[str, object]:
+    client = MV3Client(base_url, token, timeout=timeout)
+    normalized_root_path = _normalize_cloud_path(root_path) if root_path else ""
+    payload, browse_status, browse_content_type = _read_cloud_folder_status(client, root_folder_id, storage, browse_limit)
+    root_rows = _cloud_rows(payload)
+    root_items = [_cloud_browse_item_summary(row, index) for index, row in enumerate(root_rows, start=1)]
+    folder_items = [item for item in root_items if isinstance(item, dict) and str(item.get("kind") or "") == "folder"]
+    raw_items = [item for item in transfer_plan.get("items", []) if isinstance(item, dict)]
+    start = max(0, offset)
+    stop = start + limit if limit > 0 else len(raw_items)
+    selected_items = raw_items[start:stop]
+    items = [
+        _cloud_index_plan_item(start + local_index, item, folder_items, normalized_root_path)
+        for local_index, item in enumerate(selected_items, start=1)
+    ]
+    warnings = list(transfer_plan.get("warnings", [])) if isinstance(transfer_plan.get("warnings"), list) else []
+    if not root_folder_id:
+        warnings.append("root_folder_id_required")
+    if not root_rows:
+        warnings.append("root_folder_empty_or_unreadable")
+    return {
+        "mode": "readonly-mv3-cloud-index-plan",
+        "source_mode": transfer_plan.get("mode", ""),
+        "available_items": len(raw_items),
+        "planned_items": len(items),
+        "offset": start,
+        "limit": limit,
+        "storage": storage,
+        "root_folder_id": root_folder_id,
+        "root_path": normalized_root_path,
+        "root_browse_status": browse_status,
+        "root_browse_content_type": browse_content_type,
+        "root_folder_count": len(folder_items),
+        "items_with_matches": sum(1 for item in items if int(item.get("match_count") or 0) > 0),
+        "items": items,
+        "root_samples": folder_items[:50],
+        "warnings": warnings,
+        "safety": "readonly cloud root index only; cloud storage is used only for transfer and STRM generation, and scraping must happen against the STRM library side. No share receive, organize transfer, STRM generation, rename, move, delete, qBittorrent action, hlink deletion, or filesystem deletion is performed",
+    }
+
+
+def render_mv3_cloud_index_plan_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# MV3 Cloud Index Plan",
+        "",
+        f"- Mode: `{report.get('mode', '')}`",
+        f"- Source mode: `{report.get('source_mode', '')}`",
+        f"- Root path: `{report.get('root_path', '')}`",
+        f"- Root folder ID: `{report.get('root_folder_id', '')}`",
+        f"- Root folders indexed: `{report.get('root_folder_count', 0)}`",
+        f"- Planned items in this report: `{report.get('planned_items', 0)}`",
+        f"- Items with matches: `{report.get('items_with_matches', 0)}`",
+        "- Safety: readonly cloud root index only; cloud storage is used only for transfer and STRM generation, and scraping must happen against STRM-side library paths. No transfer, STRM generation, rename, move, or deletion was performed.",
+        "",
+        "| Priority | Title | Season | Expected | Matches | Best match | Best folder ID | Warnings |",
+        "| ---: | --- | ---: | ---: | ---: | --- | --- | --- |",
+    ]
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        best = item.get("best_match") if isinstance(item.get("best_match"), dict) else {}
+        lines.append(
+            "| {priority} | {title} | {season} | {expected} | {matches} | {best_name} | {best_id} | {warnings} |".format(
+                priority=item.get("priority") or "",
+                title=_escape(str(item.get("title") or "")),
+                season=item.get("season") or "",
+                expected=item.get("expected_count") or "",
+                matches=item.get("match_count") or 0,
+                best_name=_escape(str(best.get("name") or "")),
+                best_id=_escape(str(best.get("file_id") or "")),
+                warnings=_escape(", ".join(str(warning) for warning in item.get("warnings", []) if str(warning))),
+            )
+        )
+    lines.extend(["", "## Match Details", ""])
+    for item in report.get("items", []):
+        if not isinstance(item, dict) or not item.get("matches"):
+            continue
+        lines.append(f"### {item.get('priority')}. {item.get('title', '')}")
+        lines.append("")
+        lines.append("| # | Name | Score | Reasons | File ID | Path hint |")
+        lines.append("| ---: | --- | ---: | --- | --- | --- |")
+        for match in item.get("matches", [])[:10]:
+            if not isinstance(match, dict):
+                continue
+            lines.append(
+                "| {index} | {name} | {score} | {reasons} | {file_id} | {path} |".format(
+                    index=match.get("index") or "",
+                    name=_escape(str(match.get("name") or "")),
+                    score=match.get("score") or 0,
+                    reasons=_escape(", ".join(str(reason) for reason in match.get("reasons", []) if str(reason))),
+                    file_id=_escape(str(match.get("file_id") or "")),
+                    path=_escape(str(match.get("path_hint") or "")),
+                )
+            )
+        lines.append("")
+    lines.append("Next gate: browse the best matching folder by folder ID, then verify exact episode coverage before any organize transfer.")
+    return "\n".join(lines)
+
+
 def render_mv3_cloud_browse_report(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -4039,6 +4151,78 @@ def _cloud_search_plan_item(
     }
 
 
+def _cloud_index_plan_item(
+    index: int,
+    item: Dict[str, object],
+    folder_items: List[Dict[str, object]],
+    root_path: str,
+) -> Dict[str, object]:
+    matches = [_cloud_index_match(folder, item, root_path) for folder in folder_items]
+    matches = [match for match in matches if int(match.get("score") or 0) > 0]
+    matches.sort(key=lambda match: (-int(match.get("score") or 0), str(match.get("name") or "")))
+    warnings: List[str] = []
+    if not matches:
+        warnings.append("no_root_folder_match")
+    elif int(matches[0].get("score") or 0) < 60:
+        warnings.append("weak_root_folder_match")
+    return {
+        "priority": index,
+        "title": str(item.get("title") or ""),
+        "tmdbid": int(item.get("tmdbid") or 0),
+        "season": int(item.get("season") or 0),
+        "expected_count": int(item.get("expected_count") or 0),
+        "size_bytes": int(item.get("size_bytes") or 0),
+        "source_paths": _string_list(item.get("source_paths")),
+        "match_count": len(matches),
+        "best_match": matches[0] if matches else {},
+        "matches": matches[:20],
+        "warnings": warnings,
+    }
+
+
+def _cloud_index_match(folder: Dict[str, object], transfer_item: Dict[str, object], root_path: str) -> Dict[str, object]:
+    folder_name = str(folder.get("name") or "")
+    folder_text = _normalize_match_text(folder_name)
+    transfer_title = str(transfer_item.get("title") or "")
+    candidates = _cloud_index_transfer_names(transfer_item)
+    tmdbid = int(transfer_item.get("tmdbid") or 0)
+    folder_tmdbid = _tmdbid_from_text(folder_name)
+    score = 0
+    reasons: List[str] = []
+    if tmdbid and folder_tmdbid == tmdbid:
+        score += 100
+        reasons.append("tmdbid_match")
+    for candidate in candidates:
+        candidate_text = _normalize_match_text(candidate)
+        if not candidate_text:
+            continue
+        if candidate_text == folder_text:
+            score += 90
+            reasons.append("title_exact_match")
+            break
+        if len(candidate_text) >= 2 and (candidate_text in folder_text or folder_text in candidate_text):
+            score += 60
+            reasons.append("title_contains_match")
+            break
+    return {
+        "index": folder.get("index") or 0,
+        "name": folder_name,
+        "file_id": str(folder.get("file_id") or ""),
+        "path_hint": _cloud_join_path(root_path, folder_name) if root_path else "",
+        "score": score,
+        "reasons": sorted(set(reasons)),
+        "matched_title": transfer_title,
+    }
+
+
+def _cloud_index_transfer_names(item: Dict[str, object]) -> List[str]:
+    values: List[str] = []
+    values.append(str(item.get("title") or ""))
+    values.extend(_string_list(item.get("titles")))
+    values.extend(_string_list(item.get("search_keywords")))
+    return _dedupe_strings(values)
+
+
 def _cloud_search_keywords_for_transfer_item(item: Dict[str, object], limit: int = 3) -> List[str]:
     values: List[str] = []
     values.append(str(item.get("title") or ""))
@@ -4057,6 +4241,29 @@ def _cloud_search_keywords_for_transfer_item(item: Dict[str, object], limit: int
         if limit > 0 and len(keywords) >= limit:
             break
     return keywords
+
+
+def _normalize_match_text(value: str) -> str:
+    text = re.sub(r"\{tmdbid=\d+\}", " ", str(value or ""), flags=re.IGNORECASE)
+    text = re.sub(r"\((?:19|20)\d{2}\)", " ", text)
+    text = re.sub(r"(?i)\bS\d{1,2}\b|\bSeason\s*\d{1,2}\b|第\s*\d+\s*季", " ", text)
+    text = re.sub(r"[\s._\-·:：,，/\\【】\[\]（）()]+", "", text.casefold())
+    return text
+
+
+def _tmdbid_from_text(value: str) -> int:
+    match = re.search(r"\{tmdbid=(\d+)\}", str(value or ""), flags=re.IGNORECASE)
+    return int(match.group(1)) if match else 0
+
+
+def _dedupe_strings(values: List[str]) -> List[str]:
+    result: List[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or any(text.casefold() == existing.casefold() for existing in result):
+            continue
+        result.append(text)
+    return result
 
 
 def _string_list(value: object) -> List[str]:

@@ -28,6 +28,7 @@ from series_cloud_archiver.mv3 import (
     render_mv3_cloud_media_sidecar_batch_verify_report,
     render_mv3_cloud_media_sidecar_cleanup_report,
     render_mv3_cloud_media_sidecar_verify_report,
+    render_mv3_cloud_index_plan_report,
     render_mv3_cloud_search_plan_report,
     render_mv3_cloud_search_report,
     render_mv3_ensure_path_report,
@@ -48,6 +49,7 @@ from series_cloud_archiver.mv3 import (
     render_mv3_wrong_root_repair_report,
     repair_mv3_wrong_root,
     scan_mv3_organize_source,
+    index_mv3_cloud_root_for_transfer_plan,
     search_mv3_cloud_files_for_transfer_plan,
     search_mv3_resources,
     search_mv3_cloud_files,
@@ -1153,6 +1155,126 @@ class MV3ProbeTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["mode"], "readonly-mv3-cloud-search-plan")
             self.assertEqual(payload["items_with_results"], 1)
+
+    def test_cloud_index_plan_matches_root_folders_by_tmdb_and_title(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "繁城之下",
+                    "tmdbid": 233959,
+                    "season": 1,
+                    "expected_count": 12,
+                    "source_paths": ["/example/繁城之下 (2023) {tmdbid=233959}"],
+                    "search_keywords": ["Ripe Town"],
+                },
+                {"title": "庆余年", "tmdbid": 93740, "season": 1, "expected_count": 46},
+            ],
+        }
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {"name": "繁城之下 (2023) {tmdbid=233959}", "cid": "folder-1", "is_dir": True},
+                                {"name": "庆余年1-2", "cid": "folder-2", "is_dir": True},
+                                {"name": "别的剧", "cid": "folder-3", "is_dir": True},
+                            ]
+                        },
+                    }
+                ).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+            report = index_mv3_cloud_root_for_transfer_plan(
+                "http://mv3.example",
+                "token",
+                transfer_plan,
+                root_folder_id="root-folder",
+                root_path="/已整理/series",
+            )
+
+        rendered = render_mv3_cloud_index_plan_report(report, "json")
+        self.assertEqual(report["mode"], "readonly-mv3-cloud-index-plan")
+        self.assertEqual(report["root_folder_count"], 3)
+        self.assertEqual(report["items_with_matches"], 2)
+        self.assertEqual(report["items"][0]["best_match"]["file_id"], "folder-1")
+        self.assertIn("tmdbid_match", report["items"][0]["best_match"]["reasons"])
+        self.assertEqual(report["items"][1]["best_match"]["file_id"], "folder-2")
+        self.assertIn("title_contains_match", report["items"][1]["best_match"]["reasons"])
+        self.assertIn("STRM library side", report["safety"])
+        self.assertNotIn("pickcode", rendered.lower())
+
+    def test_cli_writes_cloud_index_plan_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            transfer_plan = tmp_path / "transfer.json"
+            output = tmp_path / "cloud-index-plan.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+            transfer_plan.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-mv3-transfer-plan",
+                        "items": [{"title": "Demo", "tmdbid": 123, "season": 1, "expected_count": 1}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return json.dumps({"success": True, "data": {"items": [{"name": "Demo", "cid": "folder-1", "is_dir": True}]}}).encode("utf-8")
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                code = main(
+                    [
+                        "mv3-cloud-index-plan",
+                        "--env-file",
+                        str(env_file),
+                        "--transfer-plan",
+                        str(transfer_plan),
+                        "--root-folder-id",
+                        "root-folder",
+                        "--root-path",
+                        "/已整理/series",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["mode"], "readonly-mv3-cloud-index-plan")
+            self.assertEqual(payload["items_with_matches"], 1)
 
     def test_cloud_browse_treats_115_fid_only_root_rows_as_folders(self) -> None:
         class FakeResponse:
