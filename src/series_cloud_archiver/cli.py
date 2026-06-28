@@ -109,6 +109,11 @@ from .mv3 import (
     verify_mv3_cloud_media_sidecars,
 )
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
+from .qb_orphan_cleanup import (
+    execute_qb_orphan_torrent_cleanup,
+    preview_qb_orphan_torrent_cleanup,
+    render_qb_orphan_torrent_cleanup,
+)
 from .qbittorrent import audit_dotqb_files, fetch_qb_torrents, render_dotqb_audit_report
 from .reporting import render_report
 from .scanner import scan
@@ -188,6 +193,42 @@ def build_parser() -> argparse.ArgumentParser:
     dotqb_cleanup_parser.add_argument("--approve-delete", action="store_true", help="Required: actually delete orphan .!qB files")
     dotqb_cleanup_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     dotqb_cleanup_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    qb_orphan_preview_parser = subcommands.add_parser("qb-orphan-torrent-cleanup-preview", help="Readonly preview for deleting qB tasks whose source/hlink files are already gone but STRM is complete")
+    qb_orphan_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    qb_orphan_preview_parser.add_argument("--title", required=True, help="Series title for reporting and MP absence check")
+    qb_orphan_preview_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Expected TMDB ID")
+    qb_orphan_preview_parser.add_argument("--expected-qb-hash", action="append", required=True, help="Expected full qB hash; can be repeated or comma-separated")
+    qb_orphan_preview_parser.add_argument("--source-root", action="append", required=True, help="Explicit source root that must be missing or contain no videos; can be repeated")
+    qb_orphan_preview_parser.add_argument("--hlink-root", action="append", required=True, help="Explicit hlink root that must be missing or contain no videos; can be repeated")
+    qb_orphan_preview_parser.add_argument("--strm-root", action="append", required=True, help="STRM root that must remain complete; can be repeated")
+    qb_orphan_preview_parser.add_argument("--expected-episode-count", type=int, required=True, help="Expected distinct STRM episode count")
+    qb_orphan_preview_parser.add_argument("--expected-episode-min", type=int, required=True, help="Expected first STRM episode number")
+    qb_orphan_preview_parser.add_argument("--expected-episode-max", type=int, required=True, help="Expected last STRM episode number")
+    qb_orphan_preview_parser.add_argument("--expected-title-contains", default="", help="Safety check: qB name/path must contain this text; defaults to title")
+    qb_orphan_preview_parser.add_argument("--min-seed-days", type=int, default=7, help="Minimum qB seed days")
+    qb_orphan_preview_parser.add_argument("--required-target-prefix", default="", help="Every STRM target must start with this prefix")
+    qb_orphan_preview_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
+    qb_orphan_preview_parser.add_argument("--cloud-media-path", default="", help="Optional MV3 cloud media path that must not contain NFO/JPG/PNG/WEBP before cleanup")
+    qb_orphan_preview_parser.add_argument("--cloud-media-folder-id", default="", help="Optional MV3 cloud media folder id that must not contain NFO/JPG/PNG/WEBP before cleanup")
+    qb_orphan_preview_parser.add_argument("--cloud-media-storage", default="115-default", help="MV3 cloud storage slug for cloud media sidecar verification")
+    qb_orphan_preview_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    qb_orphan_preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    qb_orphan_preview_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    qb_orphan_exec_parser = subcommands.add_parser("qb-orphan-torrent-cleanup-execute", help="Execute approved qB task-only cleanup from a validated orphan preview")
+    qb_orphan_exec_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    qb_orphan_exec_parser.add_argument("--preview-report", required=True, help="JSON report from qb-orphan-torrent-cleanup-preview")
+    qb_orphan_exec_parser.add_argument("--expected-title", required=True, help="Safety check: title must exactly match preview")
+    qb_orphan_exec_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Safety check: expected TMDB ID")
+    qb_orphan_exec_parser.add_argument("--expected-qb-hash", action="append", required=True, help="Expected full qB hash from preview; can be repeated or comma-separated")
+    qb_orphan_exec_parser.add_argument("--expected-source-root", action="append", required=True, help="Safety check: source roots must exactly match preview; can be repeated")
+    qb_orphan_exec_parser.add_argument("--expected-hlink-root", action="append", required=True, help="Safety check: hlink roots must exactly match preview; can be repeated")
+    qb_orphan_exec_parser.add_argument("--expected-strm-root", action="append", required=True, help="Safety check: STRM roots must exactly match preview; can be repeated")
+    qb_orphan_exec_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    qb_orphan_exec_parser.add_argument("--approve-delete", action="store_true", help="Required: actually remove qB tasks with deleteFiles=false")
+    qb_orphan_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    qb_orphan_exec_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mp_cleanup_parser = subcommands.add_parser("mp-cleanup-preview", help="Readonly MoviePilot cleanup preview from transfer history")
     mp_cleanup_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -955,6 +996,25 @@ def _first_string_arg(values: List[str]) -> str:
     return ""
 
 
+def _normalize_cli_strings(values: Sequence[object]) -> List[str]:
+    items = set()
+    for value in values:
+        for part in str(value or "").split(","):
+            token = part.strip().lower()
+            if token:
+                items.add(token)
+    return sorted(items)
+
+
+def _normalize_cli_paths(values: Sequence[object]) -> List[str]:
+    items = set()
+    for value in values:
+        token = str(value or "").strip().rstrip("/")
+        if token:
+            items.add(token)
+    return sorted(items)
+
+
 def _parse_path_alias_args(values: List[str]) -> dict:
     aliases = {}
     for value in values:
@@ -1146,6 +1206,93 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_dotqb_orphan_cleanup(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "qb-orphan-torrent-cleanup-preview":
+        config = config_from_env(args.env_file, [])
+        if not config.qb_base_url:
+            parser.error("qb-orphan-torrent-cleanup-preview requires QB_BASE_URL")
+        report = preview_qb_orphan_torrent_cleanup(
+            title=args.title,
+            expected_hashes=args.expected_qb_hash,
+            source_roots=args.source_root,
+            hlink_roots=args.hlink_root,
+            strm_roots=args.strm_root,
+            expected_tmdbid=args.expected_tmdbid,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            qb_base_url=config.qb_base_url,
+            qb_user=config.qb_user,
+            qb_pass=config.qb_pass,
+            mp_base_url=config.mp_base_url,
+            mp_token=config.mp_token,
+            path_aliases=config.path_aliases,
+            expected_title_contains=args.expected_title_contains,
+            min_seed_days=args.min_seed_days,
+            required_target_prefix=args.required_target_prefix,
+            forbidden_target_prefixes=args.forbidden_target_prefix,
+            mv3_base_url=config.mv3_base_url,
+            mv3_token=config.mv3_token,
+            cloud_media_path=args.cloud_media_path,
+            cloud_media_folder_id=args.cloud_media_folder_id,
+            cloud_media_storage=args.cloud_media_storage,
+            timeout=args.timeout,
+        )
+        rendered = render_qb_orphan_torrent_cleanup(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "qb-orphan-torrent-cleanup-execute":
+        if not args.approve_delete:
+            parser.error("qb-orphan-torrent-cleanup-execute requires --approve-delete")
+        config = config_from_env(args.env_file, [])
+        if not config.qb_base_url:
+            parser.error("qb-orphan-torrent-cleanup-execute requires QB_BASE_URL")
+        preview = load_optional_json_report(args.preview_report)
+        if not isinstance(preview, dict):
+            parser.error("preview report must be a JSON object")
+        preview_expected = preview.get("expected") if isinstance(preview.get("expected"), dict) else {}
+        expected_hashes = _normalize_cli_strings(args.expected_qb_hash)
+        preview_hashes = _normalize_cli_strings(preview_expected.get("qb_hashes", []) if isinstance(preview_expected.get("qb_hashes"), list) else [])
+        expected_source_roots = _normalize_cli_paths(args.expected_source_root)
+        preview_source_roots = _normalize_cli_paths(preview_expected.get("source_roots", []) if isinstance(preview_expected.get("source_roots"), list) else [])
+        expected_hlink_roots = _normalize_cli_paths(args.expected_hlink_root)
+        preview_hlink_roots = _normalize_cli_paths(preview_expected.get("hlink_roots", []) if isinstance(preview_expected.get("hlink_roots"), list) else [])
+        expected_strm_roots = _normalize_cli_paths(args.expected_strm_root)
+        preview_strm_roots = _normalize_cli_paths(preview_expected.get("strm_roots", []) if isinstance(preview_expected.get("strm_roots"), list) else [])
+        if str(preview.get("title") or "") != args.expected_title:
+            parser.error("qb-orphan-torrent-cleanup-execute expected title mismatch")
+        if int(preview_expected.get("tmdbid") or 0) != args.expected_tmdbid:
+            parser.error("qb-orphan-torrent-cleanup-execute expected TMDB ID mismatch")
+        if preview_hashes != expected_hashes:
+            parser.error("qb-orphan-torrent-cleanup-execute expected qB hashes mismatch")
+        if preview_source_roots != expected_source_roots:
+            parser.error("qb-orphan-torrent-cleanup-execute expected source roots mismatch")
+        if preview_hlink_roots != expected_hlink_roots:
+            parser.error("qb-orphan-torrent-cleanup-execute expected hlink roots mismatch")
+        if preview_strm_roots != expected_strm_roots:
+            parser.error("qb-orphan-torrent-cleanup-execute expected STRM roots mismatch")
+        report = execute_qb_orphan_torrent_cleanup(
+            preview,
+            config.qb_base_url,
+            config.qb_user,
+            config.qb_pass,
+            mp_base_url=config.mp_base_url,
+            mp_token=config.mp_token,
+            path_aliases=config.path_aliases,
+            mv3_base_url=config.mv3_base_url,
+            mv3_token=config.mv3_token,
+            timeout=args.timeout,
+        )
+        rendered = render_qb_orphan_torrent_cleanup(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

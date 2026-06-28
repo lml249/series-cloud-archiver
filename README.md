@@ -392,6 +392,44 @@ PYTHONPATH=src python3 -m series_cloud_archiver cloud-source-orphan-cleanup-prev
 
 这两个预览都会重新验证 STRM 集数和目标前缀、检查云盘媒体目录没有 `.nfo/.jpg/.jpeg/.png/.webp` 元数据旁挂，并扫描 qB 当前任务列表。只要 qB 仍然引用目标文件 inode 或源路径，预览就会阻断。真正执行必须从预览 JSON 报告进入，并显式传入标题、TMDB ID、目标根目录和 `--approve-delete`；执行时会再次预检，成功后只删除那个精确 hlink 或 source 根目录，不操作云盘、STRM、Emby 或其他 qB 任务。
 
+还有一种常见残局：STRM 已经完整，本地 source/hlink 已经不存在或只剩旁挂文件，但 qB 里还挂着“文件丢失”的孤儿任务。这个场景不要走 MP 清理，也不要手动点 qB，先用 qB task-only 预览：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver qb-orphan-torrent-cleanup-preview \
+  --env-file .env \
+  --title 八千里路云和月 \
+  --expected-tmdbid 289624 \
+  --expected-qb-hash 54e6fafc796dedce402f91cbc8b69d55d6bb3dc0 \
+  --source-root "/media/source/Echoes.of.a.Thousand.Moons.S01" \
+  --hlink-root "/media/hlink/TV/八千里路云和月 (2026)" \
+  --strm-root "/media/cloud-strm/series/八千里路云和月 (2026) {tmdbid=289624}/Season 01" \
+  --expected-episode-count 40 \
+  --expected-episode-min 1 \
+  --expected-episode-max 40 \
+  --required-target-prefix "/已整理/series/八千里路云和月" \
+  --format json \
+  --output reports/qb-orphan-preview-baqianli.json
+```
+
+预览会要求完整 qB hash，确认 qB 任务名/路径仍指向目标剧、任务已完成且做种时间达标、本地 source/hlink 没有视频、STRM 侧路径完整，并且 MP 整理历史已经缺失。真正执行仍然从预览 JSON 进入，并复核标题、TMDB ID、完整 hash 和每个根目录：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver qb-orphan-torrent-cleanup-execute \
+  --env-file .env \
+  --preview-report reports/qb-orphan-preview-baqianli.json \
+  --expected-title 八千里路云和月 \
+  --expected-tmdbid 289624 \
+  --expected-qb-hash 54e6fafc796dedce402f91cbc8b69d55d6bb3dc0 \
+  --expected-source-root "/media/source/Echoes.of.a.Thousand.Moons.S01" \
+  --expected-hlink-root "/media/hlink/TV/八千里路云和月 (2026)" \
+  --expected-strm-root "/media/cloud-strm/series/八千里路云和月 (2026) {tmdbid=289624}/Season 01" \
+  --approve-delete \
+  --format json \
+  --output reports/qb-orphan-execute-baqianli.json
+```
+
+`qb-orphan-torrent-cleanup-execute` 只调用 qB Web API 删除任务，并固定使用 `deleteFiles=false`：它会清掉 qB 任务和 qB 的种子元数据，但不会让 qB 删除内容文件，不会删除 hlink/source 目录，不会触碰云盘、STRM、Emby，也不会做任何刮削。云盘/MV3 侧仍然只负责转存和生成 STRM；NFO、海报、Emby 入库都只在 STRM 媒体库路径完成。
+
 如果 Emby 里还残留旧本地源，优先只通知 STRM 媒体库路径更新并核验旧路径是否消失。批量迁移默认使用这个局部入口，避免慢速全库扫描，也避免把云盘实体目录带进刮削范围：
 
 ```bash

@@ -62,6 +62,13 @@ reports must recheck STRM coverage, cloud-media sidecar absence, qB current task
 file lists and source paths, and a narrow hlink or source root before deleting
 that one root. This path must never be used for a normal seeded qB task.
 
+When qBittorrent still has an orphan task but the local source and hlink roots
+are already missing or contain no videos, the only approved mutation is the
+task-only qB orphan cleanup flow. It requires full hashes, exact roots, STRM-side
+coverage, MP history absence, and a fresh precheck, then calls qB delete with
+`deleteFiles=false`. It must not delete content files, hlink roots, source roots,
+cloud media, STRM files, or Emby records.
+
 ## Cloud media scraping boundary
 
 Cloud media directories are transfer and STRM-generation sources only. Scraping
