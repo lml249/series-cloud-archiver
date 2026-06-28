@@ -774,7 +774,7 @@ def delete_stale_emby_paths(
     timeout: int = 20,
 ) -> Dict[str, object]:
     client = EmbyClient(base_url, api_key, timeout=timeout)
-    verification = verify_emby_library_paths(
+    pre_delete_verification = verify_emby_library_paths(
         client,
         title=title,
         stale_path_prefixes=stale_path_prefixes,
@@ -785,12 +785,12 @@ def delete_stale_emby_paths(
         library_db_path=library_db_path,
     )
     blockers: List[str] = []
-    warnings: List[str] = list(verification.get("warnings", [])) if isinstance(verification.get("warnings"), list) else []
+    warnings: List[str] = list(pre_delete_verification.get("warnings", [])) if isinstance(pre_delete_verification.get("warnings"), list) else []
     verification_blockers = [
         str(blocker)
-        for blocker in verification.get("blockers", [])
+        for blocker in pre_delete_verification.get("blockers", [])
         if blocker != "emby_stale_path_records_present"
-    ] if isinstance(verification.get("blockers"), list) else []
+    ] if isinstance(pre_delete_verification.get("blockers"), list) else []
     blockers.extend(verification_blockers)
     if not stale_path_prefixes:
         blockers.append("stale_path_prefix_required")
@@ -839,12 +839,28 @@ def delete_stale_emby_paths(
         if any(not item.get("ok") for item in delete_results):
             blockers.append("emby_delete_item_failed")
 
+    final_verification = pre_delete_verification
+    if delete_results and not blockers:
+        final_verification = verify_emby_library_paths(
+            client,
+            title=title,
+            stale_path_prefixes=stale_path_prefixes,
+            strm_path_prefixes=strm_path_prefixes,
+            expected_episode_count=expected_episode_count,
+            expected_episode_min=expected_episode_min,
+            expected_episode_max=expected_episode_max,
+            library_db_path=library_db_path,
+        )
+        blockers.extend(str(blocker) for blocker in final_verification.get("blockers", []) if blocker)
+        warnings.extend(str(warning) for warning in final_verification.get("warnings", []) if warning)
+
     return {
         "mode": "emby-delete-stale-paths",
         "title": title,
         "ok": not blockers and bool(delete_results),
         "delete_scope": normalized_delete_scope,
-        "verification": verification,
+        "pre_delete_verification": pre_delete_verification,
+        "verification": final_verification,
         "stale_rows_count": len(stale_rows),
         "root_items": root_rows,
         "host_checks": host_checks,
