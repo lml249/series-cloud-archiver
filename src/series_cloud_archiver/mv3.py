@@ -1342,12 +1342,13 @@ def preview_mv3_share(
     keyword: str,
     selection_index: int = 1,
     browse_cid: str = "",
+    browse_limit: int = 1150,
     channels: Optional[List[str]] = None,
     expected_title_contains: str = "",
     timeout: int = 60,
 ) -> Dict[str, object]:
     client = MV3Client(base_url, token, timeout=timeout)
-    resolution = _resolve_mv3_share(client, keyword, selection_index, browse_cid, channels, expected_title_contains)
+    resolution = _resolve_mv3_share(client, keyword, selection_index, browse_cid, browse_limit, channels, expected_title_contains)
     report = _public_share_resolution(resolution)
     search = report.get("search") if isinstance(report.get("search"), dict) else {}
     parse_report = report.get("parse") if isinstance(report.get("parse"), dict) else {}
@@ -1369,6 +1370,7 @@ def receive_mv3_share(
     selection_index: int = 1,
     browse_index: int = 1,
     browse_cid: str = "",
+    browse_limit: int = 1150,
     receive_all_files: bool = False,
     expected_episode_count: int = 0,
     expected_episode_min: int = 0,
@@ -1380,7 +1382,7 @@ def receive_mv3_share(
     timeout: int = 60,
 ) -> Dict[str, object]:
     client = MV3Client(base_url, token, timeout=timeout)
-    resolution = _resolve_mv3_share(client, keyword, selection_index, browse_cid, channels, expected_title_contains)
+    resolution = _resolve_mv3_share(client, keyword, selection_index, browse_cid, browse_limit, channels, expected_title_contains)
     report = _public_share_resolution(resolution)
     warnings = list(report.get("warnings", [])) if isinstance(report.get("warnings"), list) else []
     raw = resolution.get("_raw") if isinstance(resolution.get("_raw"), dict) else {}
@@ -3904,7 +3906,7 @@ def _mv3_share_browse_summary(
     report["item_count"] = len(items)
     report["folder_count"] = sum(1 for item in items if _share_item_kind(item) == "folder")
     report["file_count"] = sum(1 for item in items if _share_item_kind(item) == "file")
-    report["items"] = [_share_browse_item_summary(item, index) for index, item in enumerate(items[:50], start=1)]
+    report["items"] = [_share_browse_item_summary(item, index) for index, item in enumerate(items, start=1)]
     return report
 
 
@@ -3913,6 +3915,7 @@ def _resolve_mv3_share(
     keyword: str,
     selection_index: int,
     browse_cid: str,
+    browse_limit: int,
     channels: Optional[List[str]],
     expected_title_contains: str,
 ) -> Dict[str, object]:
@@ -3971,7 +3974,7 @@ def _resolve_mv3_share(
         if not share_code:
             warnings.append("share_code_not_available_for_browse")
         else:
-            browse_body: Dict[str, object] = {"share_code": share_code}
+            browse_body: Dict[str, object] = {"share_code": share_code, "limit": max(1, int(browse_limit or 1))}
             if receive_code:
                 browse_body["receive_code"] = receive_code
             if browse_cid:
@@ -3994,6 +3997,7 @@ def _resolve_mv3_share(
         "channels": channels or [],
         "selection_index": selection_index,
         "browse_cid": browse_cid,
+        "browse_limit": max(1, int(browse_limit or 1)),
         "selected": selected_summary,
         "search": {
             "endpoint": {"method": "POST", "path": "/api/v1/resource-search/search"},

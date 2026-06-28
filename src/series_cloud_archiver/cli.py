@@ -532,6 +532,7 @@ def build_parser() -> argparse.ArgumentParser:
     share_preview_parser.add_argument("--keyword", required=True, help="Search keyword")
     share_preview_parser.add_argument("--selection-index", type=int, default=1, help="1-based search result to parse/browse")
     share_preview_parser.add_argument("--browse-cid", default="", help="Optional share folder cid to browse instead of the share root")
+    share_preview_parser.add_argument("--browse-limit", type=int, default=1150, help="Maximum share folder items to request")
     share_preview_parser.add_argument("--expected-title-contains", default="", help="Safety check: selected title must contain this text")
     share_preview_parser.add_argument("--channel", action="append", default=[], help="Optional channel filter; can be repeated")
     share_preview_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
@@ -544,6 +545,7 @@ def build_parser() -> argparse.ArgumentParser:
     share_receive_parser.add_argument("--selection-index", type=int, default=1, help="1-based search result to parse/browse")
     share_receive_parser.add_argument("--browse-index", type=int, default=1, help="1-based browsed share item to receive")
     share_receive_parser.add_argument("--browse-cid", default="", help="Optional share folder cid to browse before selecting --browse-index")
+    share_receive_parser.add_argument("--browse-limit", type=int, default=1150, help="Maximum share folder items to request")
     share_receive_parser.add_argument("--receive-all-files", action="store_true", help="Receive every file in the current browsed share folder instead of one selected item")
     share_receive_parser.add_argument("--expected-episode-count", type=int, default=0, help="Safety check for --receive-all-files: exact episode count")
     share_receive_parser.add_argument("--expected-episode-min", type=int, default=0, help="Safety check for --receive-all-files: first episode number")
@@ -1778,6 +1780,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             args.keyword,
             selection_index=args.selection_index,
             browse_cid=args.browse_cid,
+            browse_limit=args.browse_limit,
             channels=args.channel,
             expected_title_contains=args.expected_title_contains,
             timeout=args.timeout,
@@ -1802,6 +1805,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             selection_index=args.selection_index,
             browse_index=args.browse_index,
             browse_cid=args.browse_cid,
+            browse_limit=args.browse_limit,
             receive_all_files=args.receive_all_files,
             expected_episode_count=args.expected_episode_count,
             expected_episode_min=args.expected_episode_min,

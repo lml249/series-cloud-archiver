@@ -1615,6 +1615,7 @@ class MV3ProbeTest(unittest.TestCase):
             if path == "/api/v1/share-transfer/parse":
                 return FakeResponse({"success": True, "data": {"share_code": "parsed-code", "receive_code": "abcd", "face": "http://avatars.example.test/private.jpg"}})
             if path == "/api/v1/share-transfer/browse":
+                self.assertEqual(body["limit"], 1150)
                 return FakeResponse(
                     {
                         "success": True,
@@ -1650,6 +1651,61 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertNotIn("parsed-code", rendered)
         self.assertNotIn("abcd", rendered)
 
+    def test_share_preview_requests_full_folder_and_keeps_more_than_50_items(self) -> None:
+        seen = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.replace("http://mv3.example", "")
+            body = json.loads(request.data.decode("utf-8"))
+            seen.append((path, body))
+            if path == "/api/v1/resource-search/search":
+                return FakeResponse({"success": True, "data": {"items": [{"title": "甄嬛传", "share_link": "https://example.test/s/private"}]}})
+            if path == "/api/v1/share-transfer/parse":
+                return FakeResponse({"success": True, "data": {"share_code": "parsed-code"}})
+            if path == "/api/v1/share-transfer/browse":
+                self.assertEqual(body["limit"], 1150)
+                items = [
+                    {"name": f"甄嬛传 - S01E{episode:02d}.mp4", "fid": f"file-{episode}", "is_dir": False}
+                    for episode in range(1, 77)
+                ]
+                return FakeResponse({"success": True, "data": {"items": items}})
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = preview_mv3_share(
+                "http://mv3.example",
+                "token",
+                "甄嬛传",
+                selection_index=1,
+                expected_title_contains="甄嬛传",
+            )
+
+        self.assertEqual([item[0] for item in seen], ["/api/v1/resource-search/search", "/api/v1/share-transfer/parse", "/api/v1/share-transfer/browse"])
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["browse_limit"], 1150)
+        self.assertEqual(report["browse"]["item_count"], 76)
+        self.assertEqual(len(report["browse"]["items"]), 76)
+        self.assertEqual(report["browse"]["items"][-1]["episode"], 76)
+
     def test_share_preview_can_browse_nested_share_folder_by_cid(self) -> None:
         seen = []
 
@@ -1682,6 +1738,7 @@ class MV3ProbeTest(unittest.TestCase):
                 return FakeResponse({"success": True, "data": {"share_code": "parsed-code", "receive_code": "abcd"}})
             if path == "/api/v1/share-transfer/browse":
                 self.assertEqual(body["cid"], "folder-1")
+                self.assertEqual(body["limit"], 1150)
                 return FakeResponse(
                     {
                         "success": True,
@@ -1869,6 +1926,7 @@ class MV3ProbeTest(unittest.TestCase):
                 return FakeResponse({"success": True, "data": {"share_code": "parsed-code", "receive_code": "abcd"}})
             if path == "/api/v1/share-transfer/browse":
                 self.assertEqual(body["cid"], "folder-1")
+                self.assertEqual(body["limit"], 1150)
                 return FakeResponse(
                     {
                         "success": True,
