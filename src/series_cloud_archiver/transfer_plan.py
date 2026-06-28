@@ -555,9 +555,13 @@ def _parse_size_bytes(value: object) -> int:
     if not text:
         return 0
     compact = text.replace(",", "").replace(" ", "")
-    match = __import__("re").search(r"(?i)(\d+(?:\.\d+)?)(b|k|kb|kib|m|mb|mib|g|gb|gib|t|tb|tib)", compact)
-    if not match:
+    matches = list(re.finditer(r"(?i)(\d+(?:\.\d+)?)(b|k|kb|kib|m|mb|mib|g|gb|gib|t|tb|tib)", compact))
+    if not matches:
         return int(float(compact)) if compact.isdigit() else 0
+    return max(_size_match_bytes(match) for match in matches)
+
+
+def _size_match_bytes(match: re.Match[str]) -> int:
     number = float(match.group(1))
     unit = match.group(2).lower()
     factor = {
@@ -588,6 +592,10 @@ def _episode_numbers_from_text(text: str) -> List[int]:
     import re
 
     episodes = set()
+    for end in re.findall(r"(?:更新至|更至|更新到|更新至第|更至第|至第)\s*0?(\d{1,3})\s*[集话話期]", text):
+        last = int(end)
+        if 0 < last <= 300:
+            episodes.update(range(1, last + 1))
     for start, end in re.findall(r"(?i)(?:S\d{1,2})?E?0?(\d{1,3})\s*[-~到至]\s*(?:S\d{1,2})?E?0?(\d{1,3})\s*[集话話]?", text):
         a, b = int(start), int(end)
         if 0 < a <= b <= 300:

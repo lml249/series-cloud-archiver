@@ -614,6 +614,46 @@ class TransferPlanTest(unittest.TestCase):
         self.assertIn("complete_marker", recommended["reasons"])
         self.assertIn("size_similar", recommended["reasons"])
 
+    def test_share_search_plan_ignores_4k_when_parsing_title_size(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "一饭封神 (2025) {tmdbid=296217}",
+                    "tmdbid": 296217,
+                    "season": 1,
+                    "size_bytes": int(55.5 * 1024**3),
+                    "expected_count": 25,
+                    "source_paths": ["/example/library-host/hlink/TV/一饭封神 (2025) {tmdbid=296217}"],
+                }
+            ],
+        }
+        search_reports = {
+            "一饭封神 (2025) {tmdbid=296217}": {
+                "ok": True,
+                "result_count": 1,
+                "items": [
+                    {
+                        "index": 7,
+                        "title": "📺 一饭封神 (2025) 第1季 更新至第25集 ✨4K WEB-DL AAC 53.92 GB",
+                        "size": "",
+                        "share_code_available": True,
+                        "search_keyword": "一饭封神",
+                    }
+                ],
+            }
+        }
+
+        plan = plan_mv3_share_search_from_transfer_plan(transfer_plan, search_reports, limit=1)
+
+        recommended = plan["items"][0]["recommended_candidate"]
+        self.assertEqual(plan["ready_items"], 1)
+        self.assertEqual(recommended["search_index"], 7)
+        self.assertGreater(recommended["size_bytes"], 50 * 1000**3)
+        self.assertIn("episode_count_covers_expected", recommended["reasons"])
+        self.assertIn("size_similar", recommended["reasons"])
+        self.assertNotIn("size_far_from_local", recommended["blockers"])
+
     def test_share_search_plan_records_keyword_for_english_result(self) -> None:
         transfer_plan = {
             "mode": "readonly-mv3-transfer-plan",
