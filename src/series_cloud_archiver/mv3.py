@@ -3728,9 +3728,6 @@ def _cloud_item_kind(item: Dict[str, object]) -> str:
 def _looks_like_115_fid_folder(item: Dict[str, object]) -> bool:
     if not str(item.get("fid") or ""):
         return False
-    name = _cloud_name(item)
-    if Path(name).suffix:
-        return False
     if str(item.get("sha1") or "").strip():
         return False
     for key in ("size", "size_text", "file_size", "file_size_text", "s", "fs"):
