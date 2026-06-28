@@ -1748,6 +1748,7 @@ class MV3ProbeTest(unittest.TestCase):
                 return FakeResponse({"success": True, "data": {"share_code": "parsed-code", "receive_code": "abcd", "face": "http://avatars.example.test/private.jpg"}})
             if path == "/api/v1/share-transfer/browse":
                 self.assertEqual(body["limit"], 1150)
+                self.assertEqual(body["storage"], "115-default")
                 return FakeResponse(
                     {
                         "success": True,
@@ -1814,6 +1815,7 @@ class MV3ProbeTest(unittest.TestCase):
             if path == "/api/v1/share-transfer/parse":
                 return FakeResponse({"success": True, "data": {"share_code": "parsed-code"}})
             if path == "/api/v1/share-transfer/browse":
+                self.assertEqual(body["storage"], "115-default")
                 self.assertEqual(body["limit"], 1150)
                 items = [
                     {"name": f"甄嬛传 - S01E{episode:02d}.mp4", "fid": f"file-{episode}", "is_dir": False}
@@ -1871,6 +1873,7 @@ class MV3ProbeTest(unittest.TestCase):
             if path == "/api/v1/share-transfer/browse":
                 self.assertEqual(body["cid"], "folder-1")
                 self.assertEqual(body["limit"], 1150)
+                self.assertEqual(body["storage"], "115-default")
                 return FakeResponse(
                     {
                         "success": True,
@@ -1897,6 +1900,7 @@ class MV3ProbeTest(unittest.TestCase):
         rendered = render_mv3_share_preview_report(report, "json")
         self.assertEqual([item[0] for item in seen], ["/api/v1/resource-search/search", "/api/v1/share-transfer/parse", "/api/v1/share-transfer/browse"])
         self.assertTrue(report["ok"])
+        self.assertEqual(report["storage"], "115-default")
         self.assertEqual(report["browse_cid"], "folder-1")
         self.assertEqual(report["browse"]["item_count"], 2)
         self.assertEqual(report["browse"]["items"][1]["episode"], 2)
@@ -2209,6 +2213,7 @@ class MV3ProbeTest(unittest.TestCase):
             if path == "/api/v1/share-transfer/browse":
                 self.assertEqual(body["cid"], "folder-1")
                 self.assertEqual(body["limit"], 1150)
+                self.assertEqual(body["storage"], "115-default")
                 return FakeResponse(
                     {
                         "success": True,
@@ -2253,6 +2258,7 @@ class MV3ProbeTest(unittest.TestCase):
         browse_body = seen[2][1]
         receive_body = seen[-1][1]
         self.assertEqual(browse_body["cid"], "folder-1")
+        self.assertEqual(browse_body["storage"], "115-default")
         self.assertEqual(receive_body["file_ids"], ["video-1", "video-2"])
         self.assertTrue(report["ok"])
         self.assertEqual(report["browse_cid"], "folder-1")

@@ -1346,10 +1346,11 @@ def preview_mv3_share(
     browse_limit: int = 1150,
     channels: Optional[List[str]] = None,
     expected_title_contains: str = "",
+    storage: str = "115-default",
     timeout: int = 60,
 ) -> Dict[str, object]:
     client = MV3Client(base_url, token, timeout=timeout)
-    resolution = _resolve_mv3_share(client, keyword, selection_index, browse_cid, browse_limit, channels, expected_title_contains)
+    resolution = _resolve_mv3_share(client, keyword, selection_index, browse_cid, browse_limit, channels, expected_title_contains, storage)
     report = _public_share_resolution(resolution)
     search = report.get("search") if isinstance(report.get("search"), dict) else {}
     parse_report = report.get("parse") if isinstance(report.get("parse"), dict) else {}
@@ -1384,7 +1385,7 @@ def receive_mv3_share(
     timeout: int = 60,
 ) -> Dict[str, object]:
     client = MV3Client(base_url, token, timeout=timeout)
-    resolution = _resolve_mv3_share(client, keyword, selection_index, browse_cid, browse_limit, channels, expected_title_contains)
+    resolution = _resolve_mv3_share(client, keyword, selection_index, browse_cid, browse_limit, channels, expected_title_contains, storage)
     report = _public_share_resolution(resolution)
     warnings = list(report.get("warnings", [])) if isinstance(report.get("warnings"), list) else []
     raw = resolution.get("_raw") if isinstance(resolution.get("_raw"), dict) else {}
@@ -3924,6 +3925,7 @@ def _resolve_mv3_share(
     browse_limit: int,
     channels: Optional[List[str]],
     expected_title_contains: str,
+    storage: str,
 ) -> Dict[str, object]:
     search_body: Dict[str, object] = {"keyword": keyword}
     if channels:
@@ -3944,6 +3946,7 @@ def _resolve_mv3_share(
             "selection_index": selection_index,
             "browse_cid": browse_cid,
             "browse_limit": max(1, int(browse_limit or 1)),
+            "storage": storage,
             "selected": {},
             "search": search_report,
             "parse": {"skipped": True},
@@ -4020,6 +4023,8 @@ def _resolve_mv3_share(
                 browse_body["receive_code"] = receive_code
             if browse_cid:
                 browse_body["cid"] = browse_cid
+            if storage:
+                browse_body["storage"] = storage
             try:
                 browse_status, browse_headers, browse_response_body = client.post_json("/api/v1/share-transfer/browse", browse_body)
                 browse_parsed = _parse_json(browse_response_body.decode("utf-8", "replace"))
@@ -4048,6 +4053,7 @@ def _resolve_mv3_share(
         "selection_index": selection_index,
         "browse_cid": browse_cid,
         "browse_limit": max(1, int(browse_limit or 1)),
+        "storage": storage,
         "selected": selected_summary,
         "search": {
             "endpoint": {"method": "POST", "path": "/api/v1/resource-search/search"},

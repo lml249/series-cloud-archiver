@@ -534,6 +534,7 @@ def build_parser() -> argparse.ArgumentParser:
     share_preview_parser.add_argument("--browse-cid", default="", help="Optional share folder cid to browse instead of the share root")
     share_preview_parser.add_argument("--browse-limit", type=int, default=1150, help="Maximum share folder items to request")
     share_preview_parser.add_argument("--expected-title-contains", default="", help="Safety check: selected title must contain this text")
+    share_preview_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug used when browsing the share")
     share_preview_parser.add_argument("--channel", action="append", default=[], help="Optional channel filter; can be repeated")
     share_preview_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     share_preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
@@ -1783,6 +1784,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             browse_limit=args.browse_limit,
             channels=args.channel,
             expected_title_contains=args.expected_title_contains,
+            storage=args.storage,
             timeout=args.timeout,
         )
         rendered = render_mv3_share_preview_report(report, args.format)
