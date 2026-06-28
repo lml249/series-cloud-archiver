@@ -1477,6 +1477,7 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertTrue(report["parse"]["ok"])
         self.assertFalse(report["browse"]["ok"])
         self.assertEqual(report["browse"]["item_count"], 0)
+        self.assertEqual(report["browse"]["api_message"], "cannot browse share")
 
     def test_share_receive_requires_selected_browse_item_and_redacts_report(self) -> None:
         seen = []

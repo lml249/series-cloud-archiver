@@ -3568,11 +3568,16 @@ def _mv3_api_call_summary(
     api_success: bool,
     response_body: bytes,
 ) -> Dict[str, object]:
+    raw_response = _parse_json(response_body.decode("utf-8", "replace"))
+    api_message = _first_present(raw_response, ["message", "msg", "detail", "error"]) if isinstance(raw_response, dict) else ""
+    api_code = _first_present(raw_response, ["code", "errcode", "error_code"]) if isinstance(raw_response, dict) else ""
     return {
         "endpoint": {"method": method, "path": path},
         "ok": 200 <= status < 300 and api_success,
         "http_ok": 200 <= status < 300,
         "api_success": api_success,
+        "api_code": _sanitize_json(api_code),
+        "api_message": _sanitize_json(api_message),
         "status": status,
         "response_content_type": _header(headers, "content-type"),
         "response_body_bytes": len(response_body),
