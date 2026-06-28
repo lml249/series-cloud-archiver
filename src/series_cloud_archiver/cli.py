@@ -1181,7 +1181,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             _write_text_output(args.output, rendered)
         else:
             print(rendered)
-        return 0
+        return 0 if report.get("ok") else 1
 
     if args.command == "mp-cleanup-verify":
         config = config_from_env(args.env_file, [])

@@ -4694,6 +4694,69 @@ class MV3ProbeTest(unittest.TestCase):
                     ]
                 )
 
+    def test_cli_returns_failure_when_mp_cleanup_report_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            preview = tmp_path / "preview.json"
+            output = tmp_path / "execute.json"
+            env_file.write_text("MP_BASE_URL=http://moviepilot.example\nMP_API_TOKEN=token\n", encoding="utf-8")
+            preview.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-mp-cleanup-preview",
+                        "title": "Demo",
+                        "ready_for_manual_cleanup_approval": False,
+                        "summary": {
+                            "records_matched": 0,
+                            "episode_count": 0,
+                            "episode_min": 0,
+                            "episode_max": 0,
+                            "missing_in_range": [],
+                        },
+                        "mp_delete_plan": {"query": {"deletesrc": True, "deletedest": True}},
+                        "records": [],
+                        "warnings": [],
+                        "blockers": ["no_matching_mp_transfer_history"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code = main(
+                [
+                    "mp-cleanup-execute",
+                    "--env-file",
+                    str(env_file),
+                    "--preview-report",
+                    str(preview),
+                    "--expected-title",
+                    "Demo",
+                    "--expected-tmdbid",
+                    "123",
+                    "--expected-hash-prefix",
+                    "feedface0000",
+                    "--expected-record-count",
+                    "1",
+                    "--expected-episode-count",
+                    "1",
+                    "--expected-episode-min",
+                    "1",
+                    "--expected-episode-max",
+                    "1",
+                    "--approve-mp-cleanup",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+
+            self.assertEqual(code, 1)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertFalse(payload["ok"])
+            self.assertIn("preview_has_blockers", payload["blockers"])
+
     def test_cli_parses_mp_cleanup_expected_episodes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
