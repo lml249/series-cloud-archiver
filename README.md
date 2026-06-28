@@ -467,7 +467,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-brows
 
 整理转存成功后，下一步必须先验证两边：云盘媒体目录只应该有视频和可播放用字幕旁挂，不能有 `.nfo/.jpg/.jpeg/.png/.webp`；STRM 目录才是后续刮削和 Emby 入库对象。也就是说，删除本地 hlink 或 qB 种子前，至少要同时拿到 `mv3-cloud-browse`、`mv3-cloud-media-sidecar-verify`、`strm-verify` 和局部 Emby 验证报告。
 
-单独调用 `mv3-strm-generate` 时也保持同样边界：默认只生成 STRM，不允许顺手整理或刮削云盘媒体。命令里的 `--organize` 会被项目阻断；除非显式加 `--allow-organize` 才会放行。正常迁移流程应先用 `mv3-organize-transfer-from-browse` 完成云盘整理和 STRM 生成，再只刷新/刮削 STRM 侧媒体库。
+单独调用 `mv3-strm-generate` 时也保持同样边界：只生成 STRM，不允许顺手整理或刮削云盘媒体。命令里的 `--organize` 会被项目阻断；即使传了旧版兼容参数 `--allow-organize` 也不会放行。正常迁移流程应先用 `mv3-organize-transfer-from-browse` 完成云盘整理和 STRM 生成，再只刷新/刮削 STRM 侧媒体库。
 
 如果发现云盘媒体目录里已经出现 `.nfo/.jpg/.jpeg/.png/.webp` 等刮削旁挂，先用 dry-run 列出将要删除的元数据文件：
 

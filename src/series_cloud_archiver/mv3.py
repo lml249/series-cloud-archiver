@@ -1784,9 +1784,11 @@ def generate_mv3_strm(
         blockers.append("target_dir_looks_like_cloud_media_root")
     if cloud and normalized_source_dir.startswith("/volume"):
         blockers.append("source_dir_looks_like_local_strm_root")
-    if organize and not allow_organize:
+    if organize:
         blockers.append("strm_generate_organize_disabled")
         warnings.append("cloud_media_is_transfer_and_strm_only_use_mv3_organize_transfer_first")
+        if allow_organize:
+            warnings.append("strm_generate_allow_organize_ignored")
 
     request_body: Dict[str, object] = {
         "source_dir": normalized_source_dir,
@@ -1852,6 +1854,7 @@ def generate_mv3_strm(
         "blockers": sorted(set(blockers)),
         "safety": (
             "approved MV3 STRM generation only; cloud storage remains the source for STRM files, not the scraping target. "
+            "The organize flag is always blocked here; use audited mv3-organize-transfer-from-browse for cloud organization. "
             "Scraping must happen against the STRM library side; no cloud media move/delete, qBittorrent action, "
             "hlink deletion, local filesystem deletion, or MP cleanup is performed"
         ),

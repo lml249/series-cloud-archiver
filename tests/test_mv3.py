@@ -2892,31 +2892,8 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertTrue(report["request_summary"]["organize"])
         fake_urlopen.assert_not_called()
 
-    def test_strm_generate_allows_organize_with_explicit_override(self) -> None:
-        seen = {}
-
-        class FakeResponse:
-            status = 200
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, _exc_type, _exc, _tb):
-                return False
-
-            def read(self, _limit=-1):
-                return b'{"success":true,"data":{"task_id":"strm-task-1"}}'
-
-            @property
-            def headers(self):
-                return {"Content-Type": "application/json"}
-
-        def fake_urlopen(request, timeout):
-            seen["body"] = json.loads(request.data.decode("utf-8"))
-            seen["timeout"] = timeout
-            return FakeResponse()
-
-        with patch("urllib.request.urlopen", fake_urlopen):
+    def test_strm_generate_blocks_organize_even_with_explicit_override(self) -> None:
+        with patch("urllib.request.urlopen") as fake_urlopen:
             report = generate_mv3_strm(
                 "http://mv3.example",
                 "token",
@@ -2927,10 +2904,12 @@ class MV3ProbeTest(unittest.TestCase):
                 timeout=42,
             )
 
-        self.assertTrue(report["ok"])
+        self.assertFalse(report["ok"])
         self.assertTrue(report["allow_organize"])
-        self.assertTrue(seen["body"]["organize"])
-        self.assertEqual(seen["timeout"], 42)
+        self.assertIn("strm_generate_organize_disabled", report["blockers"])
+        self.assertIn("strm_generate_allow_organize_ignored", report["warnings"])
+        self.assertIn("organize flag is always blocked", report["safety"])
+        fake_urlopen.assert_not_called()
 
     def test_strm_records_regenerate_posts_record_ids(self) -> None:
         seen = {}
