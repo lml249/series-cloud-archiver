@@ -73,6 +73,7 @@ from .mv3 import (
     render_mv3_cloud_media_sidecar_batch_verify_report,
     render_mv3_cloud_media_sidecar_cleanup_report,
     render_mv3_cloud_media_sidecar_verify_report,
+    render_mv3_cloud_search_report,
     render_mv3_ensure_path_report,
     render_mv3_instances_report,
     render_mv3_offline_add_report,
@@ -94,6 +95,7 @@ from .mv3 import (
     repair_mv3_wrong_root,
     scan_mv3_organize_source,
     search_mv3_resources,
+    search_mv3_cloud_files,
     verify_mv3_cloud_media_sidecars,
 )
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
@@ -670,6 +672,15 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_browse_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     cloud_browse_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     cloud_browse_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    cloud_search_parser = subcommands.add_parser("mv3-cloud-search", help="Readonly MV3 cloud file search")
+    cloud_search_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    cloud_search_parser.add_argument("--keyword", required=True, help="Cloud search keyword")
+    cloud_search_parser.add_argument("--cid", default="", help="Optional cloud folder id to search under")
+    cloud_search_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    cloud_search_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    cloud_search_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    cloud_search_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     cloud_sidecar_parser = subcommands.add_parser("mv3-cloud-media-sidecar-verify", help="Readonly recursive MV3 cloud media metadata sidecar verification")
     cloud_sidecar_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -2029,6 +2040,25 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_cloud_browse_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mv3-cloud-search":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-cloud-search requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = search_mv3_cloud_files(
+            config.mv3_base_url,
+            config.mv3_token,
+            keyword=args.keyword,
+            cid=args.cid,
+            storage=args.storage,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_cloud_search_report(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

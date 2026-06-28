@@ -28,6 +28,7 @@ from series_cloud_archiver.mv3 import (
     render_mv3_cloud_media_sidecar_batch_verify_report,
     render_mv3_cloud_media_sidecar_cleanup_report,
     render_mv3_cloud_media_sidecar_verify_report,
+    render_mv3_cloud_search_report,
     render_mv3_ensure_path_report,
     render_mv3_instances_report,
     render_mv3_offline_add_report,
@@ -47,6 +48,7 @@ from series_cloud_archiver.mv3 import (
     repair_mv3_wrong_root,
     scan_mv3_organize_source,
     search_mv3_resources,
+    search_mv3_cloud_files,
     verify_mv3_cloud_media_sidecars,
     preview_mv3_share,
     receive_mv3_share,
@@ -927,6 +929,102 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["summary"]["episode_count"], 2)
         self.assertEqual([item["media_kind"] for item in report["items"]], ["video", "subtitle_sidecar", "video", "subtitle_sidecar"])
         self.assertEqual(report["summary"]["missing_in_range"], [])
+
+    def test_cloud_search_reports_folders_and_redacts_sensitive_fields(self) -> None:
+        seen = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen.append((request.full_url, json.loads(request.data.decode("utf-8"))))
+            if request.full_url == "http://mv3.example/api/v1/files/cloud/search":
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {"fn": "繁城之下 (2023) {tmdbid=233959}", "fid": "folder-1", "pid": "0", "fc": "0", "pc": "private-pickcode"},
+                                {"fn": "繁城之下.S01E01.mkv", "fid": "file-1", "pid": "folder-1", "fc": "1", "fs": 1024, "ico": "mkv", "uid": "private-user"},
+                            ]
+                        },
+                    }
+                )
+            raise AssertionError(f"unexpected url: {request.full_url}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = search_mv3_cloud_files("http://mv3.example", "token", "繁城之下", storage="115-default")
+
+        rendered = render_mv3_cloud_search_report(report, "json")
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["result_count"], 2)
+        self.assertEqual(report["folder_count"], 1)
+        self.assertEqual(report["file_count"], 1)
+        self.assertEqual(report["items"][0]["kind"], "folder")
+        self.assertEqual(report["items"][1]["kind"], "file")
+        self.assertEqual(seen[0][1]["search_value"], "繁城之下")
+        self.assertEqual(seen[0][1]["storage"], "115-default")
+        self.assertNotIn("private-pickcode", rendered)
+        self.assertNotIn("private-user", rendered)
+
+    def test_cli_writes_cloud_search_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "cloud-search.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return json.dumps({"success": True, "data": {"items": [{"fn": "Demo", "fid": "folder-1", "fc": "0"}]}}).encode("utf-8")
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                code = main(
+                    [
+                        "mv3-cloud-search",
+                        "--env-file",
+                        str(env_file),
+                        "--keyword",
+                        "Demo",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["mode"], "readonly-mv3-cloud-search")
+            self.assertEqual(payload["result_count"], 1)
 
     def test_cloud_browse_treats_115_fid_only_root_rows_as_folders(self) -> None:
         class FakeResponse:

@@ -380,8 +380,106 @@ def browse_mv3_cloud_folder(
         "folder_info": _cloud_info_summary(info) if info else {},
         "items": items,
         "warnings": warnings,
-        "safety": "readonly cloud browse only; no organize transfer, rename, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
+        "safety": "readonly cloud browse only; cloud storage is used only for transfer and STRM generation, and scraping must happen against the STRM library side. No organize transfer, rename, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
     }
+
+
+def search_mv3_cloud_files(
+    base_url: str,
+    token: str,
+    keyword: str,
+    cid: str = "",
+    storage: str = "115-default",
+    timeout: int = 60,
+) -> Dict[str, object]:
+    body: Dict[str, object] = {"search_value": keyword}
+    if cid:
+        body["cid"] = cid
+    if storage:
+        body["storage"] = storage
+    client = MV3Client(base_url, token, timeout=timeout)
+    try:
+        status, headers, response_body = client.post_json("/api/v1/files/cloud/search", body)
+    except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+        return {
+            "mode": "readonly-mv3-cloud-search",
+            "endpoint": {"method": "POST", "path": "/api/v1/files/cloud/search"},
+            "ok": False,
+            "http_ok": False,
+            "api_success": False,
+            "status": 0,
+            "keyword": keyword,
+            "cid": cid,
+            "storage": storage,
+            "result_count": 0,
+            "folder_count": 0,
+            "file_count": 0,
+            "items": [],
+            "error_type": _mv3_error_type(exc),
+            "error": str(exc),
+            "warnings": ["mv3_cloud_search_request_failed"],
+            "safety": "readonly cloud search only; cloud storage is used only for transfer and STRM generation, and scraping must happen against the STRM library side. No share receive, organize transfer, STRM generation, rename, move, delete, qBittorrent action, hlink deletion, or filesystem deletion is performed",
+        }
+    parsed = _parse_json(response_body.decode("utf-8", "replace"))
+    payload = _unwrap_api_payload(parsed)
+    api_success = _api_success(parsed)
+    rows = _cloud_rows(payload)
+    items = [_cloud_browse_item_summary(row, index) for index, row in enumerate(rows[:200], start=1)]
+    return {
+        "mode": "readonly-mv3-cloud-search",
+        "endpoint": {"method": "POST", "path": "/api/v1/files/cloud/search"},
+        "ok": 200 <= status < 300 and api_success,
+        "http_ok": 200 <= status < 300,
+        "api_success": api_success,
+        "status": status,
+        "response_content_type": _header(headers, "content-type"),
+        "keyword": keyword,
+        "cid": cid,
+        "storage": storage,
+        "result_count": len(rows),
+        "folder_count": sum(1 for row in rows if _cloud_item_kind(row) == "folder"),
+        "file_count": sum(1 for row in rows if _cloud_item_kind(row) == "file"),
+        "items": items,
+        "response_shape": _json_shape(payload),
+        "warnings": [] if rows else ["no_cloud_search_items_found"],
+        "safety": "readonly cloud search only; cloud storage is used only for transfer and STRM generation, and scraping must happen against the STRM library side. No share receive, organize transfer, STRM generation, rename, move, delete, qBittorrent action, hlink deletion, or filesystem deletion is performed",
+    }
+
+
+def render_mv3_cloud_search_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# MV3 Cloud Search",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Keyword: `{report.get('keyword', '')}`",
+        f"- Storage: `{report.get('storage', '')}`",
+        f"- Results: `{report.get('result_count', 0)}`",
+        f"- Folders: `{report.get('folder_count', 0)}`",
+        f"- Files: `{report.get('file_count', 0)}`",
+        "- Safety: readonly cloud search only; cloud storage is used only for transfer and STRM generation, and scraping must happen against STRM-side library paths. No transfer, STRM generation, rename, move, or deletion was performed.",
+    ]
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    lines.extend(["", "| # | Name | Kind | Media kind | Episode | Size | File ID |", "| ---: | --- | --- | --- | ---: | ---: | --- |"])
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {index} | {name} | {kind} | {media_kind} | {episode} | {size} | {file_id} |".format(
+                index=item.get("index") or "",
+                name=_escape(str(item.get("name") or "")),
+                kind=_escape(str(item.get("kind") or "")),
+                media_kind=_escape(str(item.get("media_kind") or "")),
+                episode=item.get("episode") or "",
+                size=_escape(str(item.get("size") or "")),
+                file_id=_escape(str(item.get("file_id") or "")),
+            )
+        )
+    return "\n".join(lines)
 
 
 def render_mv3_cloud_browse_report(report: Dict[str, object], output_format: str) -> str:
@@ -404,7 +502,7 @@ def render_mv3_cloud_browse_report(report: Dict[str, object], output_format: str
         f"- Episode count: `{summary.get('episode_count', 0)}`",
         f"- Episode range: `{summary.get('episode_min', '')}-{summary.get('episode_max', '')}`",
         f"- Missing in range: `{summary.get('missing_in_range', [])}`",
-        "- Safety: cloud browse only; no transfer, rename, STRM generation, or deletion was performed.",
+        "- Safety: cloud browse only; cloud storage is used only for transfer and STRM generation, and scraping must happen against STRM-side library paths. No transfer, rename, STRM generation, or deletion was performed.",
     ]
     warnings = report.get("warnings")
     if isinstance(warnings, list) and warnings:
