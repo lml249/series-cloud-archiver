@@ -2210,7 +2210,7 @@ class MV3ProbeTest(unittest.TestCase):
             "items": [
                 {"name": "Demo.S01E01.mkv", "kind": "file", "media_kind": "video", "episode": 1, "file_id": "video-1"},
                 {"name": "Demo.S01E01.nfo", "kind": "file", "media_kind": "metadata_sidecar", "episode": 1, "file_id": "nfo-1"},
-                {"name": "poster.jpg", "kind": "file", "media_kind": "metadata_sidecar", "episode": None, "file_id": "poster-1"},
+                {"name": "poster.jpg", "kind": "file", "episode": None, "file_id": "poster-1"},
             ],
         }
 
@@ -2250,6 +2250,10 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(seen["body"]["files"], [{"source_path": "/未整理/Demo/Demo.S01E01.mkv", "source_file_id": "video-1", "is_cloud_source": True, "name": "Demo.S01E01.mkv"}])
         self.assertFalse(seen["body"]["copy_non_media"])
+        self.assertEqual(report["excluded_metadata_sidecar_count"], 2)
+        self.assertIn("metadata_sidecars_excluded_from_organize_transfer", report["warnings"])
+        self.assertEqual([item["name"] for item in report["excluded_metadata_sidecars"]], ["Demo.S01E01.nfo", "poster.jpg"])
+        self.assertIn("Excluded metadata sidecars: `2`", render_mv3_organize_transfer_report(report, "markdown"))
         self.assertIn("scraping", report["safety"].lower())
 
     def test_organize_transfer_reports_timeout_without_throwing(self) -> None:

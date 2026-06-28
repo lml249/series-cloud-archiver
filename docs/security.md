@@ -63,6 +63,9 @@ must happen against STRM-backed library paths, not beside the cloud media files.
 
 - MV3 organize transfer requests should submit media files only and should not
   copy non-media metadata sidecars into the cloud media directory.
+- Browse reports must be reclassified by filename extension before organize
+  transfer so unmarked `.nfo`, `.jpg`, `.jpeg`, `.png`, or `.webp` files cannot
+  be submitted as media files.
 - `.nfo`, `.jpg`, `.jpeg`, `.png`, and `.webp` files found beside cloud media are
   treated as metadata sidecars, not cleanup evidence.
 - Local cleanup must stay blocked while cloud media metadata sidecars are

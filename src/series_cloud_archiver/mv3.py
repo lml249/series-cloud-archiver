@@ -1391,7 +1391,10 @@ def execute_mv3_organize_transfer_from_browse_report(
 
     items = [item for item in browse_report.get("items", []) if isinstance(item, dict)]
     file_items = [item for item in items if str(item.get("kind") or "") == "file"]
-    media_items = [item for item in file_items if str(item.get("media_kind") or "video") == "video"]
+    media_items = [item for item in file_items if _browse_report_item_media_kind(item) == "video"]
+    metadata_sidecar_items = [item for item in file_items if _browse_report_item_media_kind(item) == "metadata_sidecar"]
+    if metadata_sidecar_items:
+        warnings.append("metadata_sidecars_excluded_from_organize_transfer")
     files = _transfer_files_from_cloud_browse_items(media_items, source_path)
     episode_numbers = _episode_numbers_from_scan_items(files)
     expected_episode_list = sorted({int(item) for item in (expected_episodes or []) if int(item) > 0})
@@ -1506,6 +1509,11 @@ def execute_mv3_organize_transfer_from_browse_report(
         "missing_expected": missing_expected,
         "unexpected_episodes": extra_episodes,
         "file_count": len(files),
+        "excluded_metadata_sidecar_count": len(metadata_sidecar_items),
+        "excluded_metadata_sidecars": [
+            _browse_report_item_summary(item, index)
+            for index, item in enumerate(metadata_sidecar_items[:50], start=1)
+        ],
         "request_summary": _organize_transfer_request_summary(request_body),
         "transfer": transfer_report,
         "completion_verification": completion_verification,
@@ -2138,6 +2146,7 @@ def render_mv3_organize_transfer_report(report: Dict[str, object], output_format
         f"- STRM dir: `{report.get('strm_dir', '')}`",
         f"- TMDB ID: `{report.get('tmdb_id', '')}`",
         f"- Files: `{report.get('file_count', 0)}`",
+        f"- Excluded metadata sidecars: `{report.get('excluded_metadata_sidecar_count', 0)}`",
         f"- Episode count: `{report.get('episode_count', 0)}`",
         f"- Episode range: `{report.get('episode_min', '')}-{report.get('episode_max', '')}`",
         f"- Missing expected: `{report.get('missing_expected', [])}`",
@@ -2150,6 +2159,10 @@ def render_mv3_organize_transfer_report(report: Dict[str, object], output_format
     if isinstance(next_steps, list) and next_steps:
         lines.extend(["", "## Required Follow-up", ""])
         lines.extend(f"- `{step}`" for step in next_steps)
+    excluded = report.get("excluded_metadata_sidecars")
+    if isinstance(excluded, list) and excluded:
+        lines.extend(["", "## Excluded Cloud Metadata Sidecars", ""])
+        lines.extend(f"- `{item.get('name', '')}`" for item in excluded if isinstance(item, dict))
     blockers = report.get("blockers")
     if isinstance(blockers, list) and blockers:
         lines.extend(["", "## Blockers", ""])
@@ -3751,6 +3764,34 @@ def _organize_scan_item_summary(item: Dict[str, object], index: int) -> Dict[str
         "skip_reason": _first_present(item, ["skip_reason", "skipReason"]),
         "in_library": bool(item.get("in_library")),
         "raw": _sanitize_json(_sample_json(item, max_keys=30)),
+    }
+
+
+def _browse_report_item_media_kind(item: Dict[str, object]) -> str:
+    raw_kind = str(item.get("media_kind") or "").lower()
+    if raw_kind in {"video", "subtitle_sidecar", "metadata_sidecar"}:
+        return raw_kind
+    name = str(item.get("name") or item.get("path") or "")
+    suffix = Path(name).suffix.lower()
+    if suffix in MEDIA_EXTENSIONS:
+        return "video"
+    if suffix in SIDECAR_EXTENSIONS:
+        return "subtitle_sidecar"
+    if suffix in METADATA_SIDECAR_EXTENSIONS:
+        return "metadata_sidecar"
+    return raw_kind or "file"
+
+
+def _browse_report_item_summary(item: Dict[str, object], index: int) -> Dict[str, object]:
+    name = str(item.get("name") or "")
+    return {
+        "index": index,
+        "name": name,
+        "kind": str(item.get("kind") or ""),
+        "media_kind": _browse_report_item_media_kind(item),
+        "episode": item.get("episode") or _episode_number_from_text(name),
+        "size": str(item.get("size") or ""),
+        "file_id": str(item.get("file_id") or ""),
     }
 
 
