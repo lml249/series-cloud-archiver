@@ -4117,10 +4117,18 @@ def _organize_completion_verification_hint(
         required_followup: List[str] = []
     elif transfer_report.get("ok"):
         status = "confirmed_success"
-        required_followup = ["mv3-cloud-browse organized season", "strm-verify"]
+        required_followup = [
+            "mv3-cloud-browse organized season",
+            "mv3-cloud-media-sidecar-verify organized cloud media path",
+            "strm-verify",
+        ]
     elif transfer_report.get("error_type") in {"TimeoutError", "timeout"}:
         status = "unverified_after_timeout"
-        required_followup = ["mv3-cloud-browse organized season", "strm-verify before any cleanup"]
+        required_followup = [
+            "mv3-cloud-browse organized season",
+            "mv3-cloud-media-sidecar-verify organized cloud media path before any cleanup",
+            "strm-verify before any cleanup",
+        ]
     else:
         status = "failed"
         required_followup = []

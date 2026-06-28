@@ -2434,6 +2434,10 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual([item["source_file_id"] for item in seen["body"]["files"]], ["file-1", "file-2"])
         self.assertEqual(report["completion_verification"]["status"], "confirmed_success")
         self.assertTrue(report["completion_verification"]["requires_followup_before_cleanup"])
+        self.assertIn(
+            "mv3-cloud-media-sidecar-verify organized cloud media path",
+            report["completion_verification"]["required_followup"],
+        )
         self.assertNotIn("token", rendered)
 
     def test_organize_transfer_from_browse_report_ignores_sidecar_subtitles_for_episode_gate(self) -> None:
@@ -2568,6 +2572,10 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["transfer"]["endpoint"]["path"], "/api/v1/organize/transfer")
         self.assertEqual(report["completion_verification"]["status"], "unverified_after_timeout")
         self.assertIn("strm-verify before any cleanup", report["completion_verification"]["required_followup"])
+        self.assertIn(
+            "mv3-cloud-media-sidecar-verify organized cloud media path before any cleanup",
+            report["completion_verification"]["required_followup"],
+        )
         self.assertTrue(report["completion_verification"]["requires_followup_before_cleanup"])
         self.assertIn("Completion status: `unverified_after_timeout`", render_mv3_organize_transfer_report(report, "markdown"))
 
