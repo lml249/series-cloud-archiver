@@ -482,6 +482,118 @@ def render_mv3_cloud_search_report(report: Dict[str, object], output_format: str
     return "\n".join(lines)
 
 
+def search_mv3_cloud_files_for_transfer_plan(
+    base_url: str,
+    token: str,
+    transfer_plan: Dict[str, object],
+    offset: int = 0,
+    limit: int = 10,
+    keyword_limit: int = 3,
+    cid: str = "",
+    storage: str = "115-default",
+    timeout: int = 60,
+) -> Dict[str, object]:
+    raw_items = [item for item in transfer_plan.get("items", []) if isinstance(item, dict)]
+    start = max(0, offset)
+    stop = start + limit if limit > 0 else len(raw_items)
+    selected_items = raw_items[start:stop]
+    items = [
+        _cloud_search_plan_item(
+            base_url,
+            token,
+            index=start + local_index,
+            item=item,
+            keyword_limit=keyword_limit,
+            cid=cid,
+            storage=storage,
+            timeout=timeout,
+        )
+        for local_index, item in enumerate(selected_items, start=1)
+    ]
+    return {
+        "mode": "readonly-mv3-cloud-search-plan",
+        "source_mode": transfer_plan.get("mode", ""),
+        "available_items": len(raw_items),
+        "planned_items": len(items),
+        "offset": start,
+        "limit": limit,
+        "keyword_limit": keyword_limit,
+        "storage": storage,
+        "cid": cid,
+        "items_with_results": sum(1 for item in items if int(item.get("result_count") or 0) > 0),
+        "total_result_count": sum(int(item.get("result_count") or 0) for item in items),
+        "folder_result_count": sum(int(item.get("folder_count") or 0) for item in items),
+        "file_result_count": sum(int(item.get("file_count") or 0) for item in items),
+        "items": items,
+        "warnings": list(transfer_plan.get("warnings", [])) if isinstance(transfer_plan.get("warnings"), list) else [],
+        "safety": "readonly cloud search plan only; cloud storage is used only for transfer and STRM generation, and scraping must happen against the STRM library side. No share receive, organize transfer, STRM generation, rename, move, delete, qBittorrent action, hlink deletion, or filesystem deletion is performed",
+    }
+
+
+def render_mv3_cloud_search_plan_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# MV3 Cloud Search Plan",
+        "",
+        f"- Mode: `{report.get('mode', '')}`",
+        f"- Source mode: `{report.get('source_mode', '')}`",
+        f"- Available transfer items: `{report.get('available_items', 0)}`",
+        f"- Planned items in this report: `{report.get('planned_items', 0)}`",
+        f"- Items with results: `{report.get('items_with_results', 0)}`",
+        f"- Total results: `{report.get('total_result_count', 0)}`",
+        f"- Folder results: `{report.get('folder_result_count', 0)}`",
+        f"- File results: `{report.get('file_result_count', 0)}`",
+        f"- Storage: `{report.get('storage', '')}`",
+        "- Safety: readonly cloud search only; cloud storage is used only for transfer and STRM generation, and scraping must happen against STRM-side library paths. No transfer, STRM generation, rename, move, or deletion was performed.",
+        "",
+        "| Priority | Title | Season | Expected | Keywords | Results | Folders | Files | Warnings |",
+        "| ---: | --- | ---: | ---: | --- | ---: | ---: | ---: | --- |",
+    ]
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {priority} | {title} | {season} | {expected} | {keywords} | {results} | {folders} | {files} | {warnings} |".format(
+                priority=item.get("priority") or "",
+                title=_escape(str(item.get("title") or "")),
+                season=item.get("season") or "",
+                expected=item.get("expected_count") or "",
+                keywords=_escape(", ".join(str(keyword) for keyword in item.get("searched_keywords", []) if str(keyword))),
+                results=item.get("result_count") or 0,
+                folders=item.get("folder_count") or 0,
+                files=item.get("file_count") or 0,
+                warnings=_escape(", ".join(str(warning) for warning in item.get("warnings", []) if str(warning))),
+            )
+        )
+    lines.extend(["", "## Result Samples", ""])
+    for item in report.get("items", []):
+        if not isinstance(item, dict) or not item.get("results"):
+            continue
+        lines.append(f"### {item.get('priority')}. {item.get('title', '')}")
+        lines.append("")
+        lines.append("| Keyword | # | Name | Kind | Media kind | Episode | Size | File ID |")
+        lines.append("| --- | ---: | --- | --- | --- | ---: | ---: | --- |")
+        for result in item.get("results", [])[:20]:
+            if not isinstance(result, dict):
+                continue
+            lines.append(
+                "| {keyword} | {index} | {name} | {kind} | {media_kind} | {episode} | {size} | {file_id} |".format(
+                    keyword=_escape(str(result.get("search_keyword") or "")),
+                    index=result.get("search_index") or "",
+                    name=_escape(str(result.get("name") or "")),
+                    kind=_escape(str(result.get("kind") or "")),
+                    media_kind=_escape(str(result.get("media_kind") or "")),
+                    episode=result.get("episode") or "",
+                    size=_escape(str(result.get("size") or "")),
+                    file_id=_escape(str(result.get("file_id") or "")),
+                )
+            )
+        lines.append("")
+    lines.append("Next gate: browse a plausible folder result with `mv3-cloud-browse`, then verify exact episode coverage before any organize transfer.")
+    return "\n".join(lines)
+
+
 def render_mv3_cloud_browse_report(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -3866,6 +3978,91 @@ def _cloud_info_summary(info: Dict[str, object]) -> Dict[str, object]:
         "size": _format_size_value(_first_raw_present(info, ["size", "size_text", "file_size", "file_size_text", "s"])),
         "raw": _sanitize_json(_sample_json(info, max_keys=30)),
     }
+
+
+def _cloud_search_plan_item(
+    base_url: str,
+    token: str,
+    index: int,
+    item: Dict[str, object],
+    keyword_limit: int,
+    cid: str,
+    storage: str,
+    timeout: int,
+) -> Dict[str, object]:
+    keywords = _cloud_search_keywords_for_transfer_item(item, limit=keyword_limit)
+    reports = [
+        search_mv3_cloud_files(
+            base_url,
+            token,
+            keyword=keyword,
+            cid=cid,
+            storage=storage,
+            timeout=timeout,
+        )
+        for keyword in keywords
+    ]
+    results: List[Dict[str, object]] = []
+    seen_keys: Set[Tuple[str, str]] = set()
+    warnings: List[str] = []
+    for report in reports:
+        keyword = str(report.get("keyword") or "")
+        for warning in report.get("warnings", []):
+            warnings.append(f"{keyword}:{warning}")
+        for result in report.get("items", []):
+            if not isinstance(result, dict):
+                continue
+            dedupe_key = (str(result.get("file_id") or ""), str(result.get("name") or ""))
+            if dedupe_key in seen_keys:
+                continue
+            seen_keys.add(dedupe_key)
+            enriched = dict(result)
+            enriched["search_keyword"] = keyword
+            enriched["search_index"] = result.get("index") or 0
+            results.append(enriched)
+    results.sort(key=lambda row: (0 if str(row.get("kind") or "") == "folder" else 1, str(row.get("name") or "")))
+    return {
+        "priority": index,
+        "title": str(item.get("title") or ""),
+        "tmdbid": int(item.get("tmdbid") or 0),
+        "season": int(item.get("season") or 0),
+        "expected_count": int(item.get("expected_count") or 0),
+        "size_bytes": int(item.get("size_bytes") or 0),
+        "source_paths": _string_list(item.get("source_paths")),
+        "searched_keywords": keywords,
+        "ok": all(bool(report.get("ok")) for report in reports) if reports else False,
+        "result_count": len(results),
+        "folder_count": sum(1 for result in results if str(result.get("kind") or "") == "folder"),
+        "file_count": sum(1 for result in results if str(result.get("kind") or "") == "file"),
+        "results": results[:50],
+        "warnings": sorted(set(warnings or (["no_search_keywords"] if not keywords else []))),
+    }
+
+
+def _cloud_search_keywords_for_transfer_item(item: Dict[str, object], limit: int = 3) -> List[str]:
+    values: List[str] = []
+    values.append(str(item.get("title") or ""))
+    values.extend(_string_list(item.get("search_keywords")))
+    values.extend(_string_list(item.get("titles")))
+    keywords: List[str] = []
+    for value in values:
+        normalized = re.sub(r"\{tmdbid=\d+\}", "", str(value), flags=re.IGNORECASE)
+        normalized = re.sub(r"\(\d{4}\)", "", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip(" -_.")
+        if not normalized:
+            continue
+        if any(normalized.lower() == existing.lower() for existing in keywords):
+            continue
+        keywords.append(normalized)
+        if limit > 0 and len(keywords) >= limit:
+            break
+    return keywords
+
+
+def _string_list(value: object) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item)]
 
 
 def _find_offline_task(payload: object, info_hash: str) -> Dict[str, object]:
