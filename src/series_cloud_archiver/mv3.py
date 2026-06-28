@@ -687,6 +687,7 @@ def cleanup_mv3_cloud_media_sidecars(
             storage,
             limit=max(1, limit),
             max_depth=max(0, max_depth),
+            metadata_sidecar_limit=0,
         )
         warnings.extend(str(warning) for warning in scan.get("warnings", []) if warning)
         if scan.get("truncated"):
@@ -3266,6 +3267,7 @@ def _scan_mv3_cloud_media_sidecars(
     storage: str,
     limit: int,
     max_depth: int,
+    metadata_sidecar_limit: int = 50,
 ) -> Dict[str, object]:
     warnings: List[str] = []
     folders: List[Dict[str, object]] = []
@@ -3326,7 +3328,7 @@ def _scan_mv3_cloud_media_sidecars(
                 subtitle_sidecar_file_count += 1
             elif media_kind == "metadata_sidecar":
                 metadata_sidecar_file_count += 1
-                if len(metadata_sidecars) < 50:
+                if metadata_sidecar_limit <= 0 or len(metadata_sidecars) < metadata_sidecar_limit:
                     metadata_sidecars.append(
                         {
                             "path": child_path,

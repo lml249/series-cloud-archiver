@@ -537,6 +537,42 @@ def _fake_mv3_sidecar_cleanup_response(request, deleted=False):
     raise AssertionError(f"unexpected url: {request.full_url}")
 
 
+def _fake_mv3_large_sidecar_cleanup_response(request, deleted=False):
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            return False
+
+        def read(self, _limit=-1):
+            return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+
+        @property
+        def headers(self):
+            return {"Content-Type": "application/json"}
+
+    parsed = urllib.parse.urlparse(request.full_url)
+    query = urllib.parse.parse_qs(parsed.query)
+    cid = query.get("cid", [""])[0]
+    if parsed.path.endswith("/api/v1/files/115/delete"):
+        return FakeResponse({"success": True, "message": "ok", "data": None})
+    if parsed.path.endswith("/api/v1/files/cloud/info"):
+        return FakeResponse({"success": True, "data": {"file_name": "Large", "file_id": "root-id", "is_dir": True}})
+    if parsed.path.endswith("/api/v1/files/cloud/browse"):
+        if cid == "root-id":
+            items = [{"name": "Large.S01E01.mkv", "fid": "video-1", "is_dir": False}]
+            if not deleted:
+                items.extend({"name": f"Large.S01E{index:02d}.nfo", "fid": f"nfo-{index}", "is_dir": False} for index in range(1, 61))
+            return FakeResponse({"success": True, "data": {"items": items}})
+    raise AssertionError(f"unexpected url: {request.full_url}")
+
+
 def _fake_mv3_duplicate_video_cleanup_response(request, deleted=False, empty_info=False, raw_115_names=False):
     class FakeResponse:
         status = 200
@@ -1238,6 +1274,37 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["post_scan"]["metadata_sidecar_file_count"], 0)
         self.assertEqual(report["post_scan"]["video_file_count"], 1)
         self.assertEqual(report["post_scan"]["subtitle_sidecar_file_count"], 1)
+
+    def test_cloud_media_sidecar_cleanup_keeps_all_metadata_file_ids_for_large_folders(self) -> None:
+        posted = []
+        state = {"deleted": False}
+
+        def fake_urlopen(request, timeout):
+            if getattr(request, "data", None):
+                posted.append((request.full_url, json.loads(request.data.decode("utf-8"))))
+                if request.full_url.endswith("/api/v1/files/115/delete"):
+                    state["deleted"] = True
+            return _fake_mv3_large_sidecar_cleanup_response(request, deleted=state["deleted"])
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = cleanup_mv3_cloud_media_sidecars(
+                "http://mv3.example",
+                "token",
+                path="/已整理/series/Large",
+                approve_delete=True,
+                expected_delete_count=60,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertNotIn("metadata_sidecar_file_ids_incomplete", report["blockers"])
+        self.assertEqual(report["delete_plan"]["metadata_sidecar_count"], 60)
+        self.assertEqual(len(report["delete_plan"]["file_ids"]), 60)
+        delete_bodies = [body for url, body in posted if url.endswith("/api/v1/files/115/delete")]
+        self.assertEqual(len(delete_bodies), 1)
+        self.assertEqual(len(delete_bodies[0]["file_ids"]), 60)
+        self.assertEqual(delete_bodies[0]["file_ids"][0], "nfo-1")
+        self.assertEqual(delete_bodies[0]["file_ids"][-1], "nfo-60")
+        self.assertEqual(report["post_scan"]["metadata_sidecar_file_count"], 0)
 
     def test_cloud_media_sidecar_cleanup_blocks_unexpected_delete_count(self) -> None:
         calls = []
