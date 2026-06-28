@@ -1786,6 +1786,81 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertNotIn("video_file_count_mismatch", report["warnings"])
         self.assertTrue(report["ok"])
 
+    def test_share_receive_all_files_excludes_metadata_sidecars(self) -> None:
+        seen = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.replace("http://mv3.example", "")
+            body = json.loads(request.data.decode("utf-8"))
+            seen.append((path, body))
+            if path == "/api/v1/resource-search/search":
+                return FakeResponse({"success": True, "data": {"items": [{"title": "云盘只生成STRM", "share_link": "https://example.test/s/private"}]}})
+            if path == "/api/v1/share-transfer/parse":
+                return FakeResponse({"success": True, "data": {"share_code": "parsed-code", "receive_code": "abcd"}})
+            if path == "/api/v1/share-transfer/browse":
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {"name": "Cloud.Only.S01E01.mkv", "fid": "video-1", "s": 1000},
+                                {"name": "Cloud.Only.S01E01.ass", "fid": "sub-1", "s": 10},
+                                {"name": "Cloud.Only.S01E01.nfo", "fid": "nfo-1", "s": 10},
+                                {"name": "poster.jpg", "fid": "poster-1", "s": 10},
+                                {"name": "Cloud.Only.S01E02.mkv", "fid": "video-2", "s": 1000},
+                            ]
+                        },
+                    }
+                )
+            if path == "/api/v1/share-transfer/receive":
+                return FakeResponse({"success": True, "data": {"record_id": "record-1"}})
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = receive_mv3_share(
+                "http://mv3.example",
+                "token",
+                "云盘只生成STRM",
+                selection_index=1,
+                browse_cid="folder-1",
+                receive_all_files=True,
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+                expected_title_contains="云盘只生成STRM",
+                target_path="/未整理",
+                storage="115-default",
+            )
+
+        receive_body = seen[-1][1]
+        self.assertEqual(receive_body["file_ids"], ["video-1", "sub-1", "video-2"])
+        self.assertEqual(report["file_id_count"], 3)
+        self.assertEqual(report["selected_item_count"], 3)
+        self.assertEqual(report["video_file_count"], 2)
+        self.assertEqual(report["sidecar_file_count"], 1)
+        self.assertEqual(report["excluded_metadata_sidecar_count"], 2)
+        self.assertIn("metadata_sidecars_excluded_from_receive", report["warnings"])
+        self.assertTrue(report["ok"])
+
     def test_share_receive_all_files_blocks_incomplete_episode_set(self) -> None:
         seen = []
 
@@ -1917,7 +1992,9 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(seen["url"], "http://mv3.example/api/v1/organize/scan-source")
         self.assertEqual(seen["body"]["sources"][0]["source_path"], "/未整理/Demo")
         self.assertEqual(seen["body"]["sources"][0]["source_file_id"], "folder-1")
+        self.assertEqual(seen["body"]["exclude_extensions"], [".jpeg", ".jpg", ".nfo", ".png", ".webp"])
         self.assertTrue(report["ok"])
+        self.assertEqual(report["excluded_extensions"], [".jpeg", ".jpg", ".nfo", ".png", ".webp"])
         self.assertEqual(report["summary"]["episode_count"], 2)
         self.assertEqual(report["summary"]["missing_in_range"], [2])
         self.assertIn("episode_gap_detected", report["warnings"])

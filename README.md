@@ -463,7 +463,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-brows
   --output reports/mv3-organize-transfer-chuhan.json
 ```
 
-`mv3-organize-transfer-from-browse` 只负责把媒体文件交给 MV3 整理并生成 STRM。云盘只做转存和 STRM 生成，云盘媒体文件目录不做刮削，也不应生成旁挂 NFO/JPG；后续只让 MoviePilot/Emby 对 STRM 目录刮削入库。
+`mv3-organize-transfer-from-browse` 只负责把媒体文件交给 MV3 整理并生成 STRM。云盘只做转存和 STRM 生成，云盘媒体文件目录不做刮削，也不应生成旁挂 NFO/JPG；后续只让 MoviePilot/Emby 对 STRM 目录刮削入库。项目里的 MV3 分享接收和整理扫描会默认排除 `.nfo/.jpg/.jpeg/.png/.webp` 这类刮削旁挂，字幕旁挂仍可保留给播放使用。
 
 如果发现云盘媒体目录里已经出现 `.nfo/.jpg/.jpeg/.png/.webp` 等刮削旁挂，先用 dry-run 列出将要删除的元数据文件：
 

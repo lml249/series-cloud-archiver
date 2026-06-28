@@ -106,6 +106,7 @@ METADATA_SIDECAR_EXTENSIONS = {
     ".png",
     ".webp",
 }
+DEFAULT_ORGANIZE_EXCLUDE_EXTENSIONS = sorted(METADATA_SIDECAR_EXTENSIONS)
 
 
 class MV3Client:
@@ -1184,6 +1185,13 @@ def receive_mv3_share(
         browse_selection if isinstance(browse_selection, dict) else {},
         receive_all_files,
     )
+    excluded_metadata_sidecars = _share_metadata_sidecars_excluded_from_receive(
+        browse_items,
+        browse_selection if isinstance(browse_selection, dict) else {},
+        receive_all_files,
+    )
+    if excluded_metadata_sidecars:
+        warnings.append("metadata_sidecars_excluded_from_receive")
     file_ids = [_share_item_file_id(item) for item in selected_items]
     file_ids = [item for item in file_ids if item]
     if not file_ids:
@@ -1257,6 +1265,11 @@ def receive_mv3_share(
     report["selected_item_count"] = len(selected_items)
     report["video_file_count"] = len(video_items)
     report["sidecar_file_count"] = sum(1 for item in selected_items if _share_item_is_sidecar(item))
+    report["excluded_metadata_sidecar_count"] = len(excluded_metadata_sidecars)
+    report["excluded_metadata_sidecars"] = [
+        _share_browse_item_summary(item, index)
+        for index, item in enumerate(excluded_metadata_sidecars[:50], start=1)
+    ]
     report["episode_count"] = len(episode_numbers)
     report["episode_min"] = min(episode_numbers) if episode_numbers else None
     report["episode_max"] = max(episode_numbers) if episode_numbers else None
@@ -1271,7 +1284,7 @@ def receive_mv3_share(
     report["storage"] = storage
     report["receive"] = receive_report
     report["warnings"] = warnings
-    report["safety"] = "exactly one approved MV3 share receive request may be sent; selected share item IDs are gated by optional episode coverage checks; no organize/recognize/transfer, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed"
+    report["safety"] = "exactly one approved MV3 share receive request may be sent; selected share item IDs are gated by optional episode coverage checks and metadata scraping sidecars are excluded. Cloud storage is only for transfer and STRM generation; scraping must happen against the STRM library side. No organize/recognize/transfer, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed"
     return report
 
 
@@ -1294,7 +1307,7 @@ def scan_mv3_organize_source(
                 "is_dir": is_dir,
             }
         ],
-        "exclude_extensions": [],
+        "exclude_extensions": DEFAULT_ORGANIZE_EXCLUDE_EXTENSIONS,
         "max_size_bytes": 0,
     }
     client = MV3Client(base_url, token, timeout=timeout)
@@ -1318,6 +1331,7 @@ def scan_mv3_organize_source(
         "storage": storage,
         "is_cloud_source": is_cloud_source,
         "is_dir": is_dir,
+        "excluded_extensions": DEFAULT_ORGANIZE_EXCLUDE_EXTENSIONS,
         "summary": {
             "total": int(summary.get("total") or len(rows)),
             "candidate": int(summary.get("candidate") or sum(1 for row in rows if not str(row.get("skip_reason") or ""))),
@@ -1332,7 +1346,7 @@ def scan_mv3_organize_source(
         },
         "items": [_organize_scan_item_summary(row, index) for index, row in enumerate(rows[:100], start=1)],
         "warnings": _organize_scan_warnings(rows, episode_numbers),
-        "safety": "organize scan-source only; MV3 documents this endpoint as scan/filter preview that does not recognize media or write to disk; no organize transfer, rename, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
+        "safety": "organize scan-source only; metadata scraping sidecars are excluded because cloud storage is only for transfer and STRM generation. MV3 documents this endpoint as scan/filter preview that does not recognize media or write to disk; no organize transfer, rename, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed",
     }
 
 
@@ -2155,10 +2169,11 @@ def render_mv3_organize_scan_report(report: Dict[str, object], output_format: st
         f"- Total: `{summary.get('total', 0)}`",
         f"- Candidate: `{summary.get('candidate', 0)}`",
         f"- In library: `{summary.get('in_library', 0)}`",
+        f"- Excluded extensions: `{report.get('excluded_extensions', [])}`",
         f"- Episode count: `{summary.get('episode_count', 0)}`",
         f"- Episode range: `{summary.get('episode_min', '')}-{summary.get('episode_max', '')}`",
         f"- Missing in range: `{summary.get('missing_in_range', [])}`",
-        "- Safety: scan-source only; no transfer, rename, STRM generation, or deletion was performed.",
+        "- Safety: scan-source only; metadata scraping sidecars are excluded, and no transfer, rename, STRM generation, or deletion was performed.",
         "",
         "| # | Name | Episode | Size | Skip reason | In library |",
         "| ---: | --- | ---: | ---: | --- | --- |",
@@ -4197,8 +4212,30 @@ def _share_receive_items(
     receive_all_files: bool,
 ) -> List[Dict[str, object]]:
     if receive_all_files:
-        return [item for item in browse_items if _share_item_kind(item) == "file"]
-    return [browse_selection] if browse_selection else []
+        return [
+            item
+            for item in browse_items
+            if _share_item_kind(item) == "file" and not _share_item_is_metadata_sidecar(item)
+        ]
+    if browse_selection and not _share_item_is_metadata_sidecar(browse_selection):
+        return [browse_selection]
+    return []
+
+
+def _share_metadata_sidecars_excluded_from_receive(
+    browse_items: List[Dict[str, object]],
+    browse_selection: Dict[str, object],
+    receive_all_files: bool,
+) -> List[Dict[str, object]]:
+    if receive_all_files:
+        return [
+            item
+            for item in browse_items
+            if _share_item_kind(item) == "file" and _share_item_is_metadata_sidecar(item)
+        ]
+    if browse_selection and _share_item_is_metadata_sidecar(browse_selection):
+        return [browse_selection]
+    return []
 
 
 def _share_item_name(item: Dict[str, object]) -> str:

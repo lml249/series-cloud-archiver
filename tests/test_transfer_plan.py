@@ -88,7 +88,7 @@ class TransferPlanTest(unittest.TestCase):
                     "mp": {"name": "长安二十四计", "tmdbid": 254482, "season": 1, "total_episode": 0},
                     "qb": {
                         "name": "长安二十四计.The.Vendetta.of.An.S01.2025.2160p.WEB-DL.H265.AAC-HHWEB",
-                        "content_path": "/volume3/TV/长安二十四计.The.Vendetta.of.An.S01.2025.2160p.WEB-DL.H265.AAC-HHWEB",
+                        "content_path": "/media/local-series/长安二十四计.The.Vendetta.of.An.S01.2025.2160p.WEB-DL.H265.AAC-HHWEB",
                     },
                 }
             ],
