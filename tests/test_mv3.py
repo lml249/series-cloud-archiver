@@ -5849,6 +5849,8 @@ class MV3ProbeTest(unittest.TestCase):
                                 "title": "Demo",
                                 "tmdbid": 123,
                                 "season": 1,
+                                "offline_wp_path": "/未整理",
+                                "offline_destination_mode": "root",
                                 "proposed_cloud_destination": "/已整理/series/Demo",
                                 "titles": ["Demo.S01"],
                                 "source_paths": ["/media/Demo.S01"],
@@ -5859,6 +5861,7 @@ class MV3ProbeTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            posted = []
             qb_report.write_text(
                 json.dumps(
                     {
@@ -5892,7 +5895,9 @@ class MV3ProbeTest(unittest.TestCase):
                 def headers(self):
                     return {"Content-Type": "application/json"}
 
-            def fake_urlopen(_request, timeout):
+            def fake_urlopen(request, timeout):
+                if getattr(request, "data", None):
+                    posted.append(json.loads(request.data.decode("utf-8")))
                 return FakeResponse()
 
             with patch("urllib.request.urlopen", fake_urlopen):
@@ -5922,7 +5927,10 @@ class MV3ProbeTest(unittest.TestCase):
             payload = json.loads(text)
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["selection"]["title"], "Demo")
+            self.assertEqual(payload["selection"]["offline_wp_path"], "/未整理")
+            self.assertEqual(payload["selection"]["proposed_cloud_destination"], "/已整理/series/Demo")
             self.assertEqual(payload["request"]["magnet_count"], 1)
+            self.assertEqual(posted[0]["wp_path"], "/未整理")
             self.assertNotIn("magnet:?", text)
 
 

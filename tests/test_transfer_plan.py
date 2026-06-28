@@ -349,6 +349,50 @@ class TransferPlanTest(unittest.TestCase):
         self.assertNotIn("magnet:?", rendered)
         self.assertIn("POST /api/v1/files/115/offline/add", manifest["forbidden_endpoints"])
 
+    def test_offline_manifest_can_target_cloud_root_for_mv3_organize_flow(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "繁城之下 (2023) {tmdbid=233959}",
+                    "tmdbid": 233959,
+                    "season": 1,
+                    "size_bytes": 100,
+                    "expected_count": 12,
+                    "candidate_count": 1,
+                    "titles": ["繁城之下 (2023) {tmdbid=233959}"],
+                    "source_paths": ["/example/media/繁城之下"],
+                }
+            ],
+        }
+        qb_torrents = [
+            {
+                "name": "繁城之下.Ripe.Town.S01.2023.2160p.WEB-DL",
+                "hash": "abc",
+                "state": "stalledUP",
+                "content_path": "/example/media/繁城之下",
+                "size": 100,
+                "progress": 1,
+                "seeding_time": 8 * 86400,
+                "magnet_uri": "magnet:?xt=urn:btih:abc&secret=private",
+            }
+        ]
+
+        manifest = plan_mv3_offline_manifest(
+            transfer_plan,
+            qb_torrents,
+            limit=1,
+            cloud_root="/未整理",
+            destination_mode="root",
+        )
+
+        item = manifest["items"][0]
+        self.assertEqual(manifest["destination_mode"], "root")
+        self.assertEqual(item["offline_wp_path"], "/未整理")
+        self.assertEqual(item["offline_destination_mode"], "root")
+        self.assertEqual(item["proposed_cloud_destination"], "/未整理/繁城之下 (2023) {tmdbid=233959}/Season 01")
+        self.assertEqual(item["mv3_offline_call"]["body_template"]["wp_path"], "/未整理")
+
     def test_offline_manifest_matches_normalized_hlink_title_to_qb(self) -> None:
         transfer_plan = {
             "mode": "readonly-mv3-transfer-plan",

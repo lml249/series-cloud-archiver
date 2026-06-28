@@ -9,6 +9,7 @@ from typing import Dict, Iterable, List, Optional, Set
 
 DEFAULT_TRANSFER_STATUSES = ["cloud_strm_not_found"]
 DEFAULT_CLOUD_ROOT = "/已整理/series"
+OFFLINE_DESTINATION_MODES = {"season", "root"}
 MV3_PREVIEW_ENDPOINT = {"method": "POST", "path": "/api/v1/media-transfer/preview"}
 MV3_OFFLINE_ENDPOINT = {"method": "POST", "path": "/api/v1/files/115/offline/add"}
 MV3_STRM_GENERATE_ENDPOINT = {"method": "POST", "path": "/api/v1/strm/generate"}
@@ -161,12 +162,15 @@ def plan_mv3_offline_manifest(
     limit: int = 10,
     cloud_root: str = DEFAULT_CLOUD_ROOT,
     min_seed_days: int = 7,
+    destination_mode: str = "season",
 ) -> Dict[str, object]:
+    if destination_mode not in OFFLINE_DESTINATION_MODES:
+        raise ValueError(f"destination_mode must be one of {sorted(OFFLINE_DESTINATION_MODES)}")
     raw_items = [item for item in transfer_plan.get("items", []) if isinstance(item, dict)]
     selected_items = raw_items[: limit if limit > 0 else len(raw_items)]
     context = _mv3_offline_context(instances_report, cloud_root)
     items = [
-        _offline_manifest_item(index, item, qb_torrents, context, min_seed_days)
+        _offline_manifest_item(index, item, qb_torrents, context, min_seed_days, destination_mode)
         for index, item in enumerate(selected_items, start=1)
     ]
     warnings = []
@@ -182,6 +186,7 @@ def plan_mv3_offline_manifest(
         "total_size_bytes": sum(int(item.get("size_bytes") or 0) for item in items),
         "mv3_context": context,
         "min_seed_days": min_seed_days,
+        "destination_mode": destination_mode,
         "items": items,
         "forbidden_endpoints": [
             "POST /api/v1/files/115/offline/add",
@@ -747,11 +752,15 @@ def _offline_manifest_item(
     qb_torrents: List[Dict[str, object]],
     context: Dict[str, object],
     min_seed_days: int,
+    destination_mode: str,
 ) -> Dict[str, object]:
     matches = _match_qb_torrents_for_transfer_item(item, qb_torrents)
     magnet_count = sum(1 for torrent in matches if str(torrent.get("magnet_uri") or ""))
     seed_ok_count = sum(1 for torrent in matches if int(torrent.get("seeding_time") or 0) >= min_seed_days * 86400)
     destination = _proposed_cloud_destination(context.get("cloud_root", DEFAULT_CLOUD_ROOT), item)
+    offline_wp_path = str(context.get("cloud_root") or DEFAULT_CLOUD_ROOT).rstrip("/") or DEFAULT_CLOUD_ROOT
+    if destination_mode == "season":
+        offline_wp_path = destination
     blockers = [
         "requires_manual_approval_before_offline_add",
         "requires_mv3_offline_preview_or_single_item_probe",
@@ -775,6 +784,8 @@ def _offline_manifest_item(
         "candidate_count": int(item.get("candidate_count") or 0),
         "size_bytes": int(item.get("size_bytes") or 0),
         "proposed_cloud_destination": destination,
+        "offline_wp_path": offline_wp_path,
+        "offline_destination_mode": destination_mode,
         "source_titles": _string_list(item.get("titles")),
         "source_paths": _string_list(item.get("source_paths")),
         "qb_match_count": len(matches),
@@ -787,7 +798,7 @@ def _offline_manifest_item(
             "body_template": {
                 "storage": context.get("cloud_drive_slug") or "[REQUIRES_MV3_CLOUD_DRIVE]",
                 "urls": "[REDACTED_MAGNET_URIS_FROM_QB]",
-                "wp_path": destination,
+                "wp_path": offline_wp_path,
                 "wp_path_id": "[OPTIONAL_TARGET_FOLDER_ID]",
             },
         },
@@ -976,6 +987,7 @@ def _render_offline_manifest_markdown(manifest: Dict[str, object]) -> str:
         f"- MV3 cloud drive: `{context.get('cloud_drive_slug', '')}`",
         f"- Proposed cloud root: `{context.get('cloud_root', '')}`",
         f"- Minimum qB seed days: `{manifest.get('min_seed_days', 0)}`",
+        f"- Offline destination mode: `{manifest.get('destination_mode', 'season')}`",
         "- Safety: readonly offline manifest only; no MV3 offline task, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed.",
         "- Privacy: magnet URIs are not written to this report.",
         "",
@@ -994,15 +1006,15 @@ def _render_offline_manifest_markdown(manifest: Dict[str, object]) -> str:
             "",
             "## Manifest Items",
             "",
-            "| Priority | Size | TMDB ID | Season | Expected | qB Matches | Magnets | Seed OK | Title | Proposed cloud destination | Blockers |",
-            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
+            "| Priority | Size | TMDB ID | Season | Expected | qB Matches | Magnets | Seed OK | Title | Offline target | Proposed organized destination | Blockers |",
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |",
         ]
     )
     for item in manifest.get("items", []):
         if not isinstance(item, dict):
             continue
         lines.append(
-            "| {priority} | {size} | {tmdbid} | {season} | {expected} | {matches} | {magnets} | {seed_ok} | {title} | {destination} | {blockers} |".format(
+            "| {priority} | {size} | {tmdbid} | {season} | {expected} | {matches} | {magnets} | {seed_ok} | {title} | {offline} | {destination} | {blockers} |".format(
                 priority=item.get("priority") or "",
                 size=_human_size(int(item.get("size_bytes") or 0)),
                 tmdbid=item.get("tmdbid") or "",
@@ -1012,6 +1024,7 @@ def _render_offline_manifest_markdown(manifest: Dict[str, object]) -> str:
                 magnets=item.get("qb_magnet_available_count") or 0,
                 seed_ok=item.get("qb_seed_age_ok_count") or 0,
                 title=_escape_cell(str(item.get("title") or "")),
+                offline=_escape_cell(str(item.get("offline_wp_path") or item.get("proposed_cloud_destination") or "")),
                 destination=_escape_cell(str(item.get("proposed_cloud_destination") or "")),
                 blockers=_escape_cell(", ".join(_string_list(item.get("execution_blockers")))),
             )

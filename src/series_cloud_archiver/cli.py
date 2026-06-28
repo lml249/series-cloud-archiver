@@ -479,6 +479,7 @@ def build_parser() -> argparse.ArgumentParser:
     offline_parser.add_argument("--limit", type=int, default=10, help="Maximum manifest rows")
     offline_parser.add_argument("--cloud-root", default=DEFAULT_CLOUD_ROOT, help="Cloud root used for proposed destinations")
     offline_parser.add_argument("--min-seed-days", type=int, default=7, help="Minimum qB seed days to mark seed OK")
+    offline_parser.add_argument("--destination-mode", choices=["season", "root"], default="season", help="Offline-add target: exact season destination or cloud root only")
     offline_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     offline_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
@@ -1655,6 +1656,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             limit=args.limit,
             cloud_root=args.cloud_root,
             min_seed_days=args.min_seed_days,
+            destination_mode=args.destination_mode,
         )
         rendered = render_mv3_offline_manifest(manifest, args.format)
         if args.output:
@@ -2325,7 +2327,8 @@ def _execute_mv3_offline_add_one(
         raise SystemExit(f"expected exactly one qB magnet for first execution, got {len(magnets)}")
     context = manifest.get("mv3_context") if isinstance(manifest.get("mv3_context"), dict) else {}
     storage = str(context.get("cloud_drive_slug") or "")
-    destination = str(selected.get("proposed_cloud_destination") or "")
+    proposed_destination = str(selected.get("proposed_cloud_destination") or "")
+    destination = str(selected.get("offline_wp_path") or proposed_destination)
     if not storage:
         raise SystemExit("manifest missing mv3 cloud drive slug")
     if not destination:
@@ -2346,7 +2349,9 @@ def _execute_mv3_offline_add_one(
         "expected_count": selected.get("expected_count") or 0,
         "qb_match_count": len(matches),
         "qb_magnet_count": len(magnets),
-        "proposed_cloud_destination": destination,
+        "offline_wp_path": destination,
+        "proposed_cloud_destination": proposed_destination,
+        "offline_destination_mode": selected.get("offline_destination_mode") or "",
     }
     return result
 
