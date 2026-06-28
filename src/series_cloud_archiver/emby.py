@@ -243,6 +243,7 @@ def refresh_and_verify_emby_library(
     expected_episode_max: int = 0,
     library_db_path: str = "",
     skip_refresh: bool = False,
+    approve_full_library_refresh: bool = False,
     no_wait: bool = False,
     poll_seconds: float = 10.0,
     max_wait_seconds: int = 900,
@@ -256,8 +257,15 @@ def refresh_and_verify_emby_library(
     if blocked_strm_prefixes:
         blockers.append("emby_strm_path_prefix_must_be_strm_side")
         warnings.append("cloud_media_paths_are_transfer_and_strm_only")
-    refresh: Dict[str, object] = {"requested": not skip_refresh}
-    if not skip_refresh and not blocked_strm_prefixes:
+    full_refresh_requires_approval = not skip_refresh and not approve_full_library_refresh
+    if full_refresh_requires_approval:
+        blockers.append("emby_full_library_refresh_requires_approval")
+        warnings.append("prefer_emby_media_updated_for_strm_side_refresh")
+    refresh: Dict[str, object] = {
+        "requested": not skip_refresh,
+        "approved_full_library_refresh": approve_full_library_refresh,
+    }
+    if not skip_refresh and not blocked_strm_prefixes and not full_refresh_requires_approval:
         result = client.refresh_library()
         refresh["request"] = result
         if not result.get("ok"):
@@ -274,8 +282,12 @@ def refresh_and_verify_emby_library(
             if task.get("timed_out"):
                 blockers.append("emby_refresh_task_timeout")
     else:
-        refresh["request"] = {"skipped": True, "blocked_strm_path_prefixes": blocked_strm_prefixes}
-        if blocked_strm_prefixes:
+        refresh["request"] = {
+            "skipped": True,
+            "blocked_strm_path_prefixes": blocked_strm_prefixes,
+            "reason": "full_library_refresh_requires_approval" if full_refresh_requires_approval else "",
+        }
+        if blocked_strm_prefixes or full_refresh_requires_approval:
             refresh["task"] = {"skipped": True}
         else:
             try:
@@ -304,7 +316,7 @@ def refresh_and_verify_emby_library(
         "verification": verification,
         "blockers": sorted(set(blockers)),
         "warnings": warnings,
-        "safety": "Emby library refresh trigger and readonly verification only; STRM verification prefixes must be STRM-side paths. Cloud media directories are transfer and STRM-generation sources only, never scraping targets. No filesystem deletion, qBittorrent action, MoviePilot cleanup, or direct Emby database write is performed",
+        "safety": "Emby full-library refresh requires explicit approval and readonly verification only; prefer STRM-side Media/Updated or item refresh for normal migrations. STRM verification prefixes must be STRM-side paths. Cloud media directories are transfer and STRM-generation sources only, never scraping targets. No filesystem deletion, qBittorrent action, MoviePilot cleanup, or direct Emby database write is performed",
     }
     return report
 

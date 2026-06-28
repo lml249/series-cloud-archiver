@@ -364,7 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
     strm_duplicate_cleanup_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     strm_duplicate_cleanup_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
-    emby_refresh_parser = subcommands.add_parser("emby-refresh-verify", help="Trigger Emby library refresh and verify stale local paths are gone")
+    emby_refresh_parser = subcommands.add_parser("emby-refresh-verify", help="Trigger an approved Emby full-library refresh and verify stale local paths are gone")
     emby_refresh_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
     emby_refresh_parser.add_argument("--title", required=True, help="Series title for reporting and API fallback search")
     emby_refresh_parser.add_argument("--stale-path-prefix", action="append", default=[], help="Old local/hlink path prefix that should disappear; can be repeated")
@@ -375,6 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
     emby_refresh_parser.add_argument("--expected-episode-max", type=int, default=0, help="Expected last STRM episode number")
     emby_refresh_parser.add_argument("--library-db", default="", help="Optional Emby library.db path for exact readonly verification")
     emby_refresh_parser.add_argument("--skip-refresh", action="store_true", help="Only verify current Emby state without triggering a new scan")
+    emby_refresh_parser.add_argument("--approve-full-library-refresh", action="store_true", help="Required: actually trigger Emby full-library RefreshLibrary; prefer emby-media-updated for STRM-side migrations")
     emby_refresh_parser.add_argument("--no-wait", action="store_true", help="Trigger Emby refresh but do not wait for the full library scan to finish")
     emby_refresh_parser.add_argument("--poll-seconds", type=float, default=10.0, help="Seconds between refresh task polls")
     emby_refresh_parser.add_argument("--max-wait-seconds", type=int, default=900, help="Maximum seconds to wait for Emby scan completion")
@@ -1478,6 +1479,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             expected_episode_max=args.expected_episode_max,
             library_db_path=args.library_db or config.emby_library_db_path,
             skip_refresh=args.skip_refresh,
+            approve_full_library_refresh=args.approve_full_library_refresh,
             no_wait=args.no_wait,
             poll_seconds=args.poll_seconds,
             max_wait_seconds=args.max_wait_seconds,

@@ -535,6 +535,7 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
                 expected_episode_count=2,
                 expected_episode_min=1,
                 expected_episode_max=2,
+                approve_full_library_refresh=True,
                 poll_seconds=0,
                 max_wait_seconds=1,
             )
@@ -544,6 +545,49 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
         self.assertEqual(report["refresh"]["task"]["last_status"], "Completed")
         self.assertEqual(report["verification"]["totals"]["stale_records"], 0)
         self.assertIn("Refresh last status: `Completed`", rendered)
+
+    def test_emby_refresh_verify_requires_full_library_refresh_approval(self) -> None:
+        calls = []
+
+        class FakeClient:
+            def __init__(self, base_url, api_key, timeout=20):
+                pass
+
+            def refresh_library(self):
+                calls.append("refresh_library")
+                raise AssertionError("full library refresh must require explicit approval")
+
+            def task_by_key(self, key):
+                calls.append("task_by_key")
+                return {}
+
+            def items_by_search(self, search_term):
+                return [
+                    {
+                        "Id": "episode-strm-1",
+                        "Type": "Episode",
+                        "IndexNumber": 1,
+                        "Path": "/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}/Season 01/楚汉传奇 S01E01.strm",
+                    }
+                ]
+
+        with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+            report = refresh_and_verify_emby_library(
+                "http://emby.example",
+                "token",
+                title="楚汉传奇",
+                stale_path_prefixes=[],
+                strm_path_prefixes=["/example/strm/series/楚汉传奇 (2012) {tmdbid=41146}"],
+                expected_episode_count=1,
+                expected_episode_min=1,
+                expected_episode_max=1,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(calls, [])
+        self.assertIn("emby_full_library_refresh_requires_approval", report["blockers"])
+        self.assertIn("prefer_emby_media_updated_for_strm_side_refresh", report["warnings"])
+        self.assertEqual(report["refresh"]["request"]["reason"], "full_library_refresh_requires_approval")
 
     def test_emby_refresh_verify_cli_writes_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -595,6 +639,7 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
                         "1",
                         "--expected-episode-max",
                         "1",
+                        "--approve-full-library-refresh",
                         "--poll-seconds",
                         "0",
                         "--max-wait-seconds",
@@ -661,6 +706,7 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
                         "--expected-episode-max",
                         "1",
                         "--no-wait",
+                        "--approve-full-library-refresh",
                         "--format",
                         "json",
                         "--output",
@@ -717,6 +763,7 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
                         "1",
                         "--expected-episode-max",
                         "1",
+                        "--approve-full-library-refresh",
                         "--format",
                         "json",
                         "--output",
