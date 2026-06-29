@@ -9,10 +9,12 @@ from series_cloud_archiver.cloud_check import cloud_check_from_scan_report
 from series_cloud_archiver.transfer_plan import (
     plan_mv3_offline_manifest,
     plan_mv3_preview_manifest,
+    plan_mv3_restored_transfer_queue,
     plan_mv3_share_search_from_transfer_plan,
     plan_mv3_transfers_from_cloud_report,
     render_mv3_offline_manifest,
     render_mv3_preview_manifest,
+    render_mv3_restored_transfer_queue,
     render_mv3_share_search_plan,
     render_mv3_transfer_plan,
 )
@@ -129,6 +131,129 @@ class TransferPlanTest(unittest.TestCase):
         self.assertIn("MV3 Transfer Plan", markdown)
         self.assertIn("no MV3 transfer", markdown)
         self.assertIn("Demo", markdown)
+
+    def test_restored_transfer_queue_splits_ready_and_identity_review(self) -> None:
+        cloud_report = {
+            "mode": "readonly-cloud-check",
+            "items": [
+                {
+                    "status": "cloud_strm_not_found",
+                    "title": "Ready Show",
+                    "tmdbid": 10,
+                    "season": 1,
+                    "size_bytes": 200,
+                    "expected_count": 8,
+                    "source_paths": ["/cloud-check/Ready"],
+                    "search_keywords": ["Ready Show"],
+                },
+                {
+                    "status": "needs_identity_review",
+                    "title": "Needs Season",
+                    "tmdbid": 11,
+                    "season": 0,
+                    "size_bytes": 300,
+                    "expected_count": 12,
+                    "blockers": ["missing_season"],
+                },
+            ],
+        }
+        transfer_plan = {
+            "items": [
+                {
+                    "title": "Ready Show",
+                    "tmdbid": 10,
+                    "season": 1,
+                    "source_paths": ["/transfer-plan/Ready"],
+                    "search_keywords": ["Ready Show", "Ready English"],
+                }
+            ]
+        }
+        historical_scan = {
+            "candidates": [
+                {"status": "candidate_for_cloud_check", "title": "Old Candidate", "path": "/old", "size_bytes": 50, "video_count": 2},
+                {"status": "blocked_qb_evidence", "title": "Blocked", "path": "/blocked"},
+            ]
+        }
+        mv3_report = {"configured": True, "reachable": True, "license_status": "required_or_inactive", "warnings": ["mv3_license_required"]}
+
+        report = plan_mv3_restored_transfer_queue(cloud_report, transfer_plan, historical_scan, mv3_report)
+        rendered = render_mv3_restored_transfer_queue(report, "markdown")
+
+        self.assertEqual(report["mode"], "readonly-mv3-restored-transfer-queue")
+        self.assertEqual(report["summary"]["ready_when_mv3_restored"], 1)
+        self.assertEqual(report["summary"]["needs_identity_review"], 1)
+        self.assertEqual(report["summary"]["historical_candidate_for_cloud_check"], 1)
+        ready = report["ready_when_mv3_restored"][0]
+        self.assertEqual(ready["title"], "Ready Show")
+        self.assertIn("/transfer-plan/Ready", ready["source_paths"])
+        self.assertIn("/cloud-check/Ready", ready["source_paths"])
+        self.assertIn("Ready English", ready["search_keywords"])
+        self.assertEqual(report["mv3_status"]["license_status"], "required_or_inactive")
+        self.assertIn("mv3_not_ready_for_transfer", report["warnings"])
+        self.assertIn("Ready When MV3 Restored", rendered)
+        self.assertIn("readonly queue only", rendered)
+
+    def test_cli_writes_restored_transfer_queue_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cloud_report = tmp_path / "cloud.json"
+            transfer_plan = tmp_path / "transfer.json"
+            mv3_report = tmp_path / "mv3.json"
+            json_output = tmp_path / "queue.json"
+            md_output = tmp_path / "queue.md"
+            cloud_report.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-cloud-check",
+                        "items": [
+                            {
+                                "status": "cloud_strm_not_found",
+                                "title": "Demo",
+                                "tmdbid": 123,
+                                "season": 1,
+                                "size_bytes": 100,
+                                "expected_count": 2,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            transfer_plan.write_text(json.dumps({"items": [{"title": "Demo", "tmdbid": 123, "season": 1, "search_keywords": ["Demo"]}]}), encoding="utf-8")
+            mv3_report.write_text(json.dumps({"configured": True, "reachable": True, "license_status": "active"}), encoding="utf-8")
+
+            json_status = main(
+                [
+                    "mv3-restored-transfer-queue",
+                    "--cloud-report",
+                    str(cloud_report),
+                    "--transfer-plan",
+                    str(transfer_plan),
+                    "--mv3-report",
+                    str(mv3_report),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(json_output),
+                ]
+            )
+            md_status = main(
+                [
+                    "mv3-restored-transfer-queue",
+                    "--cloud-report",
+                    str(cloud_report),
+                    "--format",
+                    "markdown",
+                    "--output",
+                    str(md_output),
+                ]
+            )
+
+            self.assertEqual(json_status, 0)
+            self.assertEqual(md_status, 0)
+            payload = json.loads(json_output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["summary"]["ready_when_mv3_restored"], 1)
+            self.assertIn("MV3 Restored Transfer Queue", md_output.read_text(encoding="utf-8"))
 
     def test_builds_preview_manifest_with_execution_blockers(self) -> None:
         transfer_plan = {
@@ -346,6 +471,8 @@ class TransferPlanTest(unittest.TestCase):
         self.assertEqual(manifest["items"][0]["qb_magnet_available_count"], 1)
         self.assertEqual(manifest["items"][0]["qb_seed_age_ok_count"], 1)
         self.assertEqual(manifest["items"][0]["mv3_offline_call"]["body_template"]["urls"], "[REDACTED_MAGNET_URIS_FROM_QB]")
+        self.assertEqual(manifest["items"][0]["post_offline_strm_generate_call"]["body_template"]["source_dir"], "/已整理/series/Demo {tmdbid=123}/Season 01")
+        self.assertEqual(manifest["items"][0]["post_offline_strm_generate_call"]["body_template"]["target_dir"], "/strm")
         self.assertNotIn("magnet:?", rendered)
         self.assertIn("POST /api/v1/files/115/offline/add", manifest["forbidden_endpoints"])
 
@@ -392,6 +519,42 @@ class TransferPlanTest(unittest.TestCase):
         self.assertEqual(item["offline_destination_mode"], "root")
         self.assertEqual(item["proposed_cloud_destination"], "/未整理/繁城之下 (2023) {tmdbid=233959}/Season 01")
         self.assertEqual(item["mv3_offline_call"]["body_template"]["wp_path"], "/未整理")
+
+    def test_offline_manifest_uses_strm_side_root_for_generation_template(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "Demo",
+                    "tmdbid": 123,
+                    "season": 1,
+                    "size_bytes": 100,
+                    "expected_count": 2,
+                    "source_paths": ["/example/media/Demo"],
+                }
+            ],
+        }
+        qb_torrents = [{"name": "Demo.S01", "content_path": "/example/media/Demo", "magnet_uri": "magnet:?x", "seeding_time": 9 * 86400}]
+
+        manifest = plan_mv3_offline_manifest(
+            transfer_plan,
+            qb_torrents,
+            cloud_root="/已整理/series",
+            strm_root="/example/mv3/strm",
+            limit=1,
+        )
+        blocked = plan_mv3_offline_manifest(
+            transfer_plan,
+            qb_torrents,
+            cloud_root="/已整理/series",
+            strm_root="/已整理",
+            limit=1,
+        )
+
+        call = manifest["items"][0]["post_offline_strm_generate_call"]["body_template"]
+        self.assertEqual(call["source_dir"], "/已整理/series/Demo {tmdbid=123}/Season 01")
+        self.assertEqual(call["target_dir"], "/example/mv3/strm")
+        self.assertIn("strm_root_must_be_strm_side", blocked["items"][0]["execution_blockers"])
 
     def test_offline_manifest_matches_normalized_hlink_title_to_qb(self) -> None:
         transfer_plan = {
@@ -543,6 +706,8 @@ class TransferPlanTest(unittest.TestCase):
                     str(qb_report),
                     "--limit",
                     "1",
+                    "--strm-root",
+                    "/example/mv3/strm",
                     "--format",
                     "json",
                     "--output",
@@ -553,6 +718,7 @@ class TransferPlanTest(unittest.TestCase):
             self.assertEqual(code, 0)
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["planned_items"], 1)
+            self.assertEqual(payload["items"][0]["post_offline_strm_generate_call"]["body_template"]["target_dir"], "/example/mv3/strm")
             self.assertNotIn("magnet:?", output.read_text(encoding="utf-8"))
 
     def test_builds_share_search_plan_by_size_and_episode_fit(self) -> None:

@@ -165,6 +165,20 @@ PYTHONPATH=src python3 -m series_cloud_archiver plan-mv3-transfer \
 
 这一步只读取 `cloud-check` 的 JSON 报告并排序，不调用 MV3，也不生成 STRM。默认只纳入已有 TMDB ID 和季号、但云端完全没有 STRM 的剧集；季号不清的多季合集会继续留在人工复核里。
 
+如果 MV3 暂时可达但授权未恢复，可以把当前缺 STRM 的队列、需要身份复核的条目、历史候选样例和 MV3 授权状态汇总成一个可复跑的恢复队列报告：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-restored-transfer-queue \
+  --cloud-report reports/cloud-check-current.json \
+  --transfer-plan reports/mv3-transfer-plan.json \
+  --historical-scan reports/volume3-tv-bulk-precleanup-scan.json \
+  --mv3-report reports/mv3-check.json \
+  --format markdown \
+  --output reports/mv3-restored-transfer-queue.md
+```
+
+`mv3-restored-transfer-queue` 只是只读汇总，不搜索、不转存、不生成 STRM、不刷新 Emby、不清理 qB/MP/hlink。它的用途是等 MV3 授权恢复后，按“已有 TMDB ID + 明确季号 + 云端 STRM 未找到”的队列继续逐条搜索和转存。
+
 ## MV3 预览 manifest dry-run
 
 拿到待转存清单、MV3 能力报告和 MV3 实例报告后，可以先生成“小批量预览 manifest”：
@@ -200,6 +214,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver plan-mv3-offline \
   --instances-report reports/mv3-instances.json \
   --limit 10 \
   --cloud-root /已整理/series \
+  --strm-root /strm \
   --min-seed-days 7 \
   --format markdown \
   --output reports/mv3-offline-manifest.md
@@ -211,7 +226,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver plan-mv3-offline \
 - 有多少个种子带 magnet
 - 有多少个已经满足做种天数
 - 预计的 115 云端目录
-- 后续应调用的 MV3 离线接口和 STRM 生成接口模板
+- 后续应调用的 MV3 离线接口和 STRM 生成接口模板。STRM 生成模板里的 `source_dir` 是云盘媒体目录，`target_dir` 必须是 STRM 侧根目录，不能写成 `/已整理/...`
 
 报告不会写出 magnet 原文，也不会调用 `/api/v1/files/115/offline/add`、`/api/v1/files/115/offline/add_bt` 或 `/api/v1/strm/generate`。真正执行前仍然需要单条人工批准。
 

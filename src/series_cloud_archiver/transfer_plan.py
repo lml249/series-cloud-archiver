@@ -9,6 +9,7 @@ from typing import Dict, Iterable, List, Optional, Set
 
 DEFAULT_TRANSFER_STATUSES = ["cloud_strm_not_found"]
 DEFAULT_CLOUD_ROOT = "/已整理/series"
+DEFAULT_STRM_ROOT = "/strm"
 OFFLINE_DESTINATION_MODES = {"season", "root"}
 MV3_PREVIEW_ENDPOINT = {"method": "POST", "path": "/api/v1/media-transfer/preview"}
 MV3_OFFLINE_ENDPOINT = {"method": "POST", "path": "/api/v1/files/115/offline/add"}
@@ -115,6 +116,67 @@ def render_mv3_transfer_plan(plan: Dict[str, object], output_format: str) -> str
     return _render_markdown(plan)
 
 
+def plan_mv3_restored_transfer_queue(
+    cloud_report: Dict[str, object],
+    transfer_plan: Optional[Dict[str, object]] = None,
+    historical_scan: Optional[Dict[str, object]] = None,
+    mv3_report: Optional[Dict[str, object]] = None,
+    top: int = 0,
+) -> Dict[str, object]:
+    cloud_items = [item for item in cloud_report.get("items", []) if isinstance(item, dict)]
+    transfer_items = [item for item in (transfer_plan or {}).get("items", []) if isinstance(item, dict)]
+    transfer_by_identity = {
+        (int(item.get("tmdbid") or 0), int(item.get("season") or 0)): item
+        for item in transfer_items
+        if int(item.get("tmdbid") or 0) and int(item.get("season") or 0)
+    }
+    transfer_by_title = {str(item.get("title") or ""): item for item in transfer_items if str(item.get("title") or "")}
+
+    ready = []
+    identity_review = []
+    for item in cloud_items:
+        status = str(item.get("status") or "")
+        tmdbid = int(item.get("tmdbid") or 0)
+        season = int(item.get("season") or 0)
+        transfer_item = transfer_by_identity.get((tmdbid, season)) or transfer_by_title.get(str(item.get("title") or "")) or {}
+        if status == "cloud_strm_not_found" and tmdbid and season:
+            ready.append(_restored_queue_item(item, transfer_item, "cloud_strm_not_found"))
+        elif status == "needs_identity_review" or not tmdbid or not season:
+            identity_review.append(_restored_queue_item(item, transfer_item, "needs_identity_review_before_transfer"))
+
+    ready.sort(key=lambda row: (-int(row.get("size_bytes") or 0), str(row.get("title") or ""), int(row.get("season") or 0)))
+    identity_review.sort(key=lambda row: (-int(row.get("size_bytes") or 0), str(row.get("title") or ""), int(row.get("season") or 0)))
+    historical = _historical_candidates(historical_scan)
+    row_limit = max(0, int(top or 0))
+
+    return {
+        "mode": "readonly-mv3-restored-transfer-queue",
+        "source_mode": cloud_report.get("mode", ""),
+        "current_items": len(cloud_items),
+        "summary": {
+            "ready_when_mv3_restored": len(ready),
+            "needs_identity_review": len(identity_review),
+            "historical_candidate_for_cloud_check": len(historical),
+        },
+        "mv3_status": _mv3_status_summary(mv3_report),
+        "ready_when_mv3_restored": _limit_rows(ready, row_limit),
+        "needs_identity_review_before_transfer": _limit_rows(identity_review, row_limit),
+        "historical_candidate_samples": _limit_rows(historical, row_limit or 20),
+        "row_limit": row_limit,
+        "warnings": _restored_queue_warnings(cloud_report, transfer_plan, historical_scan, mv3_report),
+        "safety": (
+            "readonly queue only; no MV3 search, share receive, organize transfer, STRM generation, "
+            "qBittorrent action, MoviePilot cleanup, Emby refresh, cloud write, hlink deletion, or filesystem deletion is performed"
+        ),
+    }
+
+
+def render_mv3_restored_transfer_queue(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    return _render_restored_transfer_queue_markdown(report)
+
+
 def plan_mv3_preview_manifest(
     transfer_plan: Dict[str, object],
     instances_report: Optional[Dict[str, object]] = None,
@@ -161,6 +223,7 @@ def plan_mv3_offline_manifest(
     instances_report: Optional[Dict[str, object]] = None,
     limit: int = 10,
     cloud_root: str = DEFAULT_CLOUD_ROOT,
+    strm_root: str = DEFAULT_STRM_ROOT,
     min_seed_days: int = 7,
     destination_mode: str = "season",
 ) -> Dict[str, object]:
@@ -168,7 +231,7 @@ def plan_mv3_offline_manifest(
         raise ValueError(f"destination_mode must be one of {sorted(OFFLINE_DESTINATION_MODES)}")
     raw_items = [item for item in transfer_plan.get("items", []) if isinstance(item, dict)]
     selected_items = raw_items[: limit if limit > 0 else len(raw_items)]
-    context = _mv3_offline_context(instances_report, cloud_root)
+    context = _mv3_offline_context(instances_report, cloud_root, strm_root)
     items = [
         _offline_manifest_item(index, item, qb_torrents, context, min_seed_days, destination_mode)
         for index, item in enumerate(selected_items, start=1)
@@ -260,6 +323,110 @@ def _transfer_item(item: Dict[str, object]) -> Dict[str, object]:
         "search_keywords": _search_keywords_for_item(item),
         "blockers": _string_list(item.get("blockers")),
     }
+
+
+def _restored_queue_item(item: Dict[str, object], transfer_item: Dict[str, object], queue_status: str) -> Dict[str, object]:
+    source_paths = _merge_keywords(_string_list(transfer_item.get("source_paths")) + _string_list(item.get("source_paths")), limit=20)
+    titles = _merge_keywords(_string_list(transfer_item.get("titles")) + _string_list(item.get("titles")), limit=20)
+    search_keywords = _merge_keywords(
+        _string_list(transfer_item.get("search_keywords")) + _search_keywords_for_item(item),
+        limit=12,
+    )
+    return {
+        "queue_status": queue_status,
+        "source_status": str(item.get("status") or transfer_item.get("source_status") or ""),
+        "title": str(item.get("title") or transfer_item.get("title") or ""),
+        "tmdbid": int(item.get("tmdbid") or transfer_item.get("tmdbid") or 0),
+        "season": int(item.get("season") or transfer_item.get("season") or 0),
+        "size_bytes": int(item.get("size_bytes") or transfer_item.get("size_bytes") or 0),
+        "expected_count": int(item.get("expected_count") or transfer_item.get("expected_count") or 0),
+        "expected_episodes": _int_list(item.get("expected_episodes")),
+        "missing_episodes": _int_list(item.get("missing_episodes")),
+        "candidate_count": int(item.get("candidate_count") or transfer_item.get("candidate_count") or 0),
+        "source_paths": source_paths,
+        "titles": titles,
+        "search_keywords": search_keywords,
+        "blockers": _merge_keywords(_string_list(item.get("blockers")) + _string_list(transfer_item.get("blockers")), limit=20),
+        "next_gate": _restored_queue_next_gate(queue_status),
+    }
+
+
+def _restored_queue_next_gate(queue_status: str) -> str:
+    if queue_status == "cloud_strm_not_found":
+        return "after MV3 license is active, run MV3 share/cloud search and compare episode coverage plus total size before any receive or organize transfer"
+    return "resolve TMDB ID and season first, then regenerate cloud-check before any MV3 transfer"
+
+
+def _historical_candidates(historical_scan: Optional[Dict[str, object]]) -> List[Dict[str, object]]:
+    if not isinstance(historical_scan, dict):
+        return []
+    rows = []
+    for candidate in historical_scan.get("candidates", []):
+        if not isinstance(candidate, dict) or candidate.get("status") != "candidate_for_cloud_check":
+            continue
+        rows.append(
+            {
+                "title": str(candidate.get("title") or ""),
+                "path": str(candidate.get("path") or ""),
+                "size_bytes": int(candidate.get("size_bytes") or 0),
+                "video_count": int(candidate.get("video_count") or 0),
+                "seasons": _int_list(candidate.get("seasons")),
+                "tmdbid": int(_nested_int(candidate, "mp", "tmdbid") or _nested_int(candidate, "manual_completion", "tmdbid") or 0),
+                "season": int(_nested_int(candidate, "mp", "season") or _nested_int(candidate, "manual_completion", "season") or 0),
+                "reasons": _string_list(candidate.get("reasons")),
+            }
+        )
+    rows.sort(key=lambda row: (-int(row.get("size_bytes") or 0), str(row.get("title") or "")))
+    return rows
+
+
+def _nested_int(source: Dict[str, object], outer: str, key: str) -> int:
+    value = source.get(outer)
+    if not isinstance(value, dict):
+        return 0
+    raw = value.get(key)
+    return int(raw) if isinstance(raw, int) or str(raw).isdigit() else 0
+
+
+def _mv3_status_summary(mv3_report: Optional[Dict[str, object]]) -> Dict[str, object]:
+    if not isinstance(mv3_report, dict):
+        return {
+            "configured": False,
+            "reachable": False,
+            "license_status": "unknown",
+            "warnings": ["mv3_report_missing"],
+        }
+    return {
+        "configured": bool(mv3_report.get("configured")),
+        "reachable": bool(mv3_report.get("reachable")),
+        "license_status": str(mv3_report.get("license_status") or "unknown"),
+        "warnings": _string_list(mv3_report.get("warnings")),
+    }
+
+
+def _restored_queue_warnings(
+    cloud_report: Dict[str, object],
+    transfer_plan: Optional[Dict[str, object]],
+    historical_scan: Optional[Dict[str, object]],
+    mv3_report: Optional[Dict[str, object]],
+) -> List[str]:
+    warnings = []
+    warnings.extend(_string_list(cloud_report.get("warnings")))
+    if isinstance(transfer_plan, dict):
+        warnings.extend(_string_list(transfer_plan.get("warnings")))
+    else:
+        warnings.append("transfer_plan_missing")
+    if not isinstance(historical_scan, dict):
+        warnings.append("historical_scan_missing")
+    mv3_status = _mv3_status_summary(mv3_report)
+    warnings.extend(_string_list(mv3_status.get("warnings")))
+    if mv3_status.get("license_status") not in {"active", "ok", "licensed", "not_detected_by_probe"}:
+        warnings.append("mv3_not_ready_for_transfer")
+    return _merge_keywords(warnings, limit=50)
+
+
+def _limit_rows(rows: List[Dict[str, object]], limit: int) -> List[Dict[str, object]]:
+    return rows[:limit] if limit > 0 else rows
 
 
 def _mv3_manifest_context(
@@ -721,6 +888,29 @@ def _title_years_are_compatible(left: str, right: str) -> bool:
     return _has_tv_signal(right)
 
 
+def _looks_like_cloud_media_root(path: str) -> bool:
+    normalized = str(path or "").replace("\\", "/").rstrip("/")
+    parts = [part for part in normalized.split("/") if part]
+    return "已整理" in parts or "未整理" in parts or normalized.lower() in {"/series", "/movie", "/movies", "/anime", "/tv"}
+
+
+def _looks_like_strm_root(path: str) -> bool:
+    normalized = str(path or "").replace("\\", "/").rstrip("/")
+    parts = [part.lower() for part in normalized.split("/") if part]
+    if not normalized or _looks_like_cloud_media_root(normalized):
+        return False
+    return any(
+        part == "strm"
+        or part.startswith("strm-")
+        or part.startswith("strm_")
+        or part.endswith("-strm")
+        or part.endswith("_strm")
+        or "-strm-" in part
+        or "_strm_" in part
+        for part in parts
+    )
+
+
 def _proposed_cloud_destination(cloud_root: object, item: Dict[str, object]) -> str:
     root = str(cloud_root or DEFAULT_CLOUD_ROOT).rstrip("/") or DEFAULT_CLOUD_ROOT
     title = _safe_cloud_segment(_strip_identity_suffix(str(item.get("title") or "unknown")))
@@ -739,19 +929,25 @@ def _safe_cloud_segment(value: str) -> str:
     return " ".join(cleaned.split()) or "unknown"
 
 
-def _mv3_offline_context(instances_report: Optional[Dict[str, object]], cloud_root: str) -> Dict[str, object]:
+def _mv3_offline_context(instances_report: Optional[Dict[str, object]], cloud_root: str, strm_root: str) -> Dict[str, object]:
     warnings: List[str] = []
     cloud_drive = _first_cloud_drive(instances_report)
     mount_paths = {}
     if isinstance(cloud_drive, dict) and isinstance(cloud_drive.get("mount_path"), dict):
         mount_paths = {str(key): str(value) for key, value in cloud_drive["mount_path"].items()}
     normalized_cloud_root = (cloud_root or DEFAULT_CLOUD_ROOT).rstrip("/") or DEFAULT_CLOUD_ROOT
+    normalized_strm_root = (strm_root or DEFAULT_STRM_ROOT).rstrip("/") or DEFAULT_STRM_ROOT
     if mount_paths and normalized_cloud_root not in mount_paths and normalized_cloud_root not in mount_paths.values():
         warnings.append(f"cloud_root_not_in_mv3_mount_paths:{normalized_cloud_root}")
     if not cloud_drive:
         warnings.append("mv3_cloud_drive_not_found")
+    if _looks_like_cloud_media_root(normalized_strm_root):
+        warnings.append("strm_root_looks_like_cloud_media_root")
+    if not _looks_like_strm_root(normalized_strm_root):
+        warnings.append("strm_root_not_obviously_strm_side")
     return {
         "cloud_root": normalized_cloud_root,
+        "strm_root": normalized_strm_root,
         "cloud_drive_slug": str(cloud_drive.get("slug") or "") if isinstance(cloud_drive, dict) else "",
         "cloud_drive_name": str(cloud_drive.get("name") or "") if isinstance(cloud_drive, dict) else "",
         "cloud_mount_paths": mount_paths,
@@ -791,6 +987,8 @@ def _offline_manifest_item(
         blockers.append("qb_seed_age_short_for_some_torrents")
     if not context.get("cloud_drive_slug"):
         blockers.append("missing_mv3_cloud_drive")
+    if any(str(warning).startswith("strm_root_") for warning in context.get("warnings", [])):
+        blockers.append("strm_root_must_be_strm_side")
     return {
         "priority": index,
         "title": str(item.get("title") or ""),
@@ -824,7 +1022,7 @@ def _offline_manifest_item(
             "body_template": {
                 "storage": context.get("cloud_drive_slug") or "[REQUIRES_MV3_CLOUD_DRIVE]",
                 "source_dir": destination,
-                "target_dir": destination,
+                "target_dir": context.get("strm_root") or DEFAULT_STRM_ROOT,
                 "cloud": True,
                 "incremental": True,
                 "overwrite": False,
@@ -929,6 +1127,89 @@ def _render_markdown(plan: Dict[str, object]) -> str:
         "Next gate: before any real MV3 transfer, each row still needs a transfer API mapping, STRM re-scan, Emby library confirmation, playback probe, qB seed-age check, and manual approval."
     )
     return "\n".join(lines)
+
+
+def _render_restored_transfer_queue_markdown(report: Dict[str, object]) -> str:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    mv3_status = report.get("mv3_status") if isinstance(report.get("mv3_status"), dict) else {}
+    lines = [
+        "# MV3 Restored Transfer Queue",
+        "",
+        f"- Mode: `{report.get('mode', '')}`",
+        f"- Source mode: `{report.get('source_mode', '')}`",
+        f"- Current cloud-check items: `{report.get('current_items', 0)}`",
+        f"- Ready when MV3 restored: `{summary.get('ready_when_mv3_restored', 0)}`",
+        f"- Needs identity review: `{summary.get('needs_identity_review', 0)}`",
+        f"- Historical candidate samples available: `{summary.get('historical_candidate_for_cloud_check', 0)}`",
+        f"- MV3 configured: `{bool(mv3_status.get('configured'))}`",
+        f"- MV3 reachable: `{bool(mv3_status.get('reachable'))}`",
+        f"- MV3 license status: `{mv3_status.get('license_status', '')}`",
+        "- Safety: readonly queue only; no MV3 search, transfer, STRM generation, qBittorrent action, MoviePilot cleanup, Emby refresh, cloud write, hlink deletion, or filesystem deletion is performed.",
+    ]
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    lines.extend(["", "## Ready When MV3 Restored", ""])
+    _append_queue_table(lines, report.get("ready_when_mv3_restored"))
+    lines.extend(["", "## Needs Identity Review Before Transfer", ""])
+    _append_queue_table(lines, report.get("needs_identity_review_before_transfer"))
+    historical = report.get("historical_candidate_samples")
+    if isinstance(historical, list) and historical:
+        lines.extend(
+            [
+                "",
+                "## Historical Candidate Samples",
+                "",
+                "| # | Size | TMDB ID | Season | Videos | Title | Path |",
+                "| ---: | ---: | ---: | ---: | ---: | --- | --- |",
+            ]
+        )
+        for index, item in enumerate(historical, start=1):
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "| {index} | {size} | {tmdbid} | {season} | {videos} | {title} | {path} |".format(
+                    index=index,
+                    size=_human_size(int(item.get("size_bytes") or 0)),
+                    tmdbid=item.get("tmdbid") or "",
+                    season=item.get("season") or "",
+                    videos=item.get("video_count") or "",
+                    title=_escape_cell(str(item.get("title") or "")),
+                    path=_escape_cell(str(item.get("path") or "")),
+                )
+            )
+    lines.append("")
+    lines.append("Next gate: activate MV3 first, then run share/cloud search for ready rows and compare whole-season size plus episode coverage before any receive/organize/STRM operation.")
+    return "\n".join(lines)
+
+
+def _append_queue_table(lines: List[str], rows: object) -> None:
+    if not isinstance(rows, list) or not rows:
+        lines.append("_No rows._")
+        return
+    lines.extend(
+        [
+            "| # | Size | TMDB ID | Season | Expected | Title | Keywords | Source path sample | Next gate |",
+            "| ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |",
+        ]
+    )
+    for index, item in enumerate(rows, start=1):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {index} | {size} | {tmdbid} | {season} | {expected} | {title} | {keywords} | {source_path} | {next_gate} |".format(
+                index=index,
+                size=_human_size(int(item.get("size_bytes") or 0)),
+                tmdbid=item.get("tmdbid") or "",
+                season=item.get("season") or "",
+                expected=item.get("expected_count") or "",
+                title=_escape_cell(str(item.get("title") or "")),
+                keywords=_escape_cell(", ".join(_string_list(item.get("search_keywords"))[:3])),
+                source_path=_escape_cell(_first(item.get("source_paths"))),
+                next_gate=_escape_cell(str(item.get("next_gate") or "")),
+            )
+        )
 
 
 def _render_preview_manifest_markdown(manifest: Dict[str, object]) -> str:

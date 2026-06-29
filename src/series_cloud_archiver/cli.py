@@ -122,15 +122,18 @@ from .scanner import scan
 from .storage import StoredSeries
 from .transfer_plan import (
     DEFAULT_CLOUD_ROOT,
+    DEFAULT_STRM_ROOT,
     load_cloud_check_report,
     load_mv3_transfer_plan,
     load_optional_json_report,
     plan_mv3_offline_manifest,
     plan_mv3_preview_manifest,
+    plan_mv3_restored_transfer_queue,
     plan_mv3_share_search_from_transfer_plan,
     plan_mv3_transfers_from_cloud_report,
     render_mv3_offline_manifest,
     render_mv3_preview_manifest,
+    render_mv3_restored_transfer_queue,
     render_mv3_share_search_plan,
     render_mv3_transfer_plan,
 )
@@ -582,6 +585,15 @@ def build_parser() -> argparse.ArgumentParser:
     transfer_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
     transfer_parser.add_argument("--top", type=int, default=0, help="Maximum transfer rows in report")
 
+    restored_queue_parser = subcommands.add_parser("mv3-restored-transfer-queue", help="Summarize the readonly transfer queue to resume after MV3 is restored")
+    restored_queue_parser.add_argument("--cloud-report", required=True, help="JSON report from cloud-check")
+    restored_queue_parser.add_argument("--transfer-plan", default=None, help="Optional JSON report from plan-mv3-transfer")
+    restored_queue_parser.add_argument("--historical-scan", default=None, help="Optional historical scan JSON for context samples")
+    restored_queue_parser.add_argument("--mv3-report", default=None, help="Optional JSON report from mv3-check")
+    restored_queue_parser.add_argument("--top", type=int, default=0, help="Maximum rows per queue section; 0 means all current rows")
+    restored_queue_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    restored_queue_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
     preview_parser = subcommands.add_parser("plan-mv3-preview", help="Create a readonly MV3 preview manifest from a transfer plan")
     preview_parser.add_argument("--transfer-plan", required=True, help="JSON report from plan-mv3-transfer")
     preview_parser.add_argument("--instances-report", default=None, help="Optional JSON report from mv3-instances")
@@ -599,6 +611,7 @@ def build_parser() -> argparse.ArgumentParser:
     offline_parser.add_argument("--qb-report", default=None, help="Optional cached qB torrents JSON; otherwise qB is queried readonly")
     offline_parser.add_argument("--limit", type=int, default=10, help="Maximum manifest rows")
     offline_parser.add_argument("--cloud-root", default=DEFAULT_CLOUD_ROOT, help="Cloud root used for proposed destinations")
+    offline_parser.add_argument("--strm-root", default=DEFAULT_STRM_ROOT, help="MV3 STRM-side root used for post-offline STRM generation templates")
     offline_parser.add_argument("--min-seed-days", type=int, default=7, help="Minimum qB seed days to mark seed OK")
     offline_parser.add_argument("--destination-mode", choices=["season", "root"], default="season", help="Offline-add target: exact season destination or cloud root only")
     offline_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
@@ -2050,6 +2063,21 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(rendered)
         return 0
 
+    if args.command == "mv3-restored-transfer-queue":
+        report = plan_mv3_restored_transfer_queue(
+            load_cloud_check_report(args.cloud_report),
+            transfer_plan=load_optional_json_report(args.transfer_plan),
+            historical_scan=load_optional_json_report(args.historical_scan),
+            mv3_report=load_optional_json_report(args.mv3_report),
+            top=args.top,
+        )
+        rendered = render_mv3_restored_transfer_queue(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
     if args.command == "plan-mv3-preview":
         manifest = plan_mv3_preview_manifest(
             load_mv3_transfer_plan(args.transfer_plan),
@@ -2083,6 +2111,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             instances_report=load_optional_json_report(args.instances_report),
             limit=args.limit,
             cloud_root=args.cloud_root,
+            strm_root=args.strm_root,
             min_seed_days=args.min_seed_days,
             destination_mode=args.destination_mode,
         )
