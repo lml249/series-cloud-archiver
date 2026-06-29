@@ -8,6 +8,7 @@ from series_cloud_archiver.batch_runner import (
     AUTO_TRANSFER,
     MANUAL_REVIEW,
     build_batch_plan,
+    merge_share_search_plans,
 )
 from series_cloud_archiver.cli import main
 
@@ -158,10 +159,129 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(item["bucket"], MANUAL_REVIEW)
         self.assertIn("remote_size_not_similar_enough", item["review_reasons"])
 
+    def test_merges_multiple_share_search_plans_and_keeps_best_duplicate(self) -> None:
+        plan = build_batch_plan(
+            cloud_report={
+                "items": [
+                    {
+                        "status": "cloud_strm_not_found",
+                        "title": "分段剧 (2024) {tmdbid=111}",
+                        "tmdbid": 111,
+                        "season": 1,
+                        "size_bytes": 1000,
+                        "expected_count": 8,
+                        "source_paths": ["/volume3/hlink/TV/分段剧/Season 01"],
+                    },
+                    {
+                        "status": "cloud_strm_not_found",
+                        "title": "另一部 (2024) {tmdbid=222}",
+                        "tmdbid": 222,
+                        "season": 1,
+                        "size_bytes": 2000,
+                        "expected_count": 6,
+                        "source_paths": ["/volume3/hlink/TV/另一部/Season 01"],
+                    },
+                ]
+            },
+            transfer_plan={
+                "items": [
+                    {
+                        "title": "分段剧 (2024) {tmdbid=111}",
+                        "tmdbid": 111,
+                        "season": 1,
+                        "size_bytes": 1000,
+                        "expected_count": 8,
+                        "source_paths": ["/volume3/hlink/TV/分段剧/Season 01"],
+                    },
+                    {
+                        "title": "另一部 (2024) {tmdbid=222}",
+                        "tmdbid": 222,
+                        "season": 1,
+                        "size_bytes": 2000,
+                        "expected_count": 6,
+                        "source_paths": ["/volume3/hlink/TV/另一部/Season 01"],
+                    },
+                ]
+            },
+            share_search_plans=[
+                {
+                    "mode": "readonly-mv3-share-search-plan",
+                    "items": [
+                        {
+                            "title": "分段剧 (2024) {tmdbid=111}",
+                            "tmdbid": 111,
+                            "season": 1,
+                            "priority": 1,
+                            "recommended_candidate": {
+                                "search_index": 1,
+                                "search_keyword": "分段剧",
+                                "score": 62,
+                                "size_delta_ratio": 0.4,
+                                "blockers": ["remote_size_not_similar_enough"],
+                            },
+                        }
+                    ],
+                },
+                {
+                    "mode": "readonly-mv3-share-search-plan",
+                    "items": [
+                        {
+                            "title": "分段剧 (2024) {tmdbid=111}",
+                            "tmdbid": 111,
+                            "season": 1,
+                            "priority": 1,
+                            "recommended_candidate": {
+                                "search_index": 3,
+                                "search_keyword": "分段剧 完整",
+                                "score": 88,
+                                "size_delta_ratio": 0.08,
+                                "blockers": [],
+                            },
+                        },
+                        {
+                            "title": "另一部 (2024) {tmdbid=222}",
+                            "tmdbid": 222,
+                            "season": 1,
+                            "priority": 2,
+                            "recommended_candidate": {
+                                "search_index": 2,
+                                "search_keyword": "另一部",
+                                "score": 85,
+                                "size_delta_ratio": 0.1,
+                                "blockers": [],
+                            },
+                        },
+                    ],
+                },
+            ],
+        )
+
+        self.assertEqual(plan["settings"]["share_search_plan_count"], 2)
+        self.assertEqual(plan["bucket_counts"], {AUTO_TRANSFER: 2})
+        first = next(item for item in plan["items"] if item["tmdbid"] == 111)
+        self.assertEqual(first["recommended_candidate"]["search_index"], 3)
+        self.assertEqual(first["recommended_candidate"]["search_keyword"], "分段剧 完整")
+        self.assertEqual(first["merged_duplicate_count"], 2)
+
+    def test_merge_share_search_plans_records_duplicates_on_item(self) -> None:
+        merged = merge_share_search_plans(
+            [
+                {"items": [{"tmdbid": 1, "season": 1, "recommended_candidate": {"score": 10, "blockers": []}}]},
+                {"items": [{"tmdbid": 1, "season": 1, "recommended_candidate": {"score": 20, "blockers": []}}]},
+            ]
+        )
+
+        self.assertIsNotNone(merged)
+        self.assertEqual(merged["input_plan_count"], 2)
+        self.assertEqual(merged["items"][0]["recommended_candidate"]["score"], 20)
+        self.assertEqual(merged["items"][0]["merged_duplicate_count"], 2)
+
     def test_cli_writes_batch_plan_from_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             cloud = tmp_path / "cloud.json"
+            share_a = tmp_path / "share-a.json"
+            share_b = tmp_path / "share-b.json"
             output = tmp_path / "batch.json"
             cloud.write_text(
                 json.dumps(
@@ -180,10 +300,27 @@ class BatchRunnerTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            share_a.write_text(json.dumps({"mode": "readonly-mv3-share-search-plan", "items": []}), encoding="utf-8")
+            share_b.write_text(json.dumps({"mode": "readonly-mv3-share-search-plan", "items": []}), encoding="utf-8")
 
-            exit_code = main(["batch-plan", "--cloud-report", str(cloud), "--format", "json", "--output", str(output)])
+            exit_code = main(
+                [
+                    "batch-plan",
+                    "--cloud-report",
+                    str(cloud),
+                    "--share-search-plan",
+                    str(share_a),
+                    "--share-search-plan",
+                    str(share_b),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
             data = json.loads(output.read_text(encoding="utf-8"))
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(data["mode"], "readonly-batch-state-plan")
+        self.assertEqual(data["settings"]["share_search_plan_count"], 2)
         self.assertEqual(data["items"][0]["bucket"], MANUAL_REVIEW)

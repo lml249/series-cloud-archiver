@@ -637,7 +637,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_plan_parser.add_argument("--scan-report", default=None, help="Optional JSON report from scan")
     batch_plan_parser.add_argument("--cloud-report", default=None, help="Optional JSON report from cloud-check; generated from scan when omitted")
     batch_plan_parser.add_argument("--transfer-plan", default=None, help="Optional JSON report from plan-mv3-transfer; generated from cloud report when omitted")
-    batch_plan_parser.add_argument("--share-search-plan", default=None, help="Optional JSON report from plan-mv3-share-search")
+    batch_plan_parser.add_argument("--share-search-plan", action="append", default=[], help="Optional JSON report from plan-mv3-share-search; can be repeated")
     batch_plan_parser.add_argument("--media-root", action="append", default=[], help="Media root to scan when --scan-report is omitted")
     batch_plan_parser.add_argument("--strm-root", action="append", default=[], help="STRM root for generated cloud-check when --cloud-report is omitted")
     batch_plan_parser.add_argument("--identity-file", default=None, help="Optional identity override file for generated cloud-check")
@@ -2215,11 +2215,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         if transfer_plan is None:
             transfer_plan = plan_mv3_transfers_from_cloud_report(cloud_report)
 
-        share_search_plan = load_optional_json_report(args.share_search_plan) if args.share_search_plan else None
+        share_search_plans = [
+            plan
+            for plan in (load_optional_json_report(path) for path in args.share_search_plan)
+            if isinstance(plan, dict)
+        ]
         report = build_batch_plan(
             cloud_report=cloud_report,
             transfer_plan=transfer_plan,
-            share_search_plan=share_search_plan,
+            share_search_plans=share_search_plans,
             scan_report=scan_report,
             cloud_root=args.cloud_root,
             mv3_strm_root=args.mv3_strm_root,

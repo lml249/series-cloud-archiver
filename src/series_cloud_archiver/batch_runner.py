@@ -20,6 +20,7 @@ def build_batch_plan(
     cloud_report: Dict[str, object],
     transfer_plan: Optional[Dict[str, object]] = None,
     share_search_plan: Optional[Dict[str, object]] = None,
+    share_search_plans: Optional[Sequence[Dict[str, object]]] = None,
     scan_report: Optional[Dict[str, object]] = None,
     cloud_root: str = DEFAULT_CLOUD_ROOT,
     mv3_strm_root: str = DEFAULT_STRM_ROOT,
@@ -34,9 +35,12 @@ def build_batch_plan(
 ) -> Dict[str, object]:
     """Build a readonly batch state-machine plan from existing scan/search reports."""
 
+    effective_share_search_plan = merge_share_search_plans(
+        ([share_search_plan] if share_search_plan else []) + list(share_search_plans or [])
+    )
     cloud_items = [item for item in cloud_report.get("items", []) if isinstance(item, dict)]
     transfer_by_key = _items_by_identity((transfer_plan or {}).get("items", []))
-    share_by_key = _items_by_identity((share_search_plan or {}).get("items", []))
+    share_by_key = _items_by_identity((effective_share_search_plan or {}).get("items", []))
     scan_by_key = _scan_candidates_by_identity((scan_report or {}).get("candidates", []))
     forbidden = [str(item) for item in (forbidden_target_prefixes or []) if str(item)]
 
@@ -76,7 +80,7 @@ def build_batch_plan(
             "scan": (scan_report or {}).get("mode", ""),
             "cloud": cloud_report.get("mode", ""),
             "transfer": (transfer_plan or {}).get("mode", ""),
-            "share_search": (share_search_plan or {}).get("mode", ""),
+            "share_search": (effective_share_search_plan or {}).get("mode", ""),
         },
         "total_items_before_limit": total_rows,
         "planned_items": len(rows),
@@ -90,17 +94,72 @@ def build_batch_plan(
             "max_auto_size_delta": max_auto_size_delta,
             "required_target_prefix": required_target_prefix,
             "forbidden_target_prefixes": forbidden,
+            "share_search_plan_count": int((effective_share_search_plan or {}).get("input_plan_count") or 0),
         },
         "items": rows,
         "auto_transfer_items": [row for row in rows if row.get("bucket") == AUTO_TRANSFER],
         "auto_validation_cleanup_items": [row for row in rows if row.get("bucket") == AUTO_CLEANUP],
         "manual_review_items": [row for row in rows if row.get("bucket") == MANUAL_REVIEW],
         "skipped_items": [row for row in rows if row.get("bucket") == SKIPPED],
-        "warnings": _batch_warnings(cloud_report, transfer_plan, share_search_plan),
+        "warnings": _batch_warnings(cloud_report, transfer_plan, effective_share_search_plan),
         "safety": (
             "readonly batch state plan only; no MV3 receive, organize transfer, STRM generation, "
             "MoviePilot scrape, Emby refresh, qBittorrent action, hlink deletion, source deletion, "
             "cloud media write, or filesystem deletion is performed"
+        ),
+    }
+
+
+def merge_share_search_plans(plans: Sequence[Dict[str, object]]) -> Optional[Dict[str, object]]:
+    valid_plans = [plan for plan in plans if isinstance(plan, dict)]
+    if not valid_plans:
+        return None
+
+    chosen_by_key: Dict[Tuple[int, int], Dict[str, object]] = {}
+    duplicate_counts: Counter = Counter()
+    warnings: List[str] = []
+    source_modes: List[str] = []
+    available_items = 0
+
+    for plan_index, plan in enumerate(valid_plans, start=1):
+        mode = str(plan.get("mode") or "")
+        if mode:
+            source_modes.append(mode)
+        available_items = max(available_items, int(plan.get("available_items") or 0))
+        raw_warnings = plan.get("warnings")
+        if isinstance(raw_warnings, list):
+            warnings.extend(str(item) for item in raw_warnings if str(item))
+
+        for item in plan.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            key = _identity_key(item)
+            if key == (0, 0):
+                continue
+            duplicate_counts[key] += 1
+            enriched = dict(item)
+            enriched["merged_from_plan_index"] = plan_index
+            existing = chosen_by_key.get(key)
+            if existing is None or _share_plan_item_rank(enriched) > _share_plan_item_rank(existing):
+                chosen_by_key[key] = enriched
+
+    items = [dict(item) for item in chosen_by_key.values()]
+    for item in items:
+        key = _identity_key(item)
+        item["merged_duplicate_count"] = int(duplicate_counts.get(key, 0))
+    items.sort(key=lambda item: (int(item.get("priority") or 999999), int(item.get("tmdbid") or 0), int(item.get("season") or 0)))
+    return {
+        "mode": "readonly-mv3-share-search-plan-merged",
+        "source_modes": sorted(set(source_modes)),
+        "input_plan_count": len(valid_plans),
+        "available_items": available_items,
+        "planned_items": len(items),
+        "ready_items": sum(1 for item in items if isinstance(item.get("recommended_candidate"), dict) and item.get("recommended_candidate")),
+        "items": items,
+        "warnings": sorted(set(warnings)),
+        "safety": (
+            "merged readonly MV3 resource-search plans only; no share receive, organize transfer, STRM generation, "
+            "qBittorrent action, hlink deletion, or filesystem deletion is performed"
         ),
     }
 
@@ -224,6 +283,7 @@ def _batch_item(
         "scan_candidate_count": len(scan_candidates),
         "recommended_candidate": recommended,
         "candidate_count": len(share_candidates),
+        "merged_duplicate_count": int(share_item.get("merged_duplicate_count") or 0),
         "strm_root": strm_root,
         "cloud_media_path": cloud_media_path,
         "review_reasons": sorted(set(review_reasons)),
@@ -376,6 +436,19 @@ def _items_by_identity(raw_items: object) -> Dict[Tuple[int, int], Dict[str, obj
         if key != (0, 0):
             result[key] = item
     return result
+
+
+def _share_plan_item_rank(item: Dict[str, object]) -> Tuple[int, int, int, float]:
+    candidate = item.get("recommended_candidate") if isinstance(item.get("recommended_candidate"), dict) else {}
+    blockers = _string_list(candidate.get("blockers")) if candidate else []
+    size_delta = candidate.get("size_delta_ratio") if candidate else None
+    size_fit = 1.0 - float(size_delta) if isinstance(size_delta, (int, float)) else -1.0
+    return (
+        1 if candidate else 0,
+        1 if candidate and not blockers else 0,
+        int(candidate.get("score") or 0) if candidate else 0,
+        size_fit,
+    )
 
 
 def _scan_candidates_by_identity(raw_items: object) -> Dict[Tuple[int, int], List[Dict[str, object]]]:

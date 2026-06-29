@@ -196,6 +196,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-plan \
   --scan-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/volume3-hlink-tv-scan-current-20260629.json \
   --cloud-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/hlink-tv-cloud-check-rescan-noqb-identity-20260627.json \
   --transfer-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/mv3-transfer-plan-season-split-safe-20260629.json \
+  --share-search-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/share-search-season-safe-rows21-38-20260629.json \
   --share-search-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/share-search-season-safe-rows39-59-20260629.json \
   --cloud-root /已整理/series \
   --mv3-strm-root /strm \
@@ -207,7 +208,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-plan \
   --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-plan-YYYYMMDD.json
 ```
 
-输出里的 `next_actions` 是阶段模板，不会自动带 `--approve-receive`、`--approve-transfer`、`--approve-delete`、`--approve-mp-cleanup` 这类审批参数。真正批量执行阶段必须先从这份只读计划进入，并继续保留每一关的验证报告。
+`--share-search-plan` 可以重复传多份，适合把分段搜索出来的 `rows21-38`、`rows39-59` 等报告合并成同一份批量计划。输出里的 `next_actions` 是阶段模板，不会自动带 `--approve-receive`、`--approve-transfer`、`--approve-delete`、`--approve-mp-cleanup` 这类审批参数。真正批量执行阶段必须先从这份只读计划进入，并继续保留每一关的验证报告。
 
 ## MV3 预览 manifest dry-run
 
