@@ -3137,15 +3137,19 @@ def probe_mv3(base_url: str, token: str = "", paths: Optional[List[str]] = None)
 
     reachable = any(bool(item.get("ok")) for item in probes)
     openapi = _best_openapi_probe(probes)
+    license_required = _probe_has_license_required(probes)
+    if license_required:
+        warnings.append("mv3_license_required")
     return {
         "mode": "readonly-mv3-probe",
         "configured": True,
         "reachable": reachable,
+        "license_status": "required_or_inactive" if license_required else "not_detected_by_probe",
         "base_url_configured": True,
         "token_configured": bool(token),
         "probes": probes,
         "openapi_summary": _openapi_summary(openapi) if openapi else {},
-        "warnings": warnings,
+        "warnings": sorted(set(warnings)),
         "safety": _safety_text(),
     }
 
@@ -3326,6 +3330,8 @@ def _probe_result(path: str, status: int, headers: Dict[str, str], body: bytes) 
     }
     if isinstance(parsed, dict):
         result["json_keys"] = sorted(str(key) for key in parsed.keys())[:30]
+        if _mv3_license_required_payload(parsed):
+            result["error"] = "mv3_license_required"
         if "openapi" in parsed or "paths" in parsed:
             result["openapi"] = parsed
     elif isinstance(parsed, list):
@@ -3840,6 +3846,10 @@ def _mv3_license_required_payload(payload: object) -> bool:
         message = str(payload.get("message") or data.get("message") if isinstance(data, dict) else payload.get("message") or "")
         return bool(payload.get("license_required")) or "未激活授权" in message
     return False
+
+
+def _probe_has_license_required(probes: List[Dict[str, object]]) -> bool:
+    return any(isinstance(probe, dict) and probe.get("error") == "mv3_license_required" for probe in probes)
 
 
 def _mv3_scan_has_license_required(scan: Dict[str, object]) -> bool:

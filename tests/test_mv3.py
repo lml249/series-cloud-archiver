@@ -4470,6 +4470,20 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn({"method": "GET", "path": "/api/search"}, report["openapi_summary"]["safe_get_paths_sample"])
         self.assertIn({"method": "DELETE", "path": "/api/delete"}, report["openapi_summary"]["sensitive_method_hints_sample"])
 
+    def test_probe_reports_license_required_at_top_level(self) -> None:
+        def fake_get(_self, path):
+            if path == "/openapi.json":
+                return 200, {"Content-Type": "application/json"}, b'{"openapi":"3.0.0","paths":{},"info":{"title":"MediaVault"}}'
+            return 403, {"Content-Type": "application/json"}, json.dumps({"license_required": True, "message": "未激活授权"}).encode("utf-8")
+
+        with patch.object(MV3Client, "get", fake_get):
+            report = probe_mv3("http://mv3.example", "token", paths=["/api/v1", "/openapi.json"])
+
+        self.assertTrue(report["reachable"])
+        self.assertEqual(report["license_status"], "required_or_inactive")
+        self.assertIn("mv3_license_required", report["warnings"])
+        self.assertEqual(report["probes"][0]["error"], "mv3_license_required")
+
     def test_renders_markdown_safety_note(self) -> None:
         markdown = render_mv3_probe_report(
             {
