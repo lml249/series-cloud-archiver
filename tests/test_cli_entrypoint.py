@@ -188,6 +188,69 @@ class CliEntrypointTest(unittest.TestCase):
             self.assertTrue(output.exists())
             self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["ok"], True)
 
+    def test_batch_share_preview_dry_run_does_not_require_mv3_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            batch_plan = tmp_path / "batch-plan.json"
+            output = tmp_path / "batch-preview.json"
+            batch_plan.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-batch-state-plan",
+                        "items": [
+                            {
+                                "bucket": "manual_review",
+                                "title": "折腰",
+                                "tmdbid": 246,
+                                "season": 1,
+                                "expected_episode_count": 2,
+                                "candidate_diagnostics": {
+                                    "best_candidate": {
+                                        "search_index": 1,
+                                        "search_keyword": "折腰",
+                                        "title": "折腰 4K",
+                                        "score": 65,
+                                        "blockers": ["episode_coverage_unclear"],
+                                    }
+                                },
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            env = {**os.environ, "PYTHONPATH": "src"}
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "series_cloud_archiver",
+                    "batch-share-preview",
+                    "--env-file",
+                    str(tmp_path / ".env"),
+                    "--batch-plan",
+                    str(batch_plan),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ],
+                cwd=os.getcwd(),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["mode"], "readonly-batch-mv3-share-preview")
+            self.assertEqual(payload["executable_preview_items"], 1)
+            self.assertIn("mv3-share-preview", payload["items"][0]["command"])
+
 
 if __name__ == "__main__":
     unittest.main()

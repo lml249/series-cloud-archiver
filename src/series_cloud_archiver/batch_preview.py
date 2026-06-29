@@ -1,0 +1,292 @@
+from __future__ import annotations
+
+import json
+import shlex
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Sequence
+
+
+DEFAULT_ALLOWED_BEST_BLOCKERS = ["episode_coverage_unclear"]
+MANUAL_REVIEW = "manual_review"
+
+
+PreviewFunc = Callable[..., Dict[str, object]]
+
+
+def build_batch_share_preview_plan(
+    batch_plan: Dict[str, object],
+    *,
+    env_file: str = "",
+    buckets: Optional[Sequence[str]] = None,
+    min_candidate_score: int = 55,
+    allowed_best_blockers: Optional[Sequence[str]] = None,
+    limit: int = 10,
+    execute_preview: bool = False,
+    base_url: str = "",
+    token: str = "",
+    channels: Optional[Sequence[str]] = None,
+    storage: str = "115-default",
+    timeout: int = 60,
+    preview_output_dir: str = "",
+    preview_func: Optional[PreviewFunc] = None,
+) -> Dict[str, object]:
+    """Build or execute readonly MV3 share previews for batch-plan candidates."""
+
+    wanted_buckets = set(str(item) for item in (buckets or [MANUAL_REVIEW]) if str(item))
+    allowed_blockers = set(str(item) for item in (allowed_best_blockers or DEFAULT_ALLOWED_BEST_BLOCKERS) if str(item))
+    rows: List[Dict[str, object]] = []
+    executed = 0
+    preview_dir = Path(preview_output_dir) if preview_output_dir else None
+    if preview_dir:
+        preview_dir.mkdir(parents=True, exist_ok=True)
+
+    for index, item in enumerate(batch_plan.get("items", []), start=1):
+        if not isinstance(item, dict):
+            continue
+        row = _preview_row(
+            index,
+            item,
+            env_file=env_file,
+            wanted_buckets=wanted_buckets,
+            min_candidate_score=min_candidate_score,
+            allowed_blockers=allowed_blockers,
+            storage=storage,
+        )
+        if execute_preview and row["status"] == "planned_preview":
+            if preview_func is None:
+                raise ValueError("preview_func is required when execute_preview=True")
+            report = preview_func(
+                base_url,
+                token,
+                row["keyword"],
+                selection_index=int(row["selection_index"] or 1),
+                expected_episode_count=int(row["expected_episode_count"] or 0),
+                expected_episode_min=int(row["expected_episode_min"] or 0),
+                expected_episode_max=int(row["expected_episode_max"] or 0),
+                expected_episodes=_int_list(row.get("expected_episodes")),
+                channels=list(channels or []),
+                expected_title_contains=str(row.get("expected_title_contains") or ""),
+                storage=storage,
+                timeout=timeout,
+            )
+            executed += 1
+            row["preview_report"] = report
+            row["preview_ok"] = bool(report.get("ok"))
+            row["preview_blockers"] = _string_list(report.get("blockers"))
+            row["preview_episode_count"] = int(report.get("episode_count") or 0)
+            row["preview_missing_expected"] = _int_list(report.get("missing_expected"))
+            row["preview_unexpected_episodes"] = _int_list(report.get("unexpected_episodes"))
+            row["status"] = "preview_ready_for_receive" if bool(report.get("ok")) else "preview_blocked"
+            if preview_dir:
+                report_path = preview_dir / _preview_report_filename(row)
+                report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                row["preview_report_path"] = str(report_path)
+
+        rows.append(row)
+        if limit > 0 and sum(1 for candidate in rows if candidate.get("status") == "planned_preview") >= limit and not execute_preview:
+            break
+        if limit > 0 and executed >= limit and execute_preview:
+            break
+
+    return {
+        "mode": "readonly-batch-mv3-share-preview",
+        "source_mode": batch_plan.get("mode", ""),
+        "planned_items": len(rows),
+        "executable_preview_items": sum(1 for row in rows if row.get("status") == "planned_preview"),
+        "executed_preview_items": executed,
+        "ready_for_receive_items": sum(1 for row in rows if row.get("status") == "preview_ready_for_receive"),
+        "blocked_preview_items": sum(1 for row in rows if row.get("status") == "preview_blocked"),
+        "skipped_items": sum(1 for row in rows if str(row.get("status") or "").startswith("skipped")),
+        "settings": {
+            "buckets": sorted(wanted_buckets),
+            "min_candidate_score": min_candidate_score,
+            "allowed_best_blockers": sorted(allowed_blockers),
+            "limit": limit,
+            "execute_preview": execute_preview,
+            "storage": storage,
+            "channels": list(channels or []),
+            "preview_output_dir": preview_output_dir,
+        },
+        "items": rows,
+        "safety": (
+            "batch MV3 share preview is readonly; no share receive, organize transfer, STRM generation, "
+            "MoviePilot scrape, Emby refresh, qBittorrent action, hlink deletion, source deletion, or filesystem deletion is performed"
+        ),
+    }
+
+
+def render_batch_share_preview_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# Batch MV3 Share Preview",
+        "",
+        f"- Mode: `{report.get('mode', '')}`",
+        f"- Planned rows: `{report.get('planned_items', 0)}`",
+        f"- Executable previews: `{report.get('executable_preview_items', 0)}`",
+        f"- Executed previews: `{report.get('executed_preview_items', 0)}`",
+        f"- Ready for receive: `{report.get('ready_for_receive_items', 0)}`",
+        f"- Blocked previews: `{report.get('blocked_preview_items', 0)}`",
+        f"- Skipped: `{report.get('skipped_items', 0)}`",
+        "- Safety: readonly preview only; no receive/transfer or delete action was performed.",
+        "",
+        "| Status | Score | TMDB | S | Episodes | Title | Candidate | Reason |",
+        "| --- | ---: | ---: | ---: | ---: | --- | --- | --- |",
+    ]
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        reason = ", ".join(_string_list(item.get("skip_reasons")) + _string_list(item.get("preview_blockers")))
+        lines.append(
+            "| {status} | {score} | {tmdbid} | {season} | {episodes} | {title} | {candidate} | {reason} |".format(
+                status=item.get("status", ""),
+                score=item.get("candidate_score", ""),
+                tmdbid=item.get("tmdbid") or "",
+                season=item.get("season") or "",
+                episodes=item.get("expected_episode_count") or "",
+                title=_escape_cell(str(item.get("title") or "")),
+                candidate=_escape_cell(str(item.get("candidate_title") or "")),
+                reason=_escape_cell(reason),
+            )
+        )
+    return "\n".join(lines)
+
+
+def _preview_row(
+    index: int,
+    item: Dict[str, object],
+    *,
+    env_file: str,
+    wanted_buckets: set[str],
+    min_candidate_score: int,
+    allowed_blockers: set[str],
+    storage: str,
+) -> Dict[str, object]:
+    diagnostics = item.get("candidate_diagnostics") if isinstance(item.get("candidate_diagnostics"), dict) else {}
+    best = diagnostics.get("best_candidate") if isinstance(diagnostics.get("best_candidate"), dict) else {}
+    title = str(item.get("title") or "")
+    expected_count = int(item.get("expected_episode_count") or 0)
+    expected_episodes = _int_list(item.get("expected_episodes"))
+    episode_min = min(expected_episodes) if expected_episodes else (1 if expected_count else 0)
+    episode_max = max(expected_episodes) if expected_episodes else expected_count
+    keyword = str(best.get("search_keyword") or title)
+    selection_index = int(best.get("search_index") or 0)
+    blockers = set(_string_list(best.get("blockers")))
+    skip_reasons: List[str] = []
+
+    if str(item.get("bucket") or "") not in wanted_buckets:
+        skip_reasons.append("bucket_not_selected")
+    if not best:
+        skip_reasons.append("no_best_candidate")
+    if best and int(best.get("score") or 0) < min_candidate_score:
+        skip_reasons.append("best_candidate_score_below_minimum")
+    disallowed = sorted(blocker for blocker in blockers if blocker not in allowed_blockers)
+    skip_reasons.extend(f"best_candidate_blocked:{blocker}" for blocker in disallowed)
+    if selection_index <= 0:
+        skip_reasons.append("missing_selection_index")
+    if not keyword:
+        skip_reasons.append("missing_search_keyword")
+    if expected_count <= 0:
+        skip_reasons.append("missing_expected_episode_count")
+
+    status = "planned_preview" if not skip_reasons else "skipped_preview"
+    row = {
+        "source_index": index,
+        "status": status,
+        "skip_reasons": sorted(set(skip_reasons)),
+        "title": title,
+        "tmdbid": int(item.get("tmdbid") or 0),
+        "season": int(item.get("season") or 0),
+        "expected_episode_count": expected_count,
+        "expected_episode_min": episode_min,
+        "expected_episode_max": episode_max,
+        "expected_episodes": expected_episodes,
+        "expected_title_contains": _title_contains(title),
+        "keyword": keyword,
+        "selection_index": selection_index,
+        "candidate_title": str(best.get("title") or ""),
+        "candidate_score": int(best.get("score") or 0) if best else 0,
+        "candidate_size_delta_ratio": best.get("size_delta_ratio") if best else None,
+        "candidate_blockers": sorted(blockers),
+        "command": "",
+    }
+    if status == "planned_preview":
+        row["command"] = _preview_command(row, env_file=env_file, storage=storage)
+    return row
+
+
+def _preview_command(row: Dict[str, object], *, env_file: str, storage: str) -> str:
+    args = [
+        "PYTHONPATH=src",
+        "python3",
+        "-m",
+        "series_cloud_archiver",
+        "mv3-share-preview",
+    ]
+    if env_file:
+        args.extend(["--env-file", env_file])
+    args.extend(
+        [
+            "--keyword",
+            str(row.get("keyword") or ""),
+            "--selection-index",
+            str(row.get("selection_index") or 1),
+            "--expected-episode-count",
+            str(row.get("expected_episode_count") or 0),
+            "--expected-title-contains",
+            str(row.get("expected_title_contains") or ""),
+            "--storage",
+            storage,
+            "--format",
+            "json",
+            "--output",
+            "<preview-report.json>",
+        ]
+    )
+    expected_episodes = _int_list(row.get("expected_episodes"))
+    if expected_episodes:
+        args.extend(["--expected-episode", ",".join(str(item) for item in expected_episodes)])
+    else:
+        args.extend(
+            [
+                "--expected-episode-min",
+                str(row.get("expected_episode_min") or 0),
+                "--expected-episode-max",
+                str(row.get("expected_episode_max") or 0),
+            ]
+        )
+    return " ".join(_shell_quote(part) for part in args)
+
+
+def _preview_report_filename(row: Dict[str, object]) -> str:
+    title = "".join(ch if ch.isalnum() else "-" for ch in str(row.get("title") or "untitled")).strip("-")
+    title = title[:40] or "untitled"
+    return f"share-preview-{int(row.get('tmdbid') or 0)}-s{int(row.get('season') or 0):02d}-{title}.json"
+
+
+def _title_contains(title: str) -> str:
+    text = title.split(" (", 1)[0].strip() or title
+    text = text.split("{tmdbid=", 1)[0].strip()
+    return text or title
+
+
+def _string_list(value: object) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item)]
+
+
+def _int_list(value: object) -> List[int]:
+    if not isinstance(value, list):
+        return []
+    return [int(item) for item in value if isinstance(item, int) or str(item).isdigit()]
+
+
+def _shell_quote(value: str) -> str:
+    if value == "PYTHONPATH=src":
+        return value
+    return shlex.quote(value)
+
+
+def _escape_cell(value: str) -> str:
+    return value.replace("|", "\\|")

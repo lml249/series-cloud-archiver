@@ -212,6 +212,36 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-plan \
 
 如果只是想给人工复核看，也可以把同一条命令的 `--format json` 改成 `--format csv`，输出会平铺出剧名、TMDB、季号、集数、复核原因、推荐资源、清理预览阻断和本地路径。
 
+## 批量 MV3 分享预览 dry-run
+
+如果批量计划里大量条目只是卡在 `episode_coverage_unclear`，说明 MV3 搜索结果标题无法证明集数完整，但分享内部可能是完整剧集。可以让编排器从 `batch-plan` 中自动挑选候选，批量生成只读分享预览计划：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver batch-share-preview \
+  --env-file /volume1/docker/series-cloud-archiver/.env \
+  --batch-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-plan-YYYYMMDD.json \
+  --limit 10 \
+  --format json \
+  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-share-preview-plan-YYYYMMDD.json
+```
+
+默认模式不会读取 MV3 API，也不会解析分享；它只输出将要预览的 `mv3-share-preview` 命令。默认只选择“最佳候选分数够高，且唯一阻断是 `episode_coverage_unclear`”的条目；错季、标题不匹配、体积明显不对、疑似中文副标题串剧的候选会继续跳过并写入原因。
+
+确认 dry-run 计划后，可以执行只读预览：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver batch-share-preview \
+  --env-file /volume1/docker/series-cloud-archiver/.env \
+  --batch-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-plan-YYYYMMDD.json \
+  --execute-preview \
+  --preview-output-dir /volume1/docker/series-cloud-archiver/outputs/current-20260629/share-preview-batch \
+  --limit 10 \
+  --format json \
+  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-share-preview-executed-YYYYMMDD.json
+```
+
+`batch-share-preview --execute-preview` 仍然只调用 MV3 的搜索、分享解析和 browse 预览接口，不会调用 `/api/v1/share-transfer/receive`，不会转存到 115，不会整理、生成 STRM、刮削、刷新 Emby，也不会操作 qB、hlink、source 或本地文件。只有预览报告证明集数完整的条目，才允许进入后续“接收到 `/未整理` -> MV3 整理到 `/已整理` -> 生成 STRM -> STRM 侧刮削/验证”的阶段。
+
 ## MV3 预览 manifest dry-run
 
 拿到待转存清单、MV3 能力报告和 MV3 实例报告后，可以先生成“小批量预览 manifest”：

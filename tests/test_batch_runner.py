@@ -11,6 +11,7 @@ from series_cloud_archiver.batch_runner import (
     merge_share_search_plans,
     render_batch_plan,
 )
+from series_cloud_archiver.batch_preview import build_batch_share_preview_plan, render_batch_share_preview_report
 from series_cloud_archiver.cli import main
 
 
@@ -520,3 +521,115 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(data["settings"]["share_search_plan_count"], 2)
         self.assertEqual(data["settings"]["cleanup_preview_report_count"], 1)
         self.assertEqual(data["items"][0]["bucket"], MANUAL_REVIEW)
+
+
+class BatchSharePreviewTest(unittest.TestCase):
+    def test_builds_dry_run_preview_plan_for_episode_unclear_candidate(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "折腰 (2025) {tmdbid=246}",
+                    "tmdbid": 246,
+                    "season": 1,
+                    "expected_episode_count": 36,
+                    "expected_episodes": list(range(1, 37)),
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 4,
+                            "search_keyword": "折腰",
+                            "title": "名称: 折腰 (2025) 4K",
+                            "score": 65,
+                            "size_delta_ratio": 0.24,
+                            "blockers": ["episode_coverage_unclear"],
+                        }
+                    },
+                },
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "怪奇物语",
+                    "tmdbid": 66732,
+                    "season": 4,
+                    "expected_episode_count": 9,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 8,
+                            "search_keyword": "怪奇物语 Season 04",
+                            "title": "怪奇物语：1985故事集 S01E01-E10",
+                            "score": 80,
+                            "blockers": ["season_mismatch"],
+                        }
+                    },
+                },
+            ],
+        }
+
+        report = build_batch_share_preview_plan(batch_plan, env_file="/safe/.env", limit=10)
+
+        self.assertEqual(report["executable_preview_items"], 1)
+        ready = report["items"][0]
+        blocked = report["items"][1]
+        self.assertEqual(ready["status"], "planned_preview")
+        self.assertIn("mv3-share-preview", ready["command"])
+        self.assertIn("--expected-episode 1,2,3", ready["command"])
+        self.assertEqual(blocked["status"], "skipped_preview")
+        self.assertIn("best_candidate_blocked:season_mismatch", blocked["skip_reasons"])
+        rendered = render_batch_share_preview_report(report, "markdown")
+        self.assertIn("Batch MV3 Share Preview", rendered)
+        self.assertIn("折腰", rendered)
+
+    def test_execute_preview_calls_readonly_preview_func_and_writes_reports(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "巅峰对决",
+                    "tmdbid": 111,
+                    "season": 1,
+                    "expected_episode_count": 4,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 3,
+                            "search_keyword": "巅峰对决",
+                            "title": "巅峰对决 S01E04",
+                            "score": 65,
+                            "blockers": ["episode_coverage_unclear"],
+                        }
+                    },
+                }
+            ],
+        }
+        calls = []
+
+        def fake_preview(base_url, token, keyword, **kwargs):
+            calls.append((base_url, token, keyword, kwargs))
+            return {
+                "ok": True,
+                "episode_count": 4,
+                "episodes": [1, 2, 3, 4],
+                "blockers": [],
+                "missing_expected": [],
+                "unexpected_episodes": [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = build_batch_share_preview_plan(
+                batch_plan,
+                execute_preview=True,
+                base_url="http://mv3.example",
+                token="token",
+                preview_func=fake_preview,
+                preview_output_dir=tmp,
+            )
+            written = list(Path(tmp).glob("share-preview-111-s01-*.json"))
+
+        self.assertEqual(report["executed_preview_items"], 1)
+        self.assertEqual(report["ready_for_receive_items"], 1)
+        self.assertEqual(report["items"][0]["status"], "preview_ready_for_receive")
+        self.assertEqual(report["items"][0]["preview_episode_count"], 4)
+        self.assertEqual(calls[0][2], "巅峰对决")
+        self.assertEqual(calls[0][3]["selection_index"], 3)
+        self.assertEqual(calls[0][3]["expected_episode_count"], 4)
+        self.assertEqual(len(written), 1)

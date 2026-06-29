@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from .batch_preview import build_batch_share_preview_plan, render_batch_share_preview_report
 from .batch_runner import build_batch_plan, render_batch_plan
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
 from .cloud_cleanup import (
@@ -653,6 +654,21 @@ def build_parser() -> argparse.ArgumentParser:
     batch_plan_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="Forbidden STRM target prefix; can be repeated")
     batch_plan_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     batch_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    batch_share_preview_parser = subcommands.add_parser("batch-share-preview", help="Build or execute readonly MV3 share previews from a batch-plan report")
+    batch_share_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    batch_share_preview_parser.add_argument("--batch-plan", required=True, help="JSON report from batch-plan")
+    batch_share_preview_parser.add_argument("--bucket", action="append", default=[], help="Batch bucket to consider; defaults to manual_review")
+    batch_share_preview_parser.add_argument("--min-candidate-score", type=int, default=55, help="Minimum best-candidate score to preview")
+    batch_share_preview_parser.add_argument("--allowed-best-blocker", action="append", default=[], help="Best-candidate blocker allowed for readonly preview; defaults to episode_coverage_unclear")
+    batch_share_preview_parser.add_argument("--limit", type=int, default=10, help="Maximum planned/executed preview rows")
+    batch_share_preview_parser.add_argument("--execute-preview", action="store_true", help="Actually run readonly MV3 share previews; no receive/transfer is performed")
+    batch_share_preview_parser.add_argument("--preview-output-dir", default="", help="Directory for per-item preview JSON reports when --execute-preview is used")
+    batch_share_preview_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug used when browsing the share")
+    batch_share_preview_parser.add_argument("--channel", action="append", default=[], help="Optional MV3 resource-search channel; can be repeated")
+    batch_share_preview_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    batch_share_preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    batch_share_preview_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     preview_parser = subcommands.add_parser("plan-mv3-preview", help="Create a readonly MV3 preview manifest from a transfer plan")
     preview_parser.add_argument("--transfer-plan", required=True, help="JSON report from plan-mv3-transfer")
@@ -2244,6 +2260,38 @@ def main(argv: Optional[List[str]] = None) -> int:
             limit=args.limit,
         )
         rendered = render_batch_plan(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "batch-share-preview":
+        batch_plan = load_optional_json_report(args.batch_plan)
+        if not isinstance(batch_plan, dict):
+            parser.error("batch-share-preview requires a valid --batch-plan JSON report")
+        config = None
+        if args.execute_preview:
+            config = config_from_env(args.env_file, [])
+            if not config.mv3_base_url or not config.mv3_token:
+                parser.error("batch-share-preview --execute-preview requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = build_batch_share_preview_plan(
+            batch_plan,
+            env_file=args.env_file,
+            buckets=args.bucket or None,
+            min_candidate_score=args.min_candidate_score,
+            allowed_best_blockers=args.allowed_best_blocker or None,
+            limit=args.limit,
+            execute_preview=args.execute_preview,
+            base_url=config.mv3_base_url if config else "",
+            token=config.mv3_token if config else "",
+            channels=args.channel,
+            storage=args.storage,
+            timeout=args.timeout,
+            preview_output_dir=args.preview_output_dir,
+            preview_func=preview_mv3_share if args.execute_preview else None,
+        )
+        rendered = render_batch_share_preview_report(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:
