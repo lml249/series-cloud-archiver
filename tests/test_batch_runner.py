@@ -7,8 +7,10 @@ from series_cloud_archiver.batch_runner import (
     AUTO_CLEANUP,
     AUTO_TRANSFER,
     MANUAL_REVIEW,
+    build_batch_finalize_plan,
     build_batch_plan,
     merge_share_search_plans,
+    render_batch_finalize_plan,
     render_batch_plan,
 )
 from series_cloud_archiver.batch_preview import (
@@ -21,6 +23,109 @@ from series_cloud_archiver.cli import main
 
 
 class BatchRunnerTest(unittest.TestCase):
+    def test_batch_finalize_plan_builds_ordered_post_transfer_gates(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "settings": {
+                "cloud_root": "/已整理/series",
+                "host_strm_root": "/volume4/volume4/mv3/strm",
+                "emby_strm_root": "/volume4/mv3/strm",
+                "forbidden_target_prefixes": ["/未整理"],
+            },
+            "items": [
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "折腰",
+                    "tmdbid": 296753,
+                    "season": 1,
+                    "expected_episode_count": 36,
+                    "source_paths": ["/volume3/volume3/hlink/TV/折腰 (2025)/Season 1"],
+                    "cloud_media_path": "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                    "strm_root": "/volume4/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                }
+            ],
+        }
+
+        report = build_batch_finalize_plan(batch_plan, env_file="/safe/.env")
+
+        self.assertEqual(report["mode"], "readonly-batch-finalize-plan")
+        self.assertEqual(report["finalize_ready_items"], 1)
+        item = report["items"][0]
+        self.assertEqual(item["status"], "planned_finalize")
+        self.assertEqual(item["service_strm_root"], "/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
+        self.assertEqual(item["cloud_title_path"], "/已整理/series/折腰 (2025) {tmdbid=296753}")
+        stages = [command["stage"] for command in item["commands"]]
+        self.assertEqual(
+            stages,
+            [
+                "strm_verify",
+                "mp_scrape_strm",
+                "strm_nfo_language_audit",
+                "emby_media_updated_verify",
+                "cloud_hlink_cleanup_preview",
+                "cloud_hlink_cleanup_execute_approval_required",
+            ],
+        )
+        commands = "\n".join(command["command"] for command in item["commands"])
+        self.assertIn("--mp-path '/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1'", commands)
+        self.assertIn("--cloud-media-path '/已整理/series/折腰 (2025) {tmdbid=296753}'", commands)
+        self.assertIn("# approval required before execution", commands)
+        self.assertNotIn("--approve-delete", commands)
+        self.assertIn("<full-qb-hash-from-cleanup-preview>", commands)
+        rendered = render_batch_finalize_plan(report, "markdown")
+        self.assertIn("Batch Finalize Plan", rendered)
+        self.assertIn("折腰", rendered)
+
+    def test_cli_writes_batch_finalize_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            batch = tmp_path / "batch.json"
+            output = tmp_path / "finalize.json"
+            batch.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-batch-state-plan",
+                        "settings": {
+                            "cloud_root": "/已整理/series",
+                            "host_strm_root": "/volume4/volume4/mv3/strm",
+                            "emby_strm_root": "/volume4/mv3/strm",
+                        },
+                        "items": [
+                            {
+                                "bucket": MANUAL_REVIEW,
+                                "title": "折腰",
+                                "tmdbid": 296753,
+                                "season": 1,
+                                "expected_episode_count": 36,
+                                "source_paths": ["/volume3/volume3/hlink/TV/折腰 (2025)/Season 1"],
+                                "cloud_media_path": "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                                "strm_root": "/volume4/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code = main(
+                [
+                    "batch-finalize-plan",
+                    "--env-file",
+                    "/safe/.env",
+                    "--batch-plan",
+                    str(batch),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+            data = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(data["finalize_ready_items"], 1)
+        self.assertIn("cloud_hlink_cleanup_preview", [item["stage"] for item in data["items"][0]["commands"]])
+
     def test_complete_cloud_strm_item_gets_validation_cleanup_commands(self) -> None:
         plan = build_batch_plan(
             cloud_report={

@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import re
+import shlex
 from collections import Counter
 from pathlib import PurePosixPath
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -178,6 +179,100 @@ def render_batch_plan(plan: Dict[str, object], output_format: str) -> str:
     if output_format == "csv":
         return _render_csv(plan)
     return _render_markdown(plan)
+
+
+def build_batch_finalize_plan(
+    batch_plan: Dict[str, object],
+    *,
+    env_file: str = "",
+    cloud_root: str = "",
+    host_strm_root: str = "",
+    service_strm_root: str = "",
+    required_target_prefix: str = "",
+    forbidden_target_prefixes: Optional[Sequence[str]] = None,
+    limit: int = 0,
+) -> Dict[str, object]:
+    """Build a dry-run state-machine plan for STRM scrape, Emby verify, and cleanup gates."""
+
+    settings = batch_plan.get("settings") if isinstance(batch_plan.get("settings"), dict) else {}
+    effective_cloud_root = cloud_root or str(settings.get("cloud_root") or DEFAULT_CLOUD_ROOT)
+    effective_host_strm_root = host_strm_root or str(settings.get("host_strm_root") or "")
+    effective_service_strm_root = service_strm_root or str(settings.get("emby_strm_root") or "")
+    forbidden = [str(item) for item in (forbidden_target_prefixes or settings.get("forbidden_target_prefixes") or []) if str(item)]
+    rows: List[Dict[str, object]] = []
+
+    for index, item in enumerate(batch_plan.get("items", []), start=1):
+        if not isinstance(item, dict):
+            continue
+        row = _finalize_plan_row(
+            index,
+            item,
+            env_file=env_file,
+            cloud_root=effective_cloud_root,
+            host_strm_root=effective_host_strm_root,
+            service_strm_root=effective_service_strm_root,
+            required_target_prefix=required_target_prefix,
+            forbidden_target_prefixes=forbidden,
+        )
+        rows.append(row)
+        if limit > 0 and sum(1 for candidate in rows if candidate.get("status") == "planned_finalize") >= limit:
+            break
+
+    return {
+        "mode": "readonly-batch-finalize-plan",
+        "source_mode": batch_plan.get("mode", ""),
+        "planned_items": len(rows),
+        "finalize_ready_items": sum(1 for row in rows if row.get("status") == "planned_finalize"),
+        "skipped_items": sum(1 for row in rows if str(row.get("status") or "").startswith("skipped")),
+        "settings": {
+            "env_file": env_file,
+            "cloud_root": effective_cloud_root,
+            "host_strm_root": effective_host_strm_root,
+            "service_strm_root": effective_service_strm_root,
+            "required_target_prefix": required_target_prefix,
+            "forbidden_target_prefixes": forbidden,
+            "limit": limit,
+        },
+        "items": rows,
+        "safety": (
+            "readonly batch finalize plan only; generated commands are ordered gates for STRM verification, "
+            "MoviePilot STRM-side scrape, NFO audit, Emby local update, cleanup preview, and approval-gated cleanup. "
+            "No command is executed by this plan, and destructive cleanup commands intentionally omit approval flags."
+        ),
+    }
+
+
+def render_batch_finalize_plan(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# Batch Finalize Plan",
+        "",
+        f"- Mode: `{report.get('mode', '')}`",
+        f"- Planned rows: `{report.get('planned_items', 0)}`",
+        f"- Ready: `{report.get('finalize_ready_items', 0)}`",
+        f"- Skipped: `{report.get('skipped_items', 0)}`",
+        "- Safety: readonly plan only; approval flags are absent from cleanup commands.",
+        "",
+        "| Status | TMDB | S | Episodes | Title | Hlink | Reason |",
+        "| --- | ---: | ---: | ---: | --- | --- | --- |",
+    ]
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        reason = ", ".join(_string_list(item.get("skip_reasons")) + _string_list(item.get("blockers")))
+        lines.append(
+            "| {status} | {tmdbid} | {season} | {episodes} | {title} | {hlink} | {reason} |".format(
+                status=item.get("status", ""),
+                tmdbid=item.get("tmdbid") or "",
+                season=item.get("season") or "",
+                episodes=item.get("expected_episode_count") or "",
+                title=_escape_cell(str(item.get("title") or "")),
+                hlink=_escape_cell(str(item.get("hlink_root") or "")),
+                reason=_escape_cell(reason),
+            )
+        )
+    return "\n".join(lines)
 
 
 def _batch_item(
@@ -446,6 +541,196 @@ def _cleanup_validation_commands(
     ]
 
 
+def _finalize_plan_row(
+    index: int,
+    item: Dict[str, object],
+    *,
+    env_file: str,
+    cloud_root: str,
+    host_strm_root: str,
+    service_strm_root: str,
+    required_target_prefix: str,
+    forbidden_target_prefixes: Sequence[str],
+) -> Dict[str, object]:
+    title = str(item.get("title") or "")
+    tmdbid = int(item.get("tmdbid") or 0)
+    season = int(item.get("season") or 0)
+    expected_count = int(item.get("expected_episode_count") or item.get("expected_count") or 0)
+    expected_episodes = _int_list(item.get("expected_episodes"))
+    hlink_root = _first_hlink_path(_string_list(item.get("source_paths")))
+    cloud_title_path = _cloud_title_path_from_item(item, cloud_root)
+    cloud_season_path = str(item.get("cloud_media_path") or "")
+    cloud_required_prefix = required_target_prefix or cloud_season_path or cloud_title_path
+    strm_root = str(item.get("strm_root") or "") or _host_strm_path_from_cloud_title(cloud_title_path, host_strm_root)
+    service_root = _map_strm_root(strm_root, host_strm_root, service_strm_root)
+
+    blockers: List[str] = []
+    skip_reasons: List[str] = []
+    if not title:
+        blockers.append("title_required")
+    if tmdbid <= 0:
+        blockers.append("tmdb_id_required")
+    if season <= 0:
+        blockers.append("season_required")
+    if expected_count <= 0:
+        blockers.append("expected_episode_count_required")
+    if not hlink_root:
+        blockers.append("hlink_root_required")
+    if not strm_root:
+        blockers.append("strm_root_required")
+    if not service_root:
+        blockers.append("service_strm_root_required")
+    if not cloud_title_path:
+        blockers.append("cloud_title_path_required")
+    if str(item.get("bucket") or "") not in {AUTO_CLEANUP, MANUAL_REVIEW, AUTO_TRANSFER}:
+        skip_reasons.append("unsupported_batch_bucket")
+
+    status = "planned_finalize" if not blockers and not skip_reasons else "skipped_finalize"
+    command_context = {
+        "report_prefix": _report_prefix(title, tmdbid, season),
+        "env_file": env_file,
+        "title_contains": title.split(" (", 1)[0].strip() or title,
+    }
+    commands = (
+        _finalize_commands(
+            title=title,
+            tmdbid=tmdbid,
+            season=season,
+            expected_count=expected_count,
+            expected_episodes=expected_episodes,
+            hlink_root=hlink_root,
+            strm_root=strm_root,
+            service_root=service_root,
+            cloud_title_path=cloud_title_path,
+            cloud_required_prefix=cloud_required_prefix,
+            forbidden_target_prefixes=forbidden_target_prefixes,
+            env_file=env_file,
+            report_prefix=str(command_context["report_prefix"]),
+        )
+        if status == "planned_finalize"
+        else []
+    )
+
+    return {
+        "source_index": index,
+        "status": status,
+        "title": title,
+        "tmdbid": tmdbid,
+        "season": season,
+        "expected_episode_count": expected_count,
+        "expected_episodes": expected_episodes,
+        "hlink_root": hlink_root,
+        "strm_root": strm_root,
+        "service_strm_root": service_root,
+        "cloud_title_path": cloud_title_path,
+        "cloud_media_path": cloud_season_path,
+        "required_target_prefix": cloud_required_prefix,
+        "forbidden_target_prefixes": list(forbidden_target_prefixes),
+        "commands": commands,
+        "command_context": command_context,
+        "skip_reasons": sorted(set(skip_reasons)),
+        "blockers": sorted(set(blockers)),
+        "approval_required_after_gates": "--approve-delete",
+        "safety": "plan row only; commands must be run in order, and cleanup execute still requires an explicit approval flag not included here",
+    }
+
+
+def _finalize_commands(
+    *,
+    title: str,
+    tmdbid: int,
+    season: int,
+    expected_count: int,
+    expected_episodes: Sequence[int],
+    hlink_root: str,
+    strm_root: str,
+    service_root: str,
+    cloud_title_path: str,
+    cloud_required_prefix: str,
+    forbidden_target_prefixes: Sequence[str],
+    env_file: str,
+    report_prefix: str,
+) -> List[Dict[str, object]]:
+    env = _env_arg_q(env_file)
+    title_q = _q(title)
+    title_contains_q = _q(title.split(" (", 1)[0].strip() or title)
+    strm_q = _q(strm_root)
+    service_q = _q(service_root)
+    hlink_q = _q(hlink_root)
+    cloud_title_q = _q(cloud_title_path)
+    required_q = _q(cloud_required_prefix)
+    forbidden_args = " ".join(f"--forbidden-target-prefix {_q(value)}" for value in forbidden_target_prefixes)
+    preview_report = f"{report_prefix}-cleanup-preview.json"
+    expected_hash_placeholder = "<full-qb-hash-from-cleanup-preview>"
+    return [
+        {
+            "stage": "strm_verify",
+            "output": f"{report_prefix}-strm-verify.json",
+            "command": (
+                f"PYTHONPATH=src python3 -m series_cloud_archiver strm-verify --title {title_q} "
+                f"--strm-root {strm_q} --expected-episode-count {expected_count} "
+                f"--expected-episode-min 1 --expected-episode-max {expected_count} "
+                f"--required-target-prefix {required_q} {forbidden_args} "
+                f"--format json --output {report_prefix}-strm-verify.json"
+            ),
+        },
+        {
+            "stage": "mp_scrape_strm",
+            "output": f"{report_prefix}-mp-scrape.json",
+            "command": (
+                f"PYTHONPATH=src python3 -m series_cloud_archiver mp-scrape-strm {env}"
+                f"--strm-path {strm_q} --mp-path {service_q} --storage local --type dir "
+                f"--approve-scrape --format json --output {report_prefix}-mp-scrape.json"
+            ),
+        },
+        {
+            "stage": "strm_nfo_language_audit",
+            "output": f"{report_prefix}-nfo-language.json",
+            "command": (
+                f"PYTHONPATH=src python3 -m series_cloud_archiver strm-nfo-language-audit "
+                f"--strm-root {strm_q} --format json --output {report_prefix}-nfo-language.json"
+            ),
+        },
+        {
+            "stage": "emby_media_updated_verify",
+            "output": f"{report_prefix}-emby-media-updated.json",
+            "command": (
+                f"PYTHONPATH=src python3 -m series_cloud_archiver emby-media-updated {env}"
+                f"--title {title_q} --updated-path {service_q} --update-type Created "
+                f"--strm-path-prefix {service_q} --expected-episode-count {expected_count} "
+                f"--expected-episode-min 1 --expected-episode-max {expected_count} "
+                f"--format json --output {report_prefix}-emby-media-updated.json"
+            ),
+        },
+        {
+            "stage": "cloud_hlink_cleanup_preview",
+            "output": preview_report,
+            "command": (
+                f"PYTHONPATH=src python3 -m series_cloud_archiver cloud-hlink-cleanup-preview {env}"
+                f"--title {title_contains_q} --expected-tmdbid {tmdbid} --hlink-root {hlink_q} "
+                f"--strm-root {strm_q} --expected-episode-count {expected_count} "
+                f"--expected-episode-min 1 --expected-episode-max {expected_count} "
+                f"--required-target-prefix {required_q} {forbidden_args} "
+                f"--cloud-media-path {cloud_title_q} --cloud-media-storage 115-default "
+                f"--format json --output {preview_report}"
+            ),
+        },
+        {
+            "stage": "cloud_hlink_cleanup_execute_approval_required",
+            "requires": [preview_report, "cleanup preview ready_for_execute=true", "human approval"],
+            "approval_flag_required": "--approve-delete",
+            "command": (
+                f"PYTHONPATH=src python3 -m series_cloud_archiver cloud-hlink-cleanup-execute {env}"
+                f"--preview-report {preview_report} --expected-title {title_contains_q} "
+                f"--expected-tmdbid {tmdbid} --expected-hlink-root {hlink_q} "
+                f"--expected-qb-hash {expected_hash_placeholder} "
+                f"--format json --output {report_prefix}-cleanup-execute.json "
+                "# approval required before execution"
+            ),
+        },
+    ]
+
+
 def _items_by_identity(raw_items: object) -> Dict[Tuple[int, int], Dict[str, object]]:
     result: Dict[Tuple[int, int], Dict[str, object]] = {}
     if not isinstance(raw_items, list):
@@ -682,6 +967,19 @@ def _cloud_media_path(cloud_root: str, title: str, tmdbid: int, season: int) -> 
     return f"{root}/{clean_title}{suffix}/{season_segment}"
 
 
+def _cloud_title_path_from_item(item: Dict[str, object], cloud_root: str) -> str:
+    existing = str(item.get("cloud_media_path") or "").rstrip("/")
+    for season_pattern in (r"/Season\s*0?\d+$", r"/S0?\d+$", r"/第\s*\d+\s*季$"):
+        if re.search(season_pattern, existing, flags=re.IGNORECASE):
+            return re.sub(season_pattern, "", existing, flags=re.IGNORECASE)
+    title = str(item.get("title") or "")
+    tmdbid = int(item.get("tmdbid") or 0)
+    root = (cloud_root or DEFAULT_CLOUD_ROOT).rstrip("/")
+    clean_title = _strip_identity_suffix(title).strip() or title or "unknown"
+    suffix = f" {{tmdbid={tmdbid}}}" if tmdbid else ""
+    return f"{root}/{clean_title}{suffix}" if root else ""
+
+
 def _host_strm_path_from_cloud(cloud_media_path: str, mv3_strm_root: str) -> str:
     suffix = cloud_media_path.strip("/")
     for prefix in ("已整理/", "未整理/"):
@@ -689,6 +987,17 @@ def _host_strm_path_from_cloud(cloud_media_path: str, mv3_strm_root: str) -> str
             suffix = suffix[len(prefix) :]
             break
     return f"{mv3_strm_root.rstrip('/')}/{suffix}"
+
+
+def _host_strm_path_from_cloud_title(cloud_title_path: str, host_strm_root: str) -> str:
+    if not cloud_title_path or not host_strm_root:
+        return ""
+    suffix = cloud_title_path.strip("/")
+    for prefix in ("已整理/", "未整理/"):
+        if suffix.startswith(prefix):
+            suffix = suffix[len(prefix) :]
+            break
+    return f"{host_strm_root.rstrip('/')}/{suffix}"
 
 
 def _map_strm_root(path: str, host_strm_root: str, emby_strm_root: str) -> str:
@@ -721,6 +1030,13 @@ def _string_list(value: object) -> List[str]:
     return [str(item) for item in value if str(item)]
 
 
+def _first_hlink_path(paths: Sequence[str]) -> str:
+    for path in paths:
+        if "/hlink/" in path.replace("\\", "/"):
+            return str(path).rstrip("/")
+    return str(paths[0]).rstrip("/") if paths else ""
+
+
 def _int_list(value: object) -> List[int]:
     if not isinstance(value, list):
         return []
@@ -729,6 +1045,25 @@ def _int_list(value: object) -> List[int]:
 
 def _env_arg(env_file: str) -> str:
     return f'--env-file "{env_file}" ' if env_file else ""
+
+
+def _env_arg_q(env_file: str) -> str:
+    return f"--env-file {_q(env_file)} " if env_file else ""
+
+
+def _q(value: object) -> str:
+    return shlex.quote(str(value))
+
+
+def _report_prefix(title: str, tmdbid: int, season: int) -> str:
+    slug = re.sub(r"[^0-9A-Za-z一-龥]+", "-", _strip_identity_suffix(title)).strip("-")
+    if not slug:
+        slug = "series"
+    return f"{slug}-{tmdbid}-s{season:02d}"
+
+
+def _escape_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ")
 
 
 def _render_markdown(plan: Dict[str, object]) -> str:

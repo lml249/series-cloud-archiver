@@ -10,7 +10,7 @@ from .batch_preview import (
     render_batch_share_preview_report,
     render_batch_share_receive_plan,
 )
-from .batch_runner import build_batch_plan, render_batch_plan
+from .batch_runner import build_batch_finalize_plan, build_batch_plan, render_batch_finalize_plan, render_batch_plan
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
 from .cloud_cleanup import (
     execute_cloud_complete_cleanup_plan,
@@ -686,6 +686,18 @@ def build_parser() -> argparse.ArgumentParser:
     batch_share_receive_plan_parser.add_argument("--limit", type=int, default=0, help="Maximum approval-required rows; 0 means all")
     batch_share_receive_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     batch_share_receive_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    batch_finalize_parser = subcommands.add_parser("batch-finalize-plan", help="Build readonly post-transfer scrape/Emby/cleanup gate commands from a batch-plan report")
+    batch_finalize_parser.add_argument("--env-file", required=True, help="Local env file; used only for generated command templates")
+    batch_finalize_parser.add_argument("--batch-plan", required=True, help="JSON report from batch-plan")
+    batch_finalize_parser.add_argument("--cloud-root", default="", help="Cloud media title root, defaults to batch-plan setting")
+    batch_finalize_parser.add_argument("--host-strm-root", default="", help="Host STRM root, defaults to batch-plan setting")
+    batch_finalize_parser.add_argument("--service-strm-root", default="", help="MoviePilot/Emby visible STRM root, defaults to batch-plan emby_strm_root setting")
+    batch_finalize_parser.add_argument("--required-target-prefix", default="", help="Required STRM target prefix; defaults per item to cloud media path")
+    batch_finalize_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
+    batch_finalize_parser.add_argument("--limit", type=int, default=0, help="Maximum planned finalize rows; 0 means all")
+    batch_finalize_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    batch_finalize_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     preview_parser = subcommands.add_parser("plan-mv3-preview", help="Create a readonly MV3 preview manifest from a transfer plan")
     preview_parser.add_argument("--transfer-plan", required=True, help="JSON report from plan-mv3-transfer")
@@ -2343,6 +2355,27 @@ def main(argv: Optional[List[str]] = None) -> int:
             limit=args.limit,
         )
         rendered = render_batch_share_receive_plan(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "batch-finalize-plan":
+        batch_plan = load_optional_json_report(args.batch_plan)
+        if not isinstance(batch_plan, dict):
+            parser.error("batch-finalize-plan requires a valid --batch-plan JSON report")
+        report = build_batch_finalize_plan(
+            batch_plan,
+            env_file=args.env_file,
+            cloud_root=args.cloud_root,
+            host_strm_root=args.host_strm_root,
+            service_strm_root=args.service_strm_root,
+            required_target_prefix=args.required_target_prefix,
+            forbidden_target_prefixes=args.forbidden_target_prefix,
+            limit=args.limit,
+        )
+        rendered = render_batch_finalize_plan(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:
