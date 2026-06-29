@@ -2611,6 +2611,22 @@ class MoviePilotEvidenceTest(unittest.TestCase):
             self.assertIn("strm_nfo_language_not_chinese", report["blockers"])
             self.assertEqual(report["summary"]["suspect_english_count"], 1)
 
+    def test_strm_nfo_language_audit_accepts_chinese_plot_with_english_quote(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm" / "series" / "西部世界 (2016) {tmdbid=63247}" / "Season 03"
+            strm_root.mkdir(parents=True)
+            (strm_root / "Westworld S03E07.nfo").write_text(
+                "<episodedetails><title>通路兵</title><plot><![CDATA[当世界离析，唯挚友同行。（A real friend is one who walks in when the rest of the world walks out.）]]></plot></episodedetails>",
+                encoding="utf-8",
+            )
+
+            report = audit_strm_nfo_language([str(strm_root)], min_chinese_ratio=0.35)
+
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["summary"]["suspect_english_count"], 0)
+            sample = report["roots"][0]["samples"][0]
+            self.assertGreaterEqual(sample["plot_chinese_count"], 4)
+
     def test_strm_nfo_language_audit_blocks_cloud_media_roots(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cloud_root = Path(tmp) / "已整理" / "series" / "Demo (2026) {tmdbid=1}" / "Season 01"

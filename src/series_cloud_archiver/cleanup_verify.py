@@ -857,14 +857,16 @@ def _nfo_language_file_row(path: Path, min_chinese_ratio: float) -> Dict[str, ob
     plot = parsed.get("plot", "")
     title_ratio = _chinese_ratio(title)
     plot_ratio = _chinese_ratio(plot)
+    plot_chinese_count = _chinese_count(plot)
     has_plot_letters = _letter_count(plot) >= 20
-    suspect_english = bool(has_plot_letters and plot_ratio < min_chinese_ratio)
+    suspect_english = bool(has_plot_letters and plot_chinese_count < 4 and plot_ratio < min_chinese_ratio)
     return {
         "path": str(path),
         "title": title[:240],
         "plot": plot[:360],
         "title_chinese_ratio": title_ratio,
         "plot_chinese_ratio": plot_ratio,
+        "plot_chinese_count": plot_chinese_count,
         "suspect_english": suspect_english,
         "parse_error": parsed.get("parse_error", ""),
     }
@@ -912,8 +914,12 @@ def _chinese_ratio(value: str) -> float:
     letters = [char for char in str(value or "") if char.isalpha() or "\u4e00" <= char <= "\u9fff"]
     if not letters:
         return 0.0
-    chinese = sum(1 for char in letters if "\u4e00" <= char <= "\u9fff")
+    chinese = _chinese_count("".join(letters))
     return round(chinese / len(letters), 3)
+
+
+def _chinese_count(value: str) -> int:
+    return sum(1 for char in str(value or "") if "\u4e00" <= char <= "\u9fff")
 
 
 def _letter_count(value: str) -> int:
