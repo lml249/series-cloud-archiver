@@ -28,6 +28,7 @@ def build_batch_share_preview_plan(
     storage: str = "115-default",
     timeout: int = 60,
     preview_output_dir: str = "",
+    max_nested_depth: int = 3,
     preview_func: Optional[PreviewFunc] = None,
 ) -> Dict[str, object]:
     """Build or execute readonly MV3 share previews for batch-plan candidates."""
@@ -64,12 +65,27 @@ def build_batch_share_preview_plan(
                 storage=storage,
                 timeout=timeout,
             )
-            nested = _single_nested_folder(report)
-            if not bool(report.get("ok")) and nested:
+            row["nested_previews"] = []
+            row["nested_preview_attempted"] = False
+            root_report = report
+            depth = 0
+            while not bool(report.get("ok")) and depth < max_nested_depth:
+                nested = _single_nested_folder(report)
+                if not nested:
+                    break
+                depth += 1
                 row["nested_preview_attempted"] = True
                 row["nested_preview_cid"] = nested["cid"]
                 row["nested_preview_folder_name"] = nested["name"]
-                row["root_preview_report"] = report
+                if depth == 1:
+                    row["root_preview_report"] = root_report
+                row["nested_previews"].append(
+                    {
+                        "depth": depth,
+                        "cid": nested["cid"],
+                        "folder_name": nested["name"],
+                    }
+                )
                 report = _run_preview(
                     preview_func,
                     base_url,
@@ -80,8 +96,9 @@ def build_batch_share_preview_plan(
                     timeout=timeout,
                     browse_cid=str(nested["cid"]),
                 )
-            else:
-                row["nested_preview_attempted"] = False
+                row["nested_previews"][-1]["ok"] = bool(report.get("ok"))
+                row["nested_previews"][-1]["episode_count"] = int(report.get("episode_count") or 0)
+                row["nested_previews"][-1]["blockers"] = _string_list(report.get("blockers"))
             executed += 1
             row["preview_report"] = report
             row["preview_ok"] = bool(report.get("ok"))
@@ -119,6 +136,7 @@ def build_batch_share_preview_plan(
             "storage": storage,
             "channels": list(channels or []),
             "preview_output_dir": preview_output_dir,
+            "max_nested_depth": max_nested_depth,
         },
         "items": rows,
         "safety": (
@@ -159,8 +177,13 @@ def _run_preview(
 def _single_nested_folder(report: Dict[str, object]) -> Dict[str, str]:
     browse = report.get("browse") if isinstance(report.get("browse"), dict) else {}
     items = browse.get("items") if isinstance(browse.get("items"), list) else []
-    folders = [item for item in items if isinstance(item, dict) and str(item.get("kind") or "") == "folder"]
-    if len(folders) != 1 or len(items) != 1:
+    material_items = [
+        item
+        for item in items
+        if isinstance(item, dict) and str(item.get("media_kind") or item.get("kind") or "") != "metadata_sidecar"
+    ]
+    folders = [item for item in material_items if isinstance(item, dict) and str(item.get("kind") or "") == "folder"]
+    if len(folders) != 1 or len(material_items) != 1:
         return {}
     folder = folders[0]
     cid = str(folder.get("file_id") or "")

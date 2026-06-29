@@ -679,6 +679,38 @@ class BatchSharePreviewTest(unittest.TestCase):
                         ],
                     },
                 }
+            if kwargs.get("browse_cid") == "folder-1":
+                return {
+                    "ok": False,
+                    "episode_count": 0,
+                    "blockers": ["episode_count_mismatch"],
+                    "missing_expected": [1, 2],
+                    "unexpected_episodes": [],
+                    "browse": {
+                        "ok": True,
+                        "item_count": 3,
+                        "items": [
+                            {
+                                "kind": "folder",
+                                "media_kind": "folder",
+                                "name": "Season 1",
+                                "file_id": "season-1",
+                            },
+                            {
+                                "kind": "file",
+                                "media_kind": "metadata_sidecar",
+                                "name": "poster.jpg",
+                                "file_id": "poster",
+                            },
+                            {
+                                "kind": "file",
+                                "media_kind": "metadata_sidecar",
+                                "name": "tvshow.nfo",
+                                "file_id": "nfo",
+                            },
+                        ],
+                    },
+                }
             return {
                 "ok": True,
                 "episode_count": 2,
@@ -700,7 +732,9 @@ class BatchSharePreviewTest(unittest.TestCase):
         item = report["items"][0]
         self.assertEqual(report["ready_for_receive_items"], 1)
         self.assertEqual(item["status"], "preview_ready_for_receive")
-        self.assertEqual(item["nested_preview_cid"], "folder-1")
+        self.assertEqual(item["nested_preview_cid"], "season-1")
+        self.assertEqual(len(item["nested_previews"]), 2)
         self.assertEqual(item["root_preview_report"]["episode_count"], 0)
         self.assertEqual(calls[0].get("browse_cid"), "")
         self.assertEqual(calls[1].get("browse_cid"), "folder-1")
+        self.assertEqual(calls[2].get("browse_cid"), "season-1")
