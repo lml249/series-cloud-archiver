@@ -114,6 +114,13 @@ class EmbyClient:
             return []
         return list(payload.get("Items") or [])
 
+    def item(self, item_id: object) -> Dict[str, object]:
+        payload = self._get(
+            f"/emby/Items/{urllib.parse.quote(str(item_id), safe='')}",
+            {"Fields": "Path"},
+        )
+        return payload if isinstance(payload, dict) else {}
+
     def refresh_library(self) -> Dict[str, object]:
         return self._post_empty("/emby/Library/Refresh")
 
@@ -573,6 +580,7 @@ def refresh_and_verify_emby_item(
         "replace_all_metadata": replace_all_metadata,
         "replace_all_images": replace_all_images,
     }
+    item_probe: Dict[str, object] = {"skipped": True}
     if not item_id:
         blockers.append("emby_item_id_required")
         refresh["request"] = {"skipped": True}
@@ -583,6 +591,30 @@ def refresh_and_verify_emby_item(
             "non_strm_path_prefixes": non_strm_prefixes,
         }
     else:
+        try:
+            item_payload = client.item(item_id)
+        except Exception as exc:  # pragma: no cover - defensive for live Emby API failures
+            item_payload = {}
+            blockers.append("emby_item_path_probe_failed")
+            warnings.append(f"emby_item_path_probe_failed:{type(exc).__name__}:{exc}")
+        item_path = str(item_payload.get("Path") or item_payload.get("PathInfo") or "").rstrip("/")
+        item_probe = {
+            "skipped": False,
+            "id": str(item_payload.get("Id") or item_id),
+            "name": str(item_payload.get("Name") or ""),
+            "type": str(item_payload.get("Type") or ""),
+            "path": item_path,
+        }
+        if item_path and cloud_media_paths([item_path]):
+            blockers.append("emby_item_path_must_be_strm_side")
+            warnings.append("cloud_media_paths_are_transfer_and_strm_only")
+        elif item_path and non_strm_side_paths([item_path]):
+            blockers.append("emby_item_path_must_be_strm_side")
+            warnings.append("emby_item_path_must_be_strm_side")
+        elif not item_path:
+            warnings.append("emby_item_path_unavailable")
+
+    if "request" not in refresh and not blockers:
         result = client.refresh_item(
             item_id,
             recursive=recursive,
@@ -594,6 +626,8 @@ def refresh_and_verify_emby_item(
         refresh["request"] = result
         if not result.get("ok"):
             blockers.append("emby_item_refresh_request_failed")
+    elif "request" not in refresh:
+        refresh["request"] = {"skipped": True, "item_probe": item_probe}
 
     verification = verify_emby_library_paths(
         client,
@@ -613,6 +647,7 @@ def refresh_and_verify_emby_item(
         "title": title,
         "ok": not blockers,
         "refresh": refresh,
+        "item_probe": item_probe,
         "verification": verification,
         "blockers": sorted(set(blockers)),
         "warnings": warnings,
