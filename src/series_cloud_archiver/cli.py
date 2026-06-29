@@ -651,7 +651,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_plan_parser.add_argument("--max-auto-size-delta", type=float, default=0.35, help="Maximum local/remote size delta ratio for auto transfer bucket")
     batch_plan_parser.add_argument("--required-target-prefix", default="/已整理", help="Required STRM target cloud prefix")
     batch_plan_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="Forbidden STRM target prefix; can be repeated")
-    batch_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    batch_plan_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     batch_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     preview_parser = subcommands.add_parser("plan-mv3-preview", help="Create a readonly MV3 preview manifest from a transfer plan")

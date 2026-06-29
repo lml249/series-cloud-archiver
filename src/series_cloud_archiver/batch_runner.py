@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 import re
 from collections import Counter
@@ -173,6 +175,8 @@ def merge_share_search_plans(plans: Sequence[Dict[str, object]]) -> Optional[Dic
 def render_batch_plan(plan: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(plan, ensure_ascii=False, indent=2)
+    if output_format == "csv":
+        return _render_csv(plan)
     return _render_markdown(plan)
 
 
@@ -700,3 +704,58 @@ def _render_markdown(plan: Dict[str, object]) -> str:
     lines.append("")
     lines.append("Run generated next-action commands only as dry-runs first. Approved write/delete flags are intentionally absent from this report.")
     return "\n".join(lines)
+
+
+def _render_csv(plan: Dict[str, object]) -> str:
+    fieldnames = [
+        "bucket",
+        "state",
+        "title",
+        "tmdbid",
+        "season",
+        "size",
+        "expected_episode_count",
+        "review_reasons",
+        "blockers",
+        "candidate_count",
+        "merged_duplicate_count",
+        "recommended_candidate_title",
+        "recommended_candidate_score",
+        "recommended_candidate_size_delta_ratio",
+        "cleanup_preview_ready",
+        "cleanup_preview_blockers",
+        "cloud_media_path",
+        "strm_root",
+        "source_paths",
+    ]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for item in plan.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        candidate = item.get("recommended_candidate") if isinstance(item.get("recommended_candidate"), dict) else {}
+        writer.writerow(
+            {
+                "bucket": item.get("bucket", ""),
+                "state": item.get("state", ""),
+                "title": item.get("title", ""),
+                "tmdbid": item.get("tmdbid", ""),
+                "season": item.get("season", ""),
+                "size": item.get("size", ""),
+                "expected_episode_count": item.get("expected_episode_count", ""),
+                "review_reasons": "; ".join(_string_list(item.get("review_reasons"))),
+                "blockers": "; ".join(_string_list(item.get("blockers"))),
+                "candidate_count": item.get("candidate_count", ""),
+                "merged_duplicate_count": item.get("merged_duplicate_count", ""),
+                "recommended_candidate_title": candidate.get("title", "") if candidate else "",
+                "recommended_candidate_score": candidate.get("score", "") if candidate else "",
+                "recommended_candidate_size_delta_ratio": candidate.get("size_delta_ratio", "") if candidate else "",
+                "cleanup_preview_ready": item.get("cleanup_preview_ready", ""),
+                "cleanup_preview_blockers": "; ".join(_string_list(item.get("cleanup_preview_blockers"))),
+                "cloud_media_path": item.get("cloud_media_path", ""),
+                "strm_root": item.get("strm_root", ""),
+                "source_paths": " | ".join(_string_list(item.get("source_paths"))),
+            }
+        )
+    return output.getvalue().rstrip("\r\n")

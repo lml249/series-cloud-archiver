@@ -9,6 +9,7 @@ from series_cloud_archiver.batch_runner import (
     MANUAL_REVIEW,
     build_batch_plan,
     merge_share_search_plans,
+    render_batch_plan,
 )
 from series_cloud_archiver.cli import main
 
@@ -360,6 +361,30 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(merged["input_plan_count"], 2)
         self.assertEqual(merged["items"][0]["recommended_candidate"]["score"], 20)
         self.assertEqual(merged["items"][0]["merged_duplicate_count"], 2)
+
+    def test_renders_batch_plan_csv_for_manual_review(self) -> None:
+        plan = build_batch_plan(
+            cloud_report={
+                "items": [
+                    {
+                        "status": "cloud_strm_not_found",
+                        "title": "待复核",
+                        "tmdbid": 123,
+                        "season": 1,
+                        "size_bytes": 100,
+                        "expected_count": 2,
+                    }
+                ]
+            }
+        )
+
+        rendered = render_batch_plan(plan, "csv")
+
+        self.assertIn("bucket,state,title,tmdbid,season", rendered.splitlines()[0])
+        self.assertIn("待复核", rendered)
+        self.assertIn("missing_transfer_plan_row", rendered)
+        self.assertIn("no_recommended_mv3_share_candidate", rendered)
+        self.assertIn("missing_source_paths", rendered)
 
     def test_cli_writes_batch_plan_from_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
