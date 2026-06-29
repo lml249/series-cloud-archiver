@@ -633,3 +633,74 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertEqual(calls[0][3]["selection_index"], 3)
         self.assertEqual(calls[0][3]["expected_episode_count"], 4)
         self.assertEqual(len(written), 1)
+
+    def test_execute_preview_auto_enters_single_nested_folder(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "折腰",
+                    "tmdbid": 246,
+                    "season": 1,
+                    "expected_episode_count": 2,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 2,
+                            "search_keyword": "折腰",
+                            "title": "名称: 折腰 (2025) 4K",
+                            "score": 65,
+                            "blockers": ["episode_coverage_unclear"],
+                        }
+                    },
+                }
+            ],
+        }
+        calls = []
+
+        def fake_preview(base_url, token, keyword, **kwargs):
+            calls.append(kwargs)
+            if not kwargs.get("browse_cid"):
+                return {
+                    "ok": False,
+                    "episode_count": 0,
+                    "blockers": ["episode_count_mismatch"],
+                    "missing_expected": [1, 2],
+                    "unexpected_episodes": [],
+                    "browse": {
+                        "ok": True,
+                        "item_count": 1,
+                        "items": [
+                            {
+                                "kind": "folder",
+                                "name": "折腰 (2025)",
+                                "file_id": "folder-1",
+                            }
+                        ],
+                    },
+                }
+            return {
+                "ok": True,
+                "episode_count": 2,
+                "episodes": [1, 2],
+                "blockers": [],
+                "missing_expected": [],
+                "unexpected_episodes": [],
+                "browse_cid": kwargs.get("browse_cid"),
+            }
+
+        report = build_batch_share_preview_plan(
+            batch_plan,
+            execute_preview=True,
+            base_url="http://mv3.example",
+            token="token",
+            preview_func=fake_preview,
+        )
+
+        item = report["items"][0]
+        self.assertEqual(report["ready_for_receive_items"], 1)
+        self.assertEqual(item["status"], "preview_ready_for_receive")
+        self.assertEqual(item["nested_preview_cid"], "folder-1")
+        self.assertEqual(item["root_preview_report"]["episode_count"], 0)
+        self.assertEqual(calls[0].get("browse_cid"), "")
+        self.assertEqual(calls[1].get("browse_cid"), "folder-1")

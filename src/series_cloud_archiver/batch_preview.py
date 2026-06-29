@@ -55,20 +55,33 @@ def build_batch_share_preview_plan(
         if execute_preview and row["status"] == "planned_preview":
             if preview_func is None:
                 raise ValueError("preview_func is required when execute_preview=True")
-            report = preview_func(
+            report = _run_preview(
+                preview_func,
                 base_url,
                 token,
-                row["keyword"],
-                selection_index=int(row["selection_index"] or 1),
-                expected_episode_count=int(row["expected_episode_count"] or 0),
-                expected_episode_min=int(row["expected_episode_min"] or 0),
-                expected_episode_max=int(row["expected_episode_max"] or 0),
-                expected_episodes=_int_list(row.get("expected_episodes")),
+                row,
                 channels=list(channels or []),
-                expected_title_contains=str(row.get("expected_title_contains") or ""),
                 storage=storage,
                 timeout=timeout,
             )
+            nested = _single_nested_folder(report)
+            if not bool(report.get("ok")) and nested:
+                row["nested_preview_attempted"] = True
+                row["nested_preview_cid"] = nested["cid"]
+                row["nested_preview_folder_name"] = nested["name"]
+                row["root_preview_report"] = report
+                report = _run_preview(
+                    preview_func,
+                    base_url,
+                    token,
+                    row,
+                    channels=list(channels or []),
+                    storage=storage,
+                    timeout=timeout,
+                    browse_cid=str(nested["cid"]),
+                )
+            else:
+                row["nested_preview_attempted"] = False
             executed += 1
             row["preview_report"] = report
             row["preview_ok"] = bool(report.get("ok"))
@@ -113,6 +126,46 @@ def build_batch_share_preview_plan(
             "MoviePilot scrape, Emby refresh, qBittorrent action, hlink deletion, source deletion, or filesystem deletion is performed"
         ),
     }
+
+
+def _run_preview(
+    preview_func: PreviewFunc,
+    base_url: str,
+    token: str,
+    row: Dict[str, object],
+    *,
+    channels: List[str],
+    storage: str,
+    timeout: int,
+    browse_cid: str = "",
+) -> Dict[str, object]:
+    return preview_func(
+        base_url,
+        token,
+        row["keyword"],
+        selection_index=int(row["selection_index"] or 1),
+        browse_cid=browse_cid,
+        expected_episode_count=int(row["expected_episode_count"] or 0),
+        expected_episode_min=int(row["expected_episode_min"] or 0),
+        expected_episode_max=int(row["expected_episode_max"] or 0),
+        expected_episodes=_int_list(row.get("expected_episodes")),
+        channels=channels,
+        expected_title_contains=str(row.get("expected_title_contains") or ""),
+        storage=storage,
+        timeout=timeout,
+    )
+
+
+def _single_nested_folder(report: Dict[str, object]) -> Dict[str, str]:
+    browse = report.get("browse") if isinstance(report.get("browse"), dict) else {}
+    items = browse.get("items") if isinstance(browse.get("items"), list) else []
+    folders = [item for item in items if isinstance(item, dict) and str(item.get("kind") or "") == "folder"]
+    if len(folders) != 1 or len(items) != 1:
+        return {}
+    folder = folders[0]
+    cid = str(folder.get("file_id") or "")
+    name = str(folder.get("name") or "")
+    return {"cid": cid, "name": name} if cid else {}
 
 
 def render_batch_share_preview_report(report: Dict[str, object], output_format: str) -> str:
