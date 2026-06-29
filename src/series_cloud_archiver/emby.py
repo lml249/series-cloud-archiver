@@ -421,6 +421,55 @@ def cancel_emby_running_task(
     }
 
 
+def wait_for_emby_task_and_verify_paths(
+    base_url: str,
+    api_key: str,
+    title: str,
+    stale_path_prefixes: Sequence[str],
+    strm_path_prefixes: Sequence[str],
+    task_key: str = REFRESH_LIBRARY_TASK_KEY,
+    expected_strm_records: int = 0,
+    expected_episode_count: int = 0,
+    expected_episode_min: int = 0,
+    expected_episode_max: int = 0,
+    library_db_path: str = "",
+    poll_seconds: float = 10.0,
+    max_wait_seconds: int = 900,
+    timeout: int = 20,
+) -> Dict[str, object]:
+    client = EmbyClient(base_url, api_key, timeout=timeout)
+    warnings: List[str] = []
+    task_wait = client.wait_for_task(task_key, poll_seconds=poll_seconds, max_wait_seconds=max_wait_seconds)
+    wait_summary = _summarize_task_wait(task_wait)
+    blockers: List[str] = []
+    if task_wait.get("timed_out"):
+        blockers.append("emby_task_wait_timeout")
+    verification = verify_emby_library_paths(
+        client,
+        title=title,
+        stale_path_prefixes=stale_path_prefixes,
+        strm_path_prefixes=strm_path_prefixes,
+        expected_strm_records=expected_strm_records,
+        expected_episode_count=expected_episode_count,
+        expected_episode_min=expected_episode_min,
+        expected_episode_max=expected_episode_max,
+        library_db_path=library_db_path,
+    )
+    blockers.extend(str(blocker) for blocker in verification.get("blockers", []) if blocker)
+    warnings.extend(str(warning) for warning in verification.get("warnings", []) if warning)
+    return {
+        "mode": "emby-task-wait-verify",
+        "title": title,
+        "task_key": task_key,
+        "ok": not blockers,
+        "task": wait_summary,
+        "verification": verification,
+        "blockers": sorted(set(blockers)),
+        "warnings": warnings,
+        "safety": "readonly Emby task wait and library path verification only; no refresh request, cancel, filesystem deletion, qBittorrent action, MoviePilot cleanup, or direct Emby database write is performed",
+    }
+
+
 def render_emby_task_status_report(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -449,6 +498,31 @@ def render_emby_task_status_report(report: Dict[str, object], output_format: str
                         last_status=_escape(str(task.get("last_status") or "")),
                     )
                 )
+    return "\n".join(lines)
+
+
+def render_emby_task_wait_verify_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    task = report.get("task") if isinstance(report.get("task"), dict) else {}
+    verification = report.get("verification") if isinstance(report.get("verification"), dict) else {}
+    totals = verification.get("totals") if isinstance(verification.get("totals"), dict) else {}
+    lines = [
+        "# Emby Task Wait Verification",
+        "",
+        f"- Title: `{report.get('title', '')}`",
+        f"- Task key: `{report.get('task_key', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Task state: `{task.get('state', '')}`",
+        f"- Task timed out: `{bool(task.get('timed_out'))}`",
+        f"- STRM records: `{totals.get('strm_records', 0)}`",
+        f"- Stale records: `{totals.get('stale_records', 0)}`",
+        "- Safety: readonly task wait and path verification only.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
     return "\n".join(lines)
 
 

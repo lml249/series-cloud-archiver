@@ -36,6 +36,8 @@ from .emby import (
     render_emby_refresh_verify_report,
     render_emby_task_cancel_report,
     render_emby_task_status_report,
+    render_emby_task_wait_verify_report,
+    wait_for_emby_task_and_verify_paths,
 )
 from .hlink_cleanup import (
     cleanup_empty_hlink_root,
@@ -571,6 +573,23 @@ def build_parser() -> argparse.ArgumentParser:
     emby_task_status_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
     emby_task_status_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     emby_task_status_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    emby_task_wait_parser = subcommands.add_parser("emby-task-wait-verify", help="Wait for an Emby task to finish and verify STRM/stale paths")
+    emby_task_wait_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    emby_task_wait_parser.add_argument("--title", required=True, help="Series title for reporting")
+    emby_task_wait_parser.add_argument("--task-key", default="RefreshLibrary", help="Emby scheduled task key")
+    emby_task_wait_parser.add_argument("--stale-path-prefix", action="append", default=[], help="Old local/hlink path prefix that should disappear; can be repeated")
+    emby_task_wait_parser.add_argument("--strm-path-prefix", action="append", required=True, help="Replacement STRM Emby/container path prefix; can be repeated")
+    emby_task_wait_parser.add_argument("--expected-strm-records", type=int, default=0, help="Expected Emby records under STRM path, including series/season/episode rows when using library DB")
+    emby_task_wait_parser.add_argument("--expected-episode-count", type=int, default=0, help="Expected distinct episode count under STRM path")
+    emby_task_wait_parser.add_argument("--expected-episode-min", type=int, default=0, help="Expected first episode number")
+    emby_task_wait_parser.add_argument("--expected-episode-max", type=int, default=0, help="Expected last episode number")
+    emby_task_wait_parser.add_argument("--library-db", default="", help="Optional Emby library.db path for exact readonly verification")
+    emby_task_wait_parser.add_argument("--poll-seconds", type=float, default=10.0, help="Polling interval while the task is running")
+    emby_task_wait_parser.add_argument("--max-wait-seconds", type=int, default=900, help="Maximum seconds to wait for task completion")
+    emby_task_wait_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    emby_task_wait_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    emby_task_wait_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     emby_task_cancel_parser = subcommands.add_parser("emby-task-cancel", help="Cancel one approved running Emby scheduled task")
     emby_task_cancel_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -2039,6 +2058,33 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_emby_task_status_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "emby-task-wait-verify":
+        config = config_from_env(args.env_file, [])
+        if not config.emby_base_url or not config.emby_key:
+            parser.error("emby-task-wait-verify requires EMBY_BASE_URL and EMBY_API_KEY")
+        report = wait_for_emby_task_and_verify_paths(
+            config.emby_base_url,
+            config.emby_key,
+            title=args.title,
+            stale_path_prefixes=args.stale_path_prefix,
+            strm_path_prefixes=args.strm_path_prefix,
+            task_key=args.task_key,
+            expected_strm_records=args.expected_strm_records,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            library_db_path=args.library_db or config.emby_library_db_path,
+            poll_seconds=args.poll_seconds,
+            max_wait_seconds=args.max_wait_seconds,
+            timeout=args.timeout,
+        )
+        rendered = render_emby_task_wait_verify_report(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

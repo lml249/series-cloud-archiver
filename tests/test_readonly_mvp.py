@@ -30,7 +30,9 @@ from series_cloud_archiver.emby import (
     render_emby_refresh_verify_report,
     render_emby_task_cancel_report,
     render_emby_task_status_report,
+    render_emby_task_wait_verify_report,
     verify_emby_library_paths,
+    wait_for_emby_task_and_verify_paths,
 )
 from series_cloud_archiver.episode import episode_signal
 from series_cloud_archiver.models import FileSystemSeries, EpisodeSignal, QBTorrentEvidence
@@ -1586,6 +1588,137 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["tasks"][0]["id"], "refresh-id")
+
+    def test_emby_task_wait_verify_waits_then_checks_library_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "library.db"
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE MediaItems (
+                        Id TEXT,
+                        type TEXT,
+                        Name TEXT,
+                        SeriesName TEXT,
+                        Path TEXT,
+                        IndexNumber INTEGER,
+                        ParentIndexNumber INTEGER
+                    )
+                    """
+                )
+                rows = [
+                    ("strm-season-1", "Season", "第 1 季", "9号秘事", "/example/strm/series/9号秘事 (2014) {tmdbid=61746}/Season 1", 1, None),
+                    ("strm-episode-1", "Episode", "沙丁鱼游戏", "9号秘事", "/example/strm/series/9号秘事 (2014) {tmdbid=61746}/Season 1/9号秘事 - S01E01.strm", 1, 1),
+                    ("strm-episode-2", "Episode", "宁静夜", "9号秘事", "/example/strm/series/9号秘事 (2014) {tmdbid=61746}/Season 1/9号秘事 - S01E02.strm", 2, 1),
+                ]
+                connection.executemany("INSERT INTO MediaItems VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+                connection.commit()
+            finally:
+                connection.close()
+
+            class FakeClient:
+                def __init__(self, base_url, api_key, timeout=20):
+                    pass
+
+                def wait_for_task(self, key, poll_seconds=10.0, max_wait_seconds=900):
+                    return {
+                        "key": key,
+                        "timed_out": False,
+                        "final_task": {
+                            "Key": key,
+                            "Name": "Scan media library",
+                            "State": "Idle",
+                            "LastExecutionResult": {"Status": "Completed"},
+                        },
+                        "polls": [
+                            {"state": "Running", "last_status": "Completed"},
+                            {"state": "Idle", "last_status": "Completed"},
+                        ],
+                    }
+
+                def items_by_search(self, _search_term):
+                    raise AssertionError("sqlite path should be used")
+
+            with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+                report = wait_for_emby_task_and_verify_paths(
+                    "http://emby.example",
+                    "token",
+                    title="9号秘事",
+                    stale_path_prefixes=["/example/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 01"],
+                    strm_path_prefixes=["/example/strm/series/9号秘事 (2014) {tmdbid=61746}/Season 1"],
+                    expected_strm_records=3,
+                    expected_episode_count=2,
+                    expected_episode_min=1,
+                    expected_episode_max=2,
+                    library_db_path=str(db_path),
+                    poll_seconds=0,
+                    max_wait_seconds=1,
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["task"]["state"], "Idle")
+        self.assertEqual(report["task"]["poll_count"], 2)
+        self.assertEqual(report["verification"]["totals"]["strm_records"], 3)
+        self.assertEqual(report["blockers"], [])
+        rendered = render_emby_task_wait_verify_report(report, "markdown")
+        self.assertIn("Emby Task Wait Verification", rendered)
+
+    def test_emby_task_wait_verify_cli_blocks_on_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "emby-task-wait.json"
+            env_file.write_text("EMBY_BASE_URL=http://emby.example\nEMBY_API_KEY=token\n", encoding="utf-8")
+
+            class FakeClient:
+                def __init__(self, base_url, api_key, timeout=20):
+                    pass
+
+                def wait_for_task(self, key, poll_seconds=10.0, max_wait_seconds=900):
+                    return {
+                        "key": key,
+                        "timed_out": True,
+                        "final_task": {"Key": key, "Name": "Scan media library", "State": "Running"},
+                        "polls": [{"state": "Running"}],
+                    }
+
+                def items_by_search(self, _search_term):
+                    return []
+
+            with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+                code = main(
+                    [
+                        "emby-task-wait-verify",
+                        "--env-file",
+                        str(env_file),
+                        "--title",
+                        "9号秘事",
+                        "--strm-path-prefix",
+                        "/example/strm/series/9号秘事 (2014) {tmdbid=61746}/Season 1",
+                        "--expected-episode-count",
+                        "1",
+                        "--expected-episode-min",
+                        "1",
+                        "--expected-episode-max",
+                        "1",
+                        "--poll-seconds",
+                        "0",
+                        "--max-wait-seconds",
+                        "1",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertFalse(payload["ok"])
+            self.assertIn("emby_task_wait_timeout", payload["blockers"])
+            self.assertIn("emby_strm_records_missing", payload["blockers"])
 
     def test_emby_refresh_error_redacts_echoed_api_key(self) -> None:
         class FakeHTTPError(Exception):
