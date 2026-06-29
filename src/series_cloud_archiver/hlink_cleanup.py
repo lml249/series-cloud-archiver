@@ -1152,11 +1152,12 @@ def _hlink_episode_map(hlink_root: str) -> Dict[str, object]:
         rel = str(path.relative_to(root))
         signal = episode_signal([rel])
         season = _season_number_from_relative_path(rel, signal.seasons)
-        episode = signal.episodes[0] if len(signal.episodes) == 1 else 0
-        if not season or not episode:
+        episodes = [int(item) for item in signal.episodes if int(item) > 0]
+        if not season or not episodes:
             unmatched.append(str(path))
             continue
-        rows.append({"path": str(path), "season": season, "episode": episode})
+        for episode in episodes:
+            rows.append({"path": str(path), "season": season, "episode": episode})
 
     season_rows: Dict[int, List[Dict[str, object]]] = {}
     for row in rows:

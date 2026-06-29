@@ -854,6 +854,42 @@ class CloudHlinkCleanupTest(unittest.TestCase):
         self.assertEqual(report["filesystem"]["hlink_strm_coverage"]["missing"], [])
         self.assertEqual(report["strm_seasons"][1]["episodes"], [1, 2, 3])
 
+    def test_multiseason_orphan_preview_counts_double_episode_hlink_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "广告狂人 (2007)"
+            write(hlink_root / "Season 05" / "广告狂人 - S05E01-E02 - 第 1-2 集.mkv")
+            write(hlink_root / "Season 05" / "广告狂人 - S05E03 - 第 3 集.mkv")
+            strm_root = tmp_path / "volume4" / "mv3" / "strm" / "series" / "广告狂人 (2007) {tmdbid=1104}" / "Season 05"
+            write(strm_root / "广告狂人.S05E01.strm", "/已整理/series/美剧【广告狂人】/S05/E01.mkv")
+            write(strm_root / "广告狂人.S05E02.strm", "/已整理/series/美剧【广告狂人】/S05/E02.mkv")
+            write(strm_root / "广告狂人.S05E03.strm", "/已整理/series/美剧【广告狂人】/S05/E03.mkv")
+
+            class EmptyClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", EmptyClient):
+                report = preview_cloud_hlink_orphan_multiseason_cleanup(
+                    "广告狂人",
+                    str(hlink_root),
+                    [{"season": 5, "strm_root": str(strm_root), "expected_episodes": [1, 2, 3]}],
+                    expected_tmdbid=1104,
+                    qb_base_url="http://qb.example",
+                    required_target_prefix="/已整理/series/美剧【广告狂人】",
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["hlink_episodes"]["unmatched_count"], 0)
+        self.assertEqual(report["hlink_episodes"]["seasons"][0]["episodes"], [1, 2, 3])
+        self.assertEqual(report["filesystem"]["hlink_strm_coverage"]["missing"], [])
+
     def test_multiseason_orphan_preview_blocks_when_strm_lacks_local_episode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
