@@ -179,6 +179,36 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-restored-transfer-queue \
 
 `mv3-restored-transfer-queue` 只是只读汇总，不搜索、不转存、不生成 STRM、不刷新 Emby、不清理 qB/MP/hlink。它的用途是等 MV3 授权恢复后，按“已有 TMDB ID + 明确季号 + 云端 STRM 未找到”的队列继续逐条搜索和转存。
 
+## 批量状态计划 dry-run
+
+当已经有扫描、云端 STRM 检查、转存待办和 MV3 分享搜索评分报告后，可以先生成一份批量状态计划。它不会调用 MV3 搜索、转存、整理、生成 STRM，不会触发 MoviePilot 刮削或 Emby 刷新，也不会操作 qB、hlink、source 或本地文件系统；它只把现有证据分桶：
+
+- `auto_ready_for_transfer_preview`：资源搜索评分、集数和体积相似度都够好，可以进入单条预览和转存审批门。
+- `auto_ready_for_validation_cleanup`：云端 STRM 已经覆盖预期集数，可以进入 STRM/NFO/Emby/qB/MP 清理前验证。
+- `manual_review`：身份、集数、体积、路径或资源候选证据不够稳，需要人工复核。
+- `skipped`：当前状态不属于迁移流程。
+
+DSM 上用现有报告生成只读计划：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver batch-plan \
+  --env-file /volume1/docker/series-cloud-archiver/.env \
+  --scan-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/volume3-hlink-tv-scan-current-20260629.json \
+  --cloud-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/hlink-tv-cloud-check-rescan-noqb-identity-20260627.json \
+  --transfer-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/mv3-transfer-plan-season-split-safe-20260629.json \
+  --share-search-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/share-search-season-safe-rows39-59-20260629.json \
+  --cloud-root /已整理/series \
+  --mv3-strm-root /strm \
+  --host-strm-root /volume4/volume4/mv3/strm \
+  --emby-strm-root /volume4/mv3/strm \
+  --forbidden-target-prefix /series/series \
+  --forbidden-target-prefix /已整理/series/series \
+  --format json \
+  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-plan-YYYYMMDD.json
+```
+
+输出里的 `next_actions` 是阶段模板，不会自动带 `--approve-receive`、`--approve-transfer`、`--approve-delete`、`--approve-mp-cleanup` 这类审批参数。真正批量执行阶段必须先从这份只读计划进入，并继续保留每一关的验证报告。
+
 ## MV3 预览 manifest dry-run
 
 拿到待转存清单、MV3 能力报告和 MV3 实例报告后，可以先生成“小批量预览 manifest”：

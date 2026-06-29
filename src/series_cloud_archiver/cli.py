@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from .batch_runner import build_batch_plan, render_batch_plan
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
 from .cloud_cleanup import (
     execute_cloud_complete_cleanup_plan,
@@ -630,6 +631,27 @@ def build_parser() -> argparse.ArgumentParser:
     restored_queue_parser.add_argument("--top", type=int, default=0, help="Maximum rows per queue section; 0 means all current rows")
     restored_queue_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     restored_queue_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    batch_plan_parser = subcommands.add_parser("batch-plan", help="Build a readonly batch state-machine plan from scan/cloud/MV3 search reports")
+    batch_plan_parser.add_argument("--env-file", default=None, help="Local env file; used only for generated command templates")
+    batch_plan_parser.add_argument("--scan-report", default=None, help="Optional JSON report from scan")
+    batch_plan_parser.add_argument("--cloud-report", default=None, help="Optional JSON report from cloud-check; generated from scan when omitted")
+    batch_plan_parser.add_argument("--transfer-plan", default=None, help="Optional JSON report from plan-mv3-transfer; generated from cloud report when omitted")
+    batch_plan_parser.add_argument("--share-search-plan", default=None, help="Optional JSON report from plan-mv3-share-search")
+    batch_plan_parser.add_argument("--media-root", action="append", default=[], help="Media root to scan when --scan-report is omitted")
+    batch_plan_parser.add_argument("--strm-root", action="append", default=[], help="STRM root for generated cloud-check when --cloud-report is omitted")
+    batch_plan_parser.add_argument("--identity-file", default=None, help="Optional identity override file for generated cloud-check")
+    batch_plan_parser.add_argument("--limit", type=int, default=0, help="Maximum rows in batch plan")
+    batch_plan_parser.add_argument("--cloud-root", default=DEFAULT_CLOUD_ROOT, help="Cloud media root, usually /已整理/series")
+    batch_plan_parser.add_argument("--mv3-strm-root", default=DEFAULT_STRM_ROOT, help="MV3/container STRM root used for command templates")
+    batch_plan_parser.add_argument("--host-strm-root", default="", help="Host STRM root, e.g. /volume4/volume4/mv3/strm")
+    batch_plan_parser.add_argument("--emby-strm-root", default="", help="Emby/container STRM root, e.g. /volume4/mv3/strm")
+    batch_plan_parser.add_argument("--min-candidate-score", type=int, default=60, help="Minimum MV3 search score for auto transfer bucket")
+    batch_plan_parser.add_argument("--max-auto-size-delta", type=float, default=0.35, help="Maximum local/remote size delta ratio for auto transfer bucket")
+    batch_plan_parser.add_argument("--required-target-prefix", default="/已整理", help="Required STRM target cloud prefix")
+    batch_plan_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="Forbidden STRM target prefix; can be repeated")
+    batch_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    batch_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     preview_parser = subcommands.add_parser("plan-mv3-preview", help="Create a readonly MV3 preview manifest from a transfer plan")
     preview_parser.add_argument("--transfer-plan", required=True, help="JSON report from plan-mv3-transfer")
@@ -2165,6 +2187,52 @@ def main(argv: Optional[List[str]] = None) -> int:
             top=args.top,
         )
         rendered = render_mv3_restored_transfer_queue(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "batch-plan":
+        scan_report = load_optional_json_report(args.scan_report) if args.scan_report else None
+        if scan_report is None and not args.cloud_report:
+            config = config_from_env(args.env_file, args.media_root)
+            config.output_format = "json"
+            scan_report = scan(config).to_dict()
+
+        cloud_report = load_optional_json_report(args.cloud_report) if args.cloud_report else None
+        if cloud_report is None:
+            if not isinstance(scan_report, dict):
+                parser.error("batch-plan requires --cloud-report or --scan-report/--media-root")
+            config = config_from_env(args.env_file, [])
+            cloud_report = cloud_check_from_scan_report(
+                scan_report,
+                args.strm_root or config.strm_roots,
+                identity_file=args.identity_file or config.identity_file,
+            ).to_dict()
+
+        transfer_plan = load_optional_json_report(args.transfer_plan) if args.transfer_plan else None
+        if transfer_plan is None:
+            transfer_plan = plan_mv3_transfers_from_cloud_report(cloud_report)
+
+        share_search_plan = load_optional_json_report(args.share_search_plan) if args.share_search_plan else None
+        report = build_batch_plan(
+            cloud_report=cloud_report,
+            transfer_plan=transfer_plan,
+            share_search_plan=share_search_plan,
+            scan_report=scan_report,
+            cloud_root=args.cloud_root,
+            mv3_strm_root=args.mv3_strm_root,
+            host_strm_root=args.host_strm_root,
+            emby_strm_root=args.emby_strm_root,
+            env_file=args.env_file or "",
+            min_candidate_score=args.min_candidate_score,
+            max_auto_size_delta=args.max_auto_size_delta,
+            required_target_prefix=args.required_target_prefix,
+            forbidden_target_prefixes=args.forbidden_target_prefix,
+            limit=args.limit,
+        )
+        rendered = render_batch_plan(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:
