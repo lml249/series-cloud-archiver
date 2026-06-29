@@ -1773,6 +1773,10 @@ def preview_mv3_share(
     selection_index: int = 1,
     browse_cid: str = "",
     browse_limit: int = 1150,
+    expected_episode_count: int = 0,
+    expected_episode_min: int = 0,
+    expected_episode_max: int = 0,
+    expected_episodes: Optional[List[int]] = None,
     channels: Optional[List[str]] = None,
     expected_title_contains: str = "",
     storage: str = "115-default",
@@ -1790,7 +1794,32 @@ def preview_mv3_share(
     report["mode"] = "readonly-mv3-share-preview"
     browse_item_count = int(browse_report.get("item_count") or 0) if isinstance(browse_report.get("item_count"), int) else 0
     report["ok"] = bool(search.get("ok")) and bool(selected_summary) and parse_ok and browse_ok and browse_item_count > 0
+    expected_episode_list = _positive_int_list(expected_episodes or [])
+    expected_episode_set = set(expected_episode_list)
+    if not expected_episode_set and expected_episode_min and expected_episode_max:
+        expected_episode_set = set(range(expected_episode_min, expected_episode_max + 1))
+    browse_items = browse_report.get("items") if isinstance(browse_report.get("items"), list) else []
+    video_items = [item for item in browse_items if isinstance(item, dict) and _browse_report_item_media_kind(item) == "video"]
+    episode_numbers = _positive_int_list(
+        item.get("episode") or _episode_number_from_text(str(item.get("name") or ""))
+        for item in video_items
+    )
+    missing_expected = [episode for episode in sorted(expected_episode_set) if episode not in set(episode_numbers)]
+    unexpected_episodes = [episode for episode in episode_numbers if expected_episode_set and episode not in expected_episode_set]
+    report["expected_episode_count"] = expected_episode_count
+    report["expected_episode_min"] = expected_episode_min
+    report["expected_episode_max"] = expected_episode_max
+    report["expected_episodes"] = expected_episode_list
+    report["video_file_count"] = len(video_items)
+    report["episode_count"] = len(episode_numbers)
+    report["episode_min"] = min(episode_numbers) if episode_numbers else None
+    report["episode_max"] = max(episode_numbers) if episode_numbers else None
+    report["episodes"] = episode_numbers
+    report["missing_expected"] = missing_expected
+    report["unexpected_episodes"] = unexpected_episodes
     report["blockers"] = _mv3_share_preview_blockers(report)
+    if report["blockers"]:
+        report["ok"] = False
     report["safety"] = "search + share parse/browse preview only; no share receive/transfer, offline task, STRM generation, file operation, qBittorrent action, hlink deletion, or filesystem deletion is performed"
     return report
 
@@ -2918,19 +2947,24 @@ def render_mv3_share_preview_report(report: Dict[str, object], output_format: st
         f"- Parse OK: `{bool(parse.get('ok'))}`",
         f"- Browse OK: `{bool(browse.get('ok'))}`",
         f"- Browse items: `{browse.get('item_count', 0)}`",
+        f"- Video files: `{report.get('video_file_count', 0)}`",
+        f"- Episodes: `{report.get('episodes', [])}`",
+        f"- Missing expected: `{report.get('missing_expected', [])}`",
+        f"- Unexpected episodes: `{report.get('unexpected_episodes', [])}`",
         "- Safety: preview only; no receive/transfer or STRM generation was performed.",
         "",
-        "| # | Name | Kind | Size |",
-        "| ---: | --- | --- | ---: |",
+        "| # | Name | Kind | Episode | Size |",
+        "| ---: | --- | --- | ---: | ---: |",
     ]
     for item in browse.get("items", []):
         if not isinstance(item, dict):
             continue
         lines.append(
-            "| {index} | {name} | {kind} | {size} |".format(
+            "| {index} | {name} | {kind} | {episode} | {size} |".format(
                 index=item.get("index") or "",
                 name=_escape(str(item.get("name") or "")),
                 kind=_escape(str(item.get("kind") or "")),
+                episode=item.get("episode") or "",
                 size=_escape(str(item.get("size") or "")),
             )
         )
@@ -4806,6 +4840,29 @@ def _mv3_share_preview_blockers(report: Dict[str, object]) -> List[str]:
             blockers.append("share_browse_failed")
         if not browse.get("skipped") and "item_count" in browse and int(browse.get("item_count") or 0) <= 0:
             blockers.append("share_browse_empty")
+    expected_episode_count = int(report.get("expected_episode_count") or 0)
+    expected_episode_min = int(report.get("expected_episode_min") or 0)
+    expected_episode_max = int(report.get("expected_episode_max") or 0)
+    expected_episodes = _positive_int_list(report.get("expected_episodes", []) if isinstance(report.get("expected_episodes"), list) else [])
+    episode_count = int(report.get("episode_count") or 0)
+    video_file_count = int(report.get("video_file_count") or 0)
+    if expected_episodes:
+        if expected_episode_count and len(expected_episodes) != expected_episode_count:
+            blockers.append("expected_episode_list_count_mismatch")
+        if expected_episode_min and min(expected_episodes) != expected_episode_min:
+            blockers.append("expected_episode_list_min_mismatch")
+        if expected_episode_max and max(expected_episodes) != expected_episode_max:
+            blockers.append("expected_episode_list_max_mismatch")
+    if expected_episode_min and expected_episode_max and expected_episode_min > expected_episode_max:
+        blockers.append("expected_episode_range_invalid")
+    if expected_episode_count and episode_count != expected_episode_count:
+        blockers.append("episode_count_mismatch")
+    if report.get("missing_expected"):
+        blockers.append("episode_range_incomplete")
+    if report.get("unexpected_episodes"):
+        blockers.append("unexpected_episodes_present")
+    if expected_episode_count and video_file_count != expected_episode_count:
+        blockers.append("video_file_count_mismatch")
     return sorted(set(blockers))
 
 
@@ -5445,6 +5502,24 @@ def _share_item_media_kind(item: Dict[str, object]) -> str:
     if _share_item_is_metadata_sidecar(item):
         return "metadata_sidecar"
     return "file"
+
+
+def _positive_int_list(values: object) -> List[int]:
+    items: Set[int] = set()
+    if values is None or isinstance(values, (str, bytes)):
+        return []
+    try:
+        iterator = iter(values)
+    except TypeError:
+        iterator = iter([values])
+    for value in iterator:
+        try:
+            integer = int(value)
+        except (TypeError, ValueError):
+            continue
+        if integer > 0:
+            items.add(integer)
+    return sorted(items)
 
 
 def _share_item_file_id(item: Dict[str, object]) -> str:

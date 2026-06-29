@@ -683,6 +683,10 @@ def build_parser() -> argparse.ArgumentParser:
     share_preview_parser.add_argument("--selection-index", type=int, default=1, help="1-based search result to parse/browse")
     share_preview_parser.add_argument("--browse-cid", default="", help="Optional share folder cid to browse instead of the share root")
     share_preview_parser.add_argument("--browse-limit", type=int, default=1150, help="Maximum share folder items to request")
+    share_preview_parser.add_argument("--expected-episode-count", type=int, default=0, help="Readonly safety check: exact distinct episode count")
+    share_preview_parser.add_argument("--expected-episode-min", type=int, default=0, help="Readonly safety check: first episode number")
+    share_preview_parser.add_argument("--expected-episode-max", type=int, default=0, help="Readonly safety check: last episode number")
+    share_preview_parser.add_argument("--expected-episode", action="append", default=[], help="Optional explicit expected episode list/range, comma-separated; can be repeated")
     share_preview_parser.add_argument("--expected-title-contains", default="", help="Safety check: selected title must contain this text")
     share_preview_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug used when browsing the share")
     share_preview_parser.add_argument("--channel", action="append", default=[], help="Optional channel filter; can be repeated")
@@ -1079,11 +1083,7 @@ def _combined_mv3_search_report(
 def _parse_int_list_args(values: List[str]) -> List[int]:
     items = set()
     for value in values:
-        for part in str(value or "").split(","):
-            token = part.strip()
-            if not token:
-                continue
-            items.add(int(token))
+        items.update(_parse_episode_list(str(value or "")))
     return sorted(item for item in items if item > 0)
 
 
@@ -2300,6 +2300,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             selection_index=args.selection_index,
             browse_cid=args.browse_cid,
             browse_limit=args.browse_limit,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            expected_episodes=_parse_int_list_args(args.expected_episode),
             channels=args.channel,
             expected_title_contains=args.expected_title_contains,
             storage=args.storage,
