@@ -300,10 +300,7 @@ def _find_cloud_entry(
         entry_tokens = entry.get("tokens", set())
         if not isinstance(entry_tokens, set) or not entry_tokens:
             continue
-        overlap = wanted_tokens.intersection(entry_tokens)
-        if not overlap:
-            continue
-        score = len(overlap) / max(1, len(wanted_tokens))
+        score = _meaningful_title_overlap_score(wanted_tokens, entry_tokens)
         if score > best_score:
             best_score = score
             best = entry
@@ -456,6 +453,23 @@ def _title_tokens(text: str) -> Set[str]:
             continue
         tokens.add(token)
     return tokens
+
+
+def _has_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
+
+
+def _meaningful_title_overlap_score(wanted_tokens: Set[str], entry_tokens: Set[str]) -> float:
+    if not wanted_tokens or not entry_tokens:
+        return 0.0
+    overlap = wanted_tokens.intersection(entry_tokens)
+    if not overlap:
+        return 0.0
+    if any(_has_cjk(token) for token in wanted_tokens):
+        return 1.0 if any(_has_cjk(token) for token in overlap) else 0.0
+    if len(overlap) < 2 and max((len(token) for token in overlap), default=0) < 6:
+        return 0.0
+    return len(overlap) / max(1, len(wanted_tokens))
 
 
 def _tmdbid_from_text(text: str) -> int:

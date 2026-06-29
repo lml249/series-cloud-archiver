@@ -93,6 +93,73 @@ class CloudCheckTest(unittest.TestCase):
             self.assertEqual(result.status_counts, {"cloud_strm_complete": 1})
             self.assertIn("strm_title_season_match", result.items[0].reasons)
 
+    def test_title_season_match_requires_meaningful_title_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm"
+            for episode in range(1, 27):
+                touch(root / "anime" / "诛仙 (2022) {tmdbid=206484}" / "Season 01" / f"诛仙 S01E{episode:02d}.strm")
+            report = {
+                "candidates": [
+                    {
+                        "title": "漫长的季节 (2023) Season 01",
+                        "status": "candidate_for_cloud_check",
+                        "size_bytes": 1024,
+                        "video_count": 12,
+                        "episode_numbers": list(range(1, 13)),
+                        "seasons": [1],
+                    }
+                ]
+            }
+
+            result = cloud_check_from_scan_report(report, [str(root)])
+
+            self.assertEqual(result.status_counts, {"needs_identity_review": 1})
+            self.assertEqual(result.items[0].cloud_episode_count, 0)
+            self.assertIn("missing_tmdb_and_no_safe_title_match", result.items[0].blockers)
+
+    def test_identity_parent_path_applies_to_split_season_child(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            root = tmp_path / "strm"
+            for episode in range(1, 13):
+                touch(root / "series" / "漫长的季节 (2023) {tmdbid=225008}" / "Season 01" / f"漫长的季节 S01E{episode:02d}.strm")
+            identity_file = tmp_path / "identity.json"
+            identity_file.write_text(
+                json.dumps(
+                    {
+                        "identity_overrides": [
+                            {
+                                "match_title": "漫长的季节 (2023)",
+                                "match_path": "/media/hlink/TV/漫长的季节 (2023)",
+                                "title": "漫长的季节",
+                                "tmdbid": 225008,
+                                "season": 1,
+                                "expected_episodes": list(range(1, 13)),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report = {
+                "candidates": [
+                    {
+                        "title": "漫长的季节 (2023) Season 01",
+                        "path": "/media/hlink/TV/漫长的季节 (2023)/Season 1",
+                        "status": "candidate_for_cloud_check",
+                        "size_bytes": 1024,
+                        "video_count": 12,
+                        "episode_numbers": list(range(1, 13)),
+                        "seasons": [1],
+                    }
+                ]
+            }
+
+            result = cloud_check_from_scan_report(report, [str(root)], identity_file=str(identity_file))
+
+            self.assertEqual(result.status_counts, {"cloud_strm_complete": 1})
+            self.assertEqual(result.items[0].tmdbid, 225008)
+
     def test_does_not_treat_episode_sample_as_complete_episode_set(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "strm"

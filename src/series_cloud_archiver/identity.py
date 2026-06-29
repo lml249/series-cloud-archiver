@@ -36,7 +36,24 @@ def identity_for_candidate(
         return overrides[("path", path_value)]
     if title and ("title", title) in overrides:
         return overrides[("title", title)]
+    if path_value:
+        best_path = ""
+        best_record: Optional[Dict[str, object]] = None
+        normalized = _normalize_path(path_value)
+        for key, record in overrides.items():
+            if key[0] != "path":
+                continue
+            override_path = _normalize_path(str(key[1] or ""))
+            if override_path and normalized.startswith(override_path + "/") and len(override_path) > len(best_path):
+                best_path = override_path
+                best_record = record
+        if best_record:
+            return best_record
     return None
+
+
+def _normalize_path(value: str) -> str:
+    return str(value or "").rstrip("/")
 
 
 def resolve_identity_overrides_from_scan_report(
