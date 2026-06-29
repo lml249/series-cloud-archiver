@@ -43,6 +43,7 @@ from series_cloud_archiver.moviepilot import (
     match_mp_subscription,
     render_mp_cleanup_execute_report,
     render_mp_cleanup_preview,
+    scrape_mp_strm_path,
 )
 from series_cloud_archiver.qbittorrent import QBClient, audit_dotqb_files, match_torrent
 from series_cloud_archiver.scanner import scan
@@ -1972,6 +1973,61 @@ class MoviePilotEvidenceTest(unittest.TestCase):
         self.assertEqual(report["destination_roots"], ["/example/hlink/TV/楚汉传奇 (2012) {tmdbid=41146}"])
         self.assertEqual(report["qb_targets"][0]["hash_prefix"], "feedface0000")
         self.assertIn("DELETE /api/v1/history/transfer?deletesrc=true&deletedest=true", rendered)
+
+    def test_mp_scrape_strm_sends_only_strm_side_path(self) -> None:
+        calls = []
+
+        class FakeClient:
+            def __init__(self, base_url, token, timeout=120):
+                self.base_url = base_url
+                self.token = token
+                self.timeout = timeout
+
+            def scrape_media(self, path, storage="local", item_type="dir"):
+                calls.append({"path": path, "storage": storage, "item_type": item_type})
+                return {
+                    "http_status": 200,
+                    "ok": True,
+                    "request": {"path": path, "storage": storage, "type": item_type},
+                    "response": {"success": True, "message": "done"},
+                }
+
+        with patch("series_cloud_archiver.moviepilot.MoviePilotClient", FakeClient):
+            report = scrape_mp_strm_path(
+                "http://moviepilot.example",
+                "token",
+                strm_path="/example/host/mv3/strm/series/Demo Series (2026) {tmdbid=1}",
+                mp_path="/example/container/mv3/strm/series/Demo Series (2026) {tmdbid=1}",
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(calls, [{"path": "/example/container/mv3/strm/series/Demo Series (2026) {tmdbid=1}", "storage": "local", "item_type": "dir"}])
+        self.assertEqual(report["scrape"]["api_success"], True)
+
+    def test_mp_scrape_strm_blocks_cloud_media_path(self) -> None:
+        calls = []
+
+        class FakeClient:
+            def __init__(self, base_url, token, timeout=120):
+                pass
+
+            def scrape_media(self, path, storage="local", item_type="dir"):
+                calls.append(path)
+                raise AssertionError("cloud media paths must not be sent to MoviePilot scrape")
+
+        with patch("series_cloud_archiver.moviepilot.MoviePilotClient", FakeClient):
+            report = scrape_mp_strm_path(
+                "http://moviepilot.example",
+                "token",
+                strm_path="/已整理/series/甄嬛传 (2011) {tmdbid=50878}",
+                mp_path="/已整理/series/甄嬛传 (2011) {tmdbid=50878}",
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(calls, [])
+        self.assertIn("strm_path_must_be_strm_side", report["blockers"])
+        self.assertIn("mp_path_must_be_strm_side", report["blockers"])
+        self.assertIn("cloud_media_paths_are_transfer_and_strm_only", report["warnings"])
 
     def test_mp_cleanup_preview_can_filter_one_season(self) -> None:
         records = [

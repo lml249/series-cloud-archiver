@@ -5056,6 +5056,77 @@ class MV3ProbeTest(unittest.TestCase):
                     ]
                 )
 
+    def test_cli_refuses_mp_scrape_without_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            env_file.write_text("MP_BASE_URL=http://moviepilot.example\nMP_API_TOKEN=token\n", encoding="utf-8")
+
+            with self.assertRaises(SystemExit):
+                main(
+                    [
+                        "mp-scrape-strm",
+                        "--env-file",
+                        str(env_file),
+                        "--strm-path",
+                        "/example/strm/series/Demo",
+                    ]
+                )
+
+    def test_cli_writes_mp_scrape_strm_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "scrape.json"
+            env_file.write_text("MP_BASE_URL=http://moviepilot.example\nMP_API_TOKEN=token\n", encoding="utf-8")
+            calls = []
+
+            def fake_scrape(base_url, token, strm_path, mp_path="", storage="local", item_type="dir", timeout=120):
+                calls.append(
+                    {
+                        "base_url": base_url,
+                        "token": token,
+                        "strm_path": strm_path,
+                        "mp_path": mp_path,
+                        "storage": storage,
+                        "item_type": item_type,
+                        "timeout": timeout,
+                    }
+                )
+                return {
+                    "mode": "mp-scrape-strm-result",
+                    "ok": True,
+                    "strm_path": strm_path,
+                    "mp_path": mp_path,
+                    "storage": storage,
+                    "item_type": item_type,
+                    "scrape": {"http_status": 200, "api_success": True, "response": {"success": True}},
+                    "blockers": [],
+                    "warnings": [],
+                }
+
+            with patch("series_cloud_archiver.cli.scrape_mp_strm_path", fake_scrape):
+                code = main(
+                    [
+                        "mp-scrape-strm",
+                        "--env-file",
+                        str(env_file),
+                        "--strm-path",
+                        "/example/strm/series/Demo",
+                        "--mp-path",
+                        "/mp/strm/series/Demo",
+                        "--approve-scrape",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(code, 0)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(calls[0]["mp_path"], "/mp/strm/series/Demo")
+
     def test_cli_returns_failure_when_mp_cleanup_report_is_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

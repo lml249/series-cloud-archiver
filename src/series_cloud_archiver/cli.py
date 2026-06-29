@@ -55,6 +55,8 @@ from .moviepilot import (
     render_mp_cleanup_execute_report,
     mp_cleanup_preview_from_transfer_history,
     render_mp_cleanup_preview,
+    render_mp_scrape_strm_report,
+    scrape_mp_strm_path,
 )
 from .mv3 import (
     add_mv3_offline_task,
@@ -247,6 +249,17 @@ def build_parser() -> argparse.ArgumentParser:
     mp_cleanup_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
     mp_cleanup_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     mp_cleanup_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    mp_scrape_strm_parser = subcommands.add_parser("mp-scrape-strm", help="Scrape metadata with MoviePilot for a STRM-side path only")
+    mp_scrape_strm_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    mp_scrape_strm_parser.add_argument("--strm-path", required=True, help="Host/DSM STRM-side path for audit and reporting")
+    mp_scrape_strm_parser.add_argument("--mp-path", default="", help="MoviePilot container path; defaults to --strm-path")
+    mp_scrape_strm_parser.add_argument("--storage", default="local", help="MoviePilot storage slug, usually local")
+    mp_scrape_strm_parser.add_argument("--type", choices=["dir", "file"], default="dir", help="MoviePilot FileItem type")
+    mp_scrape_strm_parser.add_argument("--timeout", type=int, default=120, help="Per-request timeout in seconds")
+    mp_scrape_strm_parser.add_argument("--approve-scrape", action="store_true", help="Required: actually send MoviePilot scrape request")
+    mp_scrape_strm_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    mp_scrape_strm_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mp_cleanup_exec_parser = subcommands.add_parser("mp-cleanup-execute", help="Execute approved MoviePilot cleanup from a validated preview report")
     mp_cleanup_exec_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -1423,6 +1436,28 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(rendered)
         return 0
+
+    if args.command == "mp-scrape-strm":
+        if not args.approve_scrape:
+            parser.error("mp-scrape-strm requires --approve-scrape")
+        config = config_from_env(args.env_file, [])
+        if not config.mp_base_url or not config.mp_token:
+            parser.error("mp-scrape-strm requires MP_BASE_URL and MP_API_TOKEN")
+        report = scrape_mp_strm_path(
+            config.mp_base_url,
+            config.mp_token,
+            strm_path=args.strm_path,
+            mp_path=args.mp_path,
+            storage=args.storage,
+            item_type=args.type,
+            timeout=args.timeout,
+        )
+        rendered = render_mp_scrape_strm_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
 
     if args.command == "mp-cleanup-execute":
         if not args.approve_mp_cleanup:

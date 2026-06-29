@@ -11,6 +11,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from .episode import VIDEO_EXTENSIONS
 from .models import FileSystemSeries, MPSubscriptionEvidence
+from .path_safety import cloud_media_paths, non_strm_side_paths
 from .redaction import redact_sensitive_text
 
 
@@ -96,6 +97,38 @@ class MoviePilotClient:
                 "response": _parse_json_object(text),
             }
 
+    def _post_json(self, path: str, query: Optional[Dict[str, object]] = None, body: Optional[Dict[str, object]] = None) -> Dict[str, object]:
+        query = dict(query or {})
+        if self.token:
+            query["token"] = self.token
+        url = f"{self.base_url}{path}"
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(body or {}, ensure_ascii=False).encode("utf-8"),
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            method="POST",
+        )
+        safe_body = _scrape_request_summary(body or {})
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                text = response.read().decode("utf-8", "replace")
+                return {
+                    "http_status": response.status,
+                    "ok": 200 <= response.status < 300,
+                    "request": safe_body,
+                    "response": json.loads(text) if text else {},
+                }
+        except urllib.error.HTTPError as exc:
+            text = exc.read().decode("utf-8", "replace")
+            return {
+                "http_status": exc.code,
+                "ok": False,
+                "request": safe_body,
+                "response": _parse_json_object(text),
+            }
+
     def current_subscriptions(self) -> List[MPSubscriptionRecord]:
         payload = self._get("/api/v1/subscribe/list")
         return [_record_from_payload(item) for item in _as_list(payload)]
@@ -117,6 +150,19 @@ class MoviePilotClient:
 
     def recognize_file(self, path: str) -> object:
         return self._get("/api/v1/media/recognize_file2", {"path": path})
+
+    def scrape_media(self, path: str, storage: str = "local", item_type: str = "dir") -> Dict[str, object]:
+        normalized_path = str(path or "").rstrip("/")
+        body = {
+            "path": normalized_path,
+            "storage": storage,
+            "type": item_type,
+            "name": PurePosixPath(normalized_path).name if normalized_path else "",
+            "basename": PurePosixPath(normalized_path).stem if normalized_path else "",
+        }
+        if item_type == "file":
+            body["extension"] = PurePosixPath(normalized_path).suffix.lstrip(".")
+        return self._post_json(f"/api/v1/media/scrape/{urllib.parse.quote(storage, safe='')}", body=body)
 
     def transfer_history(
         self,
@@ -175,6 +221,88 @@ def mp_cleanup_preview_from_transfer_history(
         include_deletedest=include_deletedest,
         include_deletesrc=include_deletesrc,
     )
+
+
+def scrape_mp_strm_path(
+    base_url: str,
+    token: str,
+    strm_path: str,
+    mp_path: str = "",
+    storage: str = "local",
+    item_type: str = "dir",
+    timeout: int = 120,
+) -> Dict[str, object]:
+    warnings: List[str] = []
+    blockers: List[str] = []
+    normalized_strm_path = str(strm_path or "").rstrip("/")
+    normalized_mp_path = str(mp_path or normalized_strm_path).rstrip("/")
+    storage = str(storage or "local")
+    item_type = str(item_type or "dir")
+    if not normalized_strm_path:
+        blockers.append("strm_path_required")
+    if not normalized_mp_path:
+        blockers.append("mp_path_required")
+    for label, value in (("strm_path", normalized_strm_path), ("mp_path", normalized_mp_path)):
+        if cloud_media_paths([value]):
+            blockers.append(f"{label}_must_be_strm_side")
+            warnings.append("cloud_media_paths_are_transfer_and_strm_only")
+        elif non_strm_side_paths([value]):
+            blockers.append(f"{label}_must_be_strm_side")
+            warnings.append("mp_scrape_paths_must_be_strm_side")
+    if item_type not in {"dir", "file"}:
+        blockers.append("unsupported_item_type")
+
+    scrape = {"skipped": True}
+    if not blockers:
+        client = MoviePilotClient(base_url, token, timeout=timeout)
+        scrape = client.scrape_media(normalized_mp_path, storage=storage, item_type=item_type)
+        response = scrape.get("response") if isinstance(scrape.get("response"), dict) else {}
+        api_success = bool(response.get("success")) if response else bool(scrape.get("ok"))
+        scrape["api_success"] = api_success
+        if not scrape.get("ok") or not api_success:
+            blockers.append("mp_scrape_request_failed")
+
+    return {
+        "mode": "mp-scrape-strm-result",
+        "ok": not blockers,
+        "strm_path": normalized_strm_path,
+        "mp_path": normalized_mp_path,
+        "storage": storage,
+        "item_type": item_type,
+        "scrape": scrape,
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "safety": "approved MoviePilot scrape request only for STRM-side paths; cloud media directories such as /已整理 and /未整理 are blocked. No qBittorrent action, hlink deletion, source deletion, cloud media scrape, or filesystem cleanup is performed",
+    }
+
+
+def render_mp_scrape_strm_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    scrape = report.get("scrape") if isinstance(report.get("scrape"), dict) else {}
+    response = scrape.get("response") if isinstance(scrape.get("response"), dict) else {}
+    lines = [
+        "# MoviePilot STRM Scrape",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- STRM path: `{report.get('strm_path', '')}`",
+        f"- MP path: `{report.get('mp_path', '')}`",
+        f"- Storage: `{report.get('storage', '')}`",
+        f"- Type: `{report.get('item_type', '')}`",
+        f"- HTTP: `{scrape.get('http_status', '')}`",
+        f"- API success: `{bool(scrape.get('api_success'))}`",
+        f"- Message: `{response.get('message', '')}`",
+        "- Safety: MoviePilot scrape is limited to STRM-side paths.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    return "\n".join(lines)
 
 
 def build_mp_cleanup_preview(
