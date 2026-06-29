@@ -150,7 +150,7 @@ class CloudCheckTest(unittest.TestCase):
                         "title": "Foundation.S01.2021",
                         "status": "candidate_for_cloud_check",
                         "size_bytes": 1024,
-                        "video_count": 10,
+                        "video_count": 2,
                         "episode_sample": [1, 2],
                     }
                 ]
@@ -162,7 +162,7 @@ class CloudCheckTest(unittest.TestCase):
             self.assertEqual(result.items[0].tmdbid, 93740)
             self.assertEqual(result.items[0].expected_count, 2)
 
-    def test_identity_expected_episodes_are_not_masked_by_partial_local_episodes(self) -> None:
+    def test_identity_expected_episodes_fill_when_local_episode_numbers_are_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             root = tmp_path / "strm"
@@ -191,8 +191,6 @@ class CloudCheckTest(unittest.TestCase):
                         "title": "Foundation.S01.2021",
                         "status": "candidate_for_cloud_check",
                         "size_bytes": 1024,
-                        "video_count": 2,
-                        "episode_numbers": [1, 2],
                     }
                 ]
             }
@@ -202,6 +200,48 @@ class CloudCheckTest(unittest.TestCase):
             self.assertEqual(result.status_counts, {"cloud_strm_incomplete": 1})
             self.assertEqual(result.items[0].expected_episodes, [1, 2, 3])
             self.assertEqual(result.items[0].missing_episodes, [3])
+
+    def test_local_episode_numbers_take_precedence_over_inflated_identity_expected_episodes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            root = tmp_path / "strm"
+            for episode in range(1, 37):
+                touch(root / "series" / "折腰 (2025) {tmdbid=296753}" / "Season 01" / f"折腰 S01E{episode:02d}.strm")
+            identity_file = tmp_path / "identity.json"
+            identity_file.write_text(
+                json.dumps(
+                    {
+                        "identity_overrides": [
+                            {
+                                "match_title": "折腰 (2025)",
+                                "title": "折腰",
+                                "tmdbid": 296753,
+                                "season": 1,
+                                "expected_episodes": list(range(1, 72)),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report = {
+                "candidates": [
+                    {
+                        "title": "折腰 (2025)",
+                        "status": "candidate_for_cloud_check",
+                        "size_bytes": 1024,
+                        "video_count": 36,
+                        "episode_numbers": list(range(1, 37)),
+                    }
+                ]
+            }
+
+            result = cloud_check_from_scan_report(report, [str(root)], identity_file=str(identity_file))
+
+            self.assertEqual(result.status_counts, {"cloud_strm_complete": 1})
+            self.assertEqual(result.items[0].expected_count, 36)
+            self.assertEqual(result.items[0].expected_episodes, list(range(1, 37)))
+            self.assertEqual(result.items[0].missing_episodes, [])
 
 
 if __name__ == "__main__":

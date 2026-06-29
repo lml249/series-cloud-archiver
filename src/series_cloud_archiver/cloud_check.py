@@ -315,18 +315,27 @@ def _find_cloud_entry(
 
 def _episode_numbers(candidate: Dict[str, object], identity: Optional[Dict[str, object]] = None) -> Set[int]:
     identity = identity or {}
-    values: Set[int] = set()
-    for source in (identity.get("expected_episodes"), candidate.get("episode_numbers")):
-        if isinstance(source, list):
-            values.update(int(value) for value in source if isinstance(value, int) or str(value).isdigit())
-    return values
+    local_values = _int_set(candidate.get("episode_numbers"))
+    if local_values:
+        return local_values
+    if int(candidate.get("video_count") or 0):
+        return set()
+    return _int_set(identity.get("expected_episodes"))
 
 
 def _total_episode(candidate: Dict[str, object], identity: Optional[Dict[str, object]] = None) -> int:
     mp = candidate.get("mp") if isinstance(candidate.get("mp"), dict) else {}
     identity = identity or {}
     expected = identity.get("expected_episodes") if isinstance(identity.get("expected_episodes"), list) else []
+    if int(candidate.get("video_count") or 0):
+        return int((mp or {}).get("total_episode") or 0)
     return int((mp or {}).get("total_episode") or len(expected) or 0)
+
+
+def _int_set(source: object) -> Set[int]:
+    if not isinstance(source, list):
+        return set()
+    return {int(value) for value in source if isinstance(value, int) or str(value).isdigit()}
 
 
 def _candidate_search_keywords(candidate: Dict[str, object], identity: Optional[Dict[str, object]] = None) -> List[str]:
