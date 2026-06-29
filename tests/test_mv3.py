@@ -3631,6 +3631,54 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("strm_dir_should_be_strm_root_not_media_category", report["blockers"])
         self.assertEqual(report["transfer"], {"skipped": True})
 
+    def test_organize_transfer_blocks_cloud_media_strm_dir(self) -> None:
+        browse_report = {
+            "path": "/未整理/Demo",
+            "items": [
+                {"name": "Demo.S01E01.mp4", "kind": "file", "episode": 1, "file_id": "file-1"},
+            ],
+        }
+
+        report = execute_mv3_organize_transfer_from_browse_report(
+            "http://mv3.example",
+            "token",
+            browse_report,
+            target_dir="/已整理",
+            strm_dir="/已整理",
+            tmdb_id=123,
+            expected_episode_count=1,
+            expected_episode_min=1,
+            expected_episode_max=1,
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("strm_dir_must_be_strm_side", report["blockers"])
+        self.assertEqual(report["transfer"], {"skipped": True})
+
+    def test_organize_transfer_blocks_strm_side_target_dir(self) -> None:
+        browse_report = {
+            "path": "/未整理/Demo",
+            "items": [
+                {"name": "Demo.S01E01.mp4", "kind": "file", "episode": 1, "file_id": "file-1"},
+            ],
+        }
+
+        report = execute_mv3_organize_transfer_from_browse_report(
+            "http://mv3.example",
+            "token",
+            browse_report,
+            target_dir="/strm",
+            strm_dir="/strm-output",
+            tmdb_id=123,
+            expected_episode_count=1,
+            expected_episode_min=1,
+            expected_episode_max=1,
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("target_dir_must_not_be_strm_side", report["blockers"])
+        self.assertEqual(report["transfer"], {"skipped": True})
+
     def test_organize_transfer_allows_explicit_non_contiguous_episodes(self) -> None:
         seen = {}
         browse_report = {

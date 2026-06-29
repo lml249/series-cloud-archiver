@@ -76,6 +76,10 @@ must happen against STRM-backed library paths, not beside the cloud media files.
 
 - MV3 organize transfer requests should submit media files only and should not
   copy non-media metadata sidecars into the cloud media directory.
+- MV3 organize transfer has two separate path roles: `target_dir` must be the
+  cloud organize root, while `strm_dir` must be a clear STRM-side root. Passing
+  a STRM path as the cloud target, or a cloud media/bare category path as the
+  STRM output root, is blocked before any MV3 write request is sent.
 - Browse reports must be reclassified by filename extension before organize
   transfer so unmarked `.nfo`, `.jpg`, `.jpeg`, `.png`, or `.webp` files cannot
   be submitted as media files.

@@ -2039,10 +2039,14 @@ def execute_mv3_organize_transfer_from_browse_report(
         blockers.append("target_dir_required")
     if _looks_like_mv3_category_dir(normalized_target_dir):
         blockers.append("target_dir_should_be_organize_root_not_media_category")
+    if normalized_target_dir and looks_like_strm_side_path(normalized_target_dir):
+        blockers.append("target_dir_must_not_be_strm_side")
     if not normalized_strm_dir:
         blockers.append("strm_dir_required")
     if _looks_like_mv3_category_dir(normalized_strm_dir):
         blockers.append("strm_dir_should_be_strm_root_not_media_category")
+    if normalized_strm_dir and not looks_like_strm_side_path(normalized_strm_dir):
+        blockers.append("strm_dir_must_be_strm_side")
     if not tmdb_id:
         blockers.append("tmdb_id_required")
     if expected_episode_count <= 0:

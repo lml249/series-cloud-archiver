@@ -594,7 +594,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-scan-source \
 
 `mv3-organize-scan-source` 只调用 `/api/v1/organize/scan-source`。MV3 的接口说明把它描述为“扫描 + 过滤，返回候选媒体文件清单（不做识别、不写盘）”，所以它不会调用 `/api/v1/organize/transfer`、不会移动文件、不会生成 STRM，也不会操作 qB。
 
-确认 `mv3-cloud-browse` 里的集数完整后，才允许调用 MV3 整理转存。这里的 `--target-dir` 必须传 MV3 整理根目录，例如 `/已整理`，不要传 `/已整理/series`；`--strm-dir` 也必须传 STRM 根目录，例如 `/strm`，不要传 `/strm/series`。MV3 在 `enable_primary_category=true` 时会自己补 `series`，否则可能生成重复的 `series/series` 路径。
+确认 `mv3-cloud-browse` 里的集数完整后，才允许调用 MV3 整理转存。这里的 `--target-dir` 必须传 MV3 云盘整理根目录，例如 `/已整理`，不要传 `/已整理/series`，也不能传 `/strm` 这类 STRM 侧路径；`--strm-dir` 必须传 STRM 根目录，例如 `/strm`，不要传 `/strm/series`，也不能传 `/已整理`、`/未整理` 或裸 `/series`。MV3 在 `enable_primary_category=true` 时会自己补 `series`，否则可能生成重复的 `series/series` 路径。项目会在调用 MV3 写接口前检查这两个目录的角色，填反或混用会直接阻断。
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-browse \
