@@ -1770,6 +1770,30 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["summary"]["metadata_sidecar_samples"], ["Demo.S01E01.nfo", "poster.jpg"])
         self.assertEqual([item["media_kind"] for item in report["items"]], ["video", "metadata_sidecar", "metadata_sidecar"])
 
+    def test_cloud_browse_reports_mv3_license_required(self) -> None:
+        class FakeResponse:
+            status = 403
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps({"license_required": True, "message": "未激活授权"}).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        with patch("urllib.request.urlopen", return_value=FakeResponse()):
+            report = browse_mv3_cloud_folder("http://mv3.example", "token", folder_id="folder-1")
+
+        self.assertFalse(report["ok"])
+        self.assertIn("mv3_license_required", report["warnings"])
+        self.assertIn("no_cloud_items_found", report["warnings"])
+
     def test_cloud_media_sidecar_verify_blocks_metadata_and_allows_subtitles(self) -> None:
         class FakeResponse:
             status = 200
@@ -1824,6 +1848,32 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["scan"]["subtitle_sidecar_file_count"], 1)
         self.assertEqual(report["scan"]["metadata_sidecar_file_count"], 1)
         self.assertIn("/已整理/series/Demo/Season 1/Demo.S01E01.nfo", rendered)
+
+    def test_cloud_media_sidecar_verify_blocks_mv3_license_required(self) -> None:
+        class FakeResponse:
+            status = 403
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps({"license_required": True, "message": "未激活授权"}).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        with patch("urllib.request.urlopen", return_value=FakeResponse()):
+            report = verify_mv3_cloud_media_sidecars("http://mv3.example", "token", folder_id="folder-1")
+
+        self.assertFalse(report["ok"])
+        self.assertIn("mv3_license_required", report["blockers"])
+        self.assertIn("cloud_media_scan_truncated", report["blockers"])
+        self.assertIn("mv3_license_required", report["warnings"])
+        self.assertEqual(report["scan"]["folders"][0]["error"], "mv3_license_required")
 
     def test_cloud_media_sidecar_cleanup_dry_run_plans_metadata_only(self) -> None:
         calls = []

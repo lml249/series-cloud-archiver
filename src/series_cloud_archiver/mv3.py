@@ -442,6 +442,8 @@ def browse_mv3_cloud_folder(
     episode_numbers = _episode_numbers_from_scan_items([{"name": item.get("name")} for item in media_items])
     if not rows and folder_id:
         warnings.append("no_cloud_items_found")
+    if _mv3_license_required_payload(folder_payload):
+        warnings.append("mv3_license_required")
     if episode_numbers and _missing_episode_numbers(episode_numbers):
         warnings.append("episode_gap_detected")
     if episode_numbers and min(episode_numbers) > 1:
@@ -893,6 +895,8 @@ def verify_mv3_cloud_media_sidecars(
             max_depth=max(0, max_depth),
         )
         warnings.extend(str(warning) for warning in scan.get("warnings", []) if warning)
+        if _mv3_scan_has_license_required(scan):
+            blockers.append("mv3_license_required")
         if int(scan.get("metadata_sidecar_file_count") or 0) > 0:
             blockers.append("cloud_media_metadata_sidecar_present")
         if scan.get("truncated"):
@@ -951,6 +955,8 @@ def batch_verify_mv3_cloud_media_sidecars(
     if root_id:
         folder_payload, browse_status, browse_content_type = _read_cloud_folder_status(client, root_id, storage, limit)
         rows = _cloud_rows(folder_payload)
+        if _mv3_license_required_payload(folder_payload):
+            blockers.append("mv3_license_required")
         if not (200 <= browse_status < 300):
             blockers.append("cloud_media_root_browse_failed")
         if len(rows) >= limit:
@@ -990,6 +996,8 @@ def batch_verify_mv3_cloud_media_sidecars(
                 max_depth=max(0, max_depth),
             )
             item_warnings.extend(str(warning) for warning in scan.get("warnings", []) if warning)
+            if _mv3_scan_has_license_required(scan):
+                item_blockers.append("mv3_license_required")
             if scan.get("truncated"):
                 item_blockers.append("cloud_media_scan_truncated")
                 truncated_count += 1
@@ -1109,6 +1117,8 @@ def cleanup_mv3_cloud_media_sidecars(
             metadata_sidecar_limit=0,
         )
         warnings.extend(str(warning) for warning in scan.get("warnings", []) if warning)
+        if _mv3_scan_has_license_required(scan):
+            blockers.append("mv3_license_required")
         if scan.get("truncated"):
             blockers.append("cloud_media_scan_truncated")
 
@@ -3761,6 +3771,9 @@ def _scan_mv3_cloud_media_sidecars(
         }
         folders.append(folder_summary)
         if not (200 <= status < 300):
+            if _mv3_license_required_payload(folder_payload):
+                folder_summary["error"] = "mv3_license_required"
+                warnings.append("mv3_license_required")
             warnings.append(f"cloud_folder_browse_failed:{folder_path or folder_id}:{status}")
             truncated = True
             continue
@@ -3815,6 +3828,27 @@ def _scan_mv3_cloud_media_sidecars(
         "truncated": truncated,
         "warnings": warnings,
     }
+
+
+def _mv3_license_required_payload(payload: object) -> bool:
+    if isinstance(payload, dict):
+        if payload.get("license_required") is True:
+            return True
+        data = payload.get("data")
+        if isinstance(data, dict) and data.get("license_required") is True:
+            return True
+        message = str(payload.get("message") or data.get("message") if isinstance(data, dict) else payload.get("message") or "")
+        return bool(payload.get("license_required")) or "未激活授权" in message
+    return False
+
+
+def _mv3_scan_has_license_required(scan: Dict[str, object]) -> bool:
+    if "mv3_license_required" in [str(warning) for warning in scan.get("warnings", []) if warning]:
+        return True
+    folders = scan.get("folders")
+    if isinstance(folders, list):
+        return any(isinstance(folder, dict) and folder.get("error") == "mv3_license_required" for folder in folders)
+    return False
 
 
 def _empty_cloud_sidecar_scan() -> Dict[str, object]:
