@@ -83,6 +83,7 @@ from .mv3 import (
     index_mv3_cloud_root_for_transfer_plan,
     list_mv3_strm_records,
     materialize_mv3_strm_records,
+    normalize_mv3_received_season_folder,
     probe_mv3,
     redirect_mv3_strm_records,
     regenerate_mv3_strm_records,
@@ -103,6 +104,7 @@ from .mv3 import (
     render_mv3_organize_transfer_report,
     render_mv3_organize_scan_report,
     render_mv3_probe_report,
+    render_mv3_received_season_normalize_report,
     render_mv3_resource_search_report,
     render_mv3_share_receive_report,
     render_mv3_share_preview_report,
@@ -917,6 +919,21 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_browse_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     cloud_browse_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     cloud_browse_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    normalize_received_parser = subcommands.add_parser("mv3-normalize-received-season", help="Dry-run or move a received bare season folder under a titled staging folder")
+    normalize_received_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    normalize_received_parser.add_argument("--source-path", required=True, help="Bare received season folder path, e.g. /未整理/Season 1")
+    normalize_received_parser.add_argument("--title", required=True, help="Canonical series title")
+    normalize_received_parser.add_argument("--tmdb-id", type=int, required=True, help="Expected TMDB ID")
+    normalize_received_parser.add_argument("--season", type=int, required=True, help="Season number to normalize")
+    normalize_received_parser.add_argument("--year", type=int, default=0, help="Optional release year for target title folder")
+    normalize_received_parser.add_argument("--staging-root", default="/未整理", help="Receive staging root; must remain /未整理")
+    normalize_received_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    normalize_received_parser.add_argument("--limit", type=int, default=1150, help="Maximum cloud folder items to request")
+    normalize_received_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    normalize_received_parser.add_argument("--approve-move", action="store_true", help="Required: actually move the received season folder")
+    normalize_received_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    normalize_received_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     cloud_search_parser = subcommands.add_parser("mv3-cloud-search", help="Readonly MV3 cloud file search")
     cloud_search_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -2812,6 +2829,31 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(rendered)
         return 0
+
+    if args.command == "mv3-normalize-received-season":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-normalize-received-season requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = normalize_mv3_received_season_folder(
+            config.mv3_base_url,
+            config.mv3_token,
+            source_path=args.source_path,
+            title=args.title,
+            tmdb_id=args.tmdb_id,
+            season=args.season,
+            year=args.year,
+            staging_root=args.staging_root,
+            storage=args.storage,
+            limit=args.limit,
+            timeout=args.timeout,
+            approve_move=args.approve_move,
+        )
+        rendered = render_mv3_received_season_normalize_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
 
     if args.command == "mv3-cloud-search":
         config = config_from_env(args.env_file, [])

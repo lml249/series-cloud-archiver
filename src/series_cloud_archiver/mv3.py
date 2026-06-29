@@ -483,6 +483,132 @@ def browse_mv3_cloud_folder(
     }
 
 
+def normalize_mv3_received_season_folder(
+    base_url: str,
+    token: str,
+    source_path: str,
+    title: str,
+    tmdb_id: int,
+    season: int,
+    year: int = 0,
+    staging_root: str = "/未整理",
+    storage: str = "115-default",
+    limit: int = 1150,
+    timeout: int = 60,
+    approve_move: bool = False,
+) -> Dict[str, object]:
+    warnings: List[str] = []
+    blockers: List[str] = []
+    normalized_staging_root = _normalize_cloud_path(staging_root)
+    normalized_source_path = _normalize_cloud_path(source_path)
+    normalized_title = str(title or "").strip()
+    safe_season = int(season or 0)
+    target_title_name = _cloud_title_folder_name(normalized_title, year, tmdb_id)
+    target_title_path = f"{normalized_staging_root}/{target_title_name}" if normalized_staging_root and target_title_name else ""
+    target_season_name = f"Season {safe_season:02d}" if safe_season > 0 else ""
+    target_season_path = f"{target_title_path}/{target_season_name}" if target_title_path and target_season_name else ""
+    source_name = normalized_source_path.rstrip("/").rsplit("/", 1)[-1] if normalized_source_path else ""
+
+    if not normalized_staging_root:
+        blockers.append("staging_root_required")
+    if normalized_staging_root and normalized_staging_root != "/未整理":
+        blockers.append("staging_root_must_be_unorganized")
+    if not normalized_source_path:
+        blockers.append("source_path_required")
+    if normalized_source_path and normalized_staging_root and not _cloud_path_is_direct_child(normalized_source_path, normalized_staging_root):
+        blockers.append("source_must_be_direct_child_of_staging_root")
+    if source_name and not _looks_like_season_folder(source_name):
+        blockers.append("source_must_look_like_season_folder")
+    if not normalized_title:
+        blockers.append("title_required")
+    if not tmdb_id:
+        blockers.append("tmdb_id_required")
+    if safe_season <= 0:
+        blockers.append("season_required")
+    if normalized_source_path and target_season_path and normalized_source_path == target_season_path:
+        blockers.append("source_already_normalized")
+
+    client = MV3Client(base_url, token, timeout=timeout)
+    source_summary: Dict[str, object] = {}
+    title_summary: Dict[str, object] = {}
+    target_season_summary: Dict[str, object] = {}
+    ensure_report: Dict[str, object] = {"skipped": True}
+    move_report: Dict[str, object] = {"skipped": True}
+
+    if normalized_source_path:
+        source_summary = _cloud_folder_summary_by_path(client, normalized_source_path, storage, limit)
+        if not source_summary.get("exists"):
+            blockers.append("source_folder_not_found")
+        elif int(source_summary.get("media_count") or 0) <= 0 and int(source_summary.get("folder_count") or 0) <= 0:
+            blockers.append("source_folder_empty")
+        if str(source_summary.get("kind") or "") and str(source_summary.get("kind") or "") != "folder":
+            blockers.append("source_must_be_folder")
+
+    if target_title_path:
+        title_summary = _cloud_folder_summary_by_path(client, target_title_path, storage, limit)
+    if target_season_path:
+        target_season_summary = _cloud_folder_summary_by_path(client, target_season_path, storage, limit)
+        if target_season_summary.get("exists"):
+            blockers.append("target_season_already_exists")
+
+    source_folder_id = str(source_summary.get("folder_id") or "")
+    if source_summary and not source_folder_id:
+        blockers.append("source_folder_id_not_found")
+
+    if not blockers and approve_move:
+        ensure_report = ensure_mv3_115_path(base_url, token, target_title_path, storage=storage, timeout=timeout)
+        if not ensure_report.get("ok"):
+            blockers.append("target_title_folder_create_failed")
+        target_title_id = str(ensure_report.get("final_folder_id") or "")
+        if not target_title_id:
+            blockers.append("target_title_folder_id_not_found")
+        if not blockers:
+            move_report = _mv3_move_115(client, [source_folder_id], target_title_id, storage)
+            if not move_report.get("ok"):
+                blockers.append("source_folder_move_failed")
+            else:
+                target_season_summary = _cloud_folder_summary_by_path(client, target_season_path, storage, limit)
+                source_summary = _cloud_folder_summary_by_path(client, normalized_source_path, storage, limit)
+                if not target_season_summary.get("exists"):
+                    blockers.append("post_move_target_season_not_found")
+                elif str(target_season_summary.get("folder_id") or "") != source_folder_id:
+                    blockers.append("post_move_target_folder_id_mismatch")
+                if source_summary.get("exists"):
+                    blockers.append("post_move_source_still_exists")
+    elif not blockers:
+        warnings.append("dry_run_only_no_cloud_move_performed")
+
+    write_executed = bool(approve_move and not move_report.get("skipped"))
+    return {
+        "mode": "mv3-received-season-normalize-result",
+        "ok": not blockers and (bool(move_report.get("ok")) if write_executed else True),
+        "dry_run": not approve_move,
+        "source_path": normalized_source_path,
+        "staging_root": normalized_staging_root,
+        "target_title_path": target_title_path,
+        "target_season_path": target_season_path,
+        "title": normalized_title,
+        "year": int(year or 0),
+        "tmdb_id": int(tmdb_id or 0),
+        "season": safe_season,
+        "storage": storage,
+        "source": _public_cloud_folder_summary(source_summary) if source_summary else {},
+        "target_title": _public_cloud_folder_summary(title_summary) if title_summary else {},
+        "target_season": _public_cloud_folder_summary(target_season_summary) if target_season_summary else {},
+        "operations": {
+            "ensure_target_title": ensure_report,
+            "move_source_folder": move_report,
+        },
+        "warnings": sorted(set(warnings)),
+        "blockers": sorted(set(blockers)),
+        "safety": (
+            "dry-run by default; with approval this creates only the title staging folder if missing and moves exactly one "
+            "received season folder under /未整理 into that title folder. Cloud storage is only for transfer and STRM generation; "
+            "no scraping metadata sidecars, STRM generation, qBittorrent action, hlink deletion, local filesystem deletion, or MP cleanup is performed"
+        ),
+    }
+
+
 def search_mv3_cloud_files(
     base_url: str,
     token: str,
@@ -2924,6 +3050,36 @@ def render_mv3_organize_transfer_report(report: Dict[str, object], output_format
     return "\n".join(lines)
 
 
+def render_mv3_received_season_normalize_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    operations = report.get("operations") if isinstance(report.get("operations"), dict) else {}
+    move = operations.get("move_source_folder") if isinstance(operations.get("move_source_folder"), dict) else {}
+    lines = [
+        "# MV3 Received Season Normalize",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Dry run: `{bool(report.get('dry_run'))}`",
+        f"- Source path: `{report.get('source_path', '')}`",
+        f"- Target title path: `{report.get('target_title_path', '')}`",
+        f"- Target season path: `{report.get('target_season_path', '')}`",
+        f"- Title: `{report.get('title', '')}`",
+        f"- TMDB ID: `{report.get('tmdb_id', '')}`",
+        f"- Season: `{report.get('season', '')}`",
+        f"- Move OK: `{bool(move.get('ok'))}`",
+        "- Safety: only a received staging season folder may be moved; cloud metadata scraping sidecars are not written, and no STRM generation or cleanup was performed.",
+    ]
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    return "\n".join(lines)
+
+
 def render_mv3_organize_scan_report(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -4135,6 +4291,32 @@ def _cloud_file_id(item: Dict[str, object]) -> str:
 
 def _looks_like_season_folder(name: str) -> bool:
     return bool(re.search(r"(?i)(^season\s*0*\d+$|^s0*\d+$|第\s*\d+\s*季)", name or ""))
+
+
+def _cloud_title_folder_name(title: str, year: int, tmdb_id: int) -> str:
+    cleaned = str(title or "").strip().strip("/")
+    if not cleaned:
+        return ""
+    suffix = f"{{tmdbid={int(tmdb_id)}}}" if int(tmdb_id or 0) > 0 else ""
+    if re.search(r"\{tmdbid=\d+\}", cleaned):
+        return cleaned
+    if year and re.search(r"\(\d{4}\)", cleaned):
+        return f"{cleaned} {suffix}".strip()
+    if year:
+        return f"{cleaned} ({int(year)}) {suffix}".strip()
+    return f"{cleaned} {suffix}".strip()
+
+
+def _cloud_path_is_direct_child(path: str, parent: str) -> bool:
+    normalized_path = _normalize_cloud_path(path)
+    normalized_parent = _normalize_cloud_path(parent)
+    if not normalized_path or not normalized_parent:
+        return False
+    prefix = normalized_parent.rstrip("/") + "/"
+    if not normalized_path.startswith(prefix):
+        return False
+    remainder = normalized_path[len(prefix) :]
+    return bool(remainder) and "/" not in remainder
 
 
 def _is_media_name(name: str) -> bool:

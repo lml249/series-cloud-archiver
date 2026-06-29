@@ -21,6 +21,7 @@ from series_cloud_archiver.mv3 import (
     inspect_mv3_instances,
     list_mv3_strm_records,
     materialize_mv3_strm_records,
+    normalize_mv3_received_season_folder,
     probe_mv3,
     redirect_mv3_strm_records,
     render_mv3_capabilities_report,
@@ -40,6 +41,7 @@ from series_cloud_archiver.mv3 import (
     render_mv3_organize_transfer_report,
     render_mv3_organize_scan_report,
     render_mv3_probe_report,
+    render_mv3_received_season_normalize_report,
     render_mv3_resource_search_report,
     render_mv3_share_receive_report,
     render_mv3_share_preview_report,
@@ -65,6 +67,136 @@ from series_cloud_archiver.mv3 import (
 
 
 class MV3WrongRootRepairTest(unittest.TestCase):
+    def test_received_season_normalize_dry_run_does_not_move(self) -> None:
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append((request.full_url, getattr(request, "data", None)))
+            return _fake_mv3_received_season_normalize_response(request, moved=False, title_created=False)
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = normalize_mv3_received_season_folder(
+                "http://mv3.example",
+                "token",
+                "/未整理/Season 1",
+                title="折腰",
+                tmdb_id=296753,
+                season=1,
+                year=2025,
+                storage="115-default",
+            )
+
+        rendered = render_mv3_received_season_normalize_report(report, "json")
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["dry_run"])
+        self.assertEqual(report["target_season_path"], "/未整理/折腰 (2025) {tmdbid=296753}/Season 01")
+        self.assertEqual(report["source"]["folder_id"], "source-season-1")
+        self.assertFalse(any("/api/v1/files/115/move" in url for url, _body in calls))
+        self.assertNotIn("token", rendered)
+
+    def test_received_season_normalize_moves_with_approval(self) -> None:
+        posted = []
+        state = {"moved": False, "title_created": False}
+
+        def fake_urlopen(request, timeout):
+            data = getattr(request, "data", None)
+            if data:
+                body = json.loads(data.decode("utf-8"))
+                posted.append((request.full_url, body))
+                if request.full_url.endswith("/api/v1/files/115/folder"):
+                    state["title_created"] = True
+                if request.full_url.endswith("/api/v1/files/115/move"):
+                    state["moved"] = True
+            return _fake_mv3_received_season_normalize_response(
+                request,
+                moved=state["moved"],
+                title_created=state["title_created"],
+            )
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = normalize_mv3_received_season_folder(
+                "http://mv3.example",
+                "token",
+                "/未整理/Season 1",
+                title="折腰",
+                tmdb_id=296753,
+                season=1,
+                year=2025,
+                storage="115-default",
+                approve_move=True,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertFalse(report["dry_run"])
+        move_bodies = [body for url, body in posted if url.endswith("/api/v1/files/115/move")]
+        self.assertEqual(move_bodies, [{"file_ids": ["source-season-1"], "target_cid": "target-title-1", "storage": "115-default"}])
+        self.assertEqual(report["target_season"]["folder_id"], "source-season-1")
+        self.assertFalse(report["source"]["exists"])
+
+    def test_received_season_normalize_blocks_existing_target_season(self) -> None:
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append(request.full_url)
+            return _fake_mv3_received_season_normalize_response(
+                request,
+                moved=False,
+                title_created=True,
+                target_season_exists=True,
+            )
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = normalize_mv3_received_season_folder(
+                "http://mv3.example",
+                "token",
+                "/未整理/Season 1",
+                title="折腰",
+                tmdb_id=296753,
+                season=1,
+                year=2025,
+                storage="115-default",
+                approve_move=True,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("target_season_already_exists", report["blockers"])
+        self.assertFalse(any("/api/v1/files/115/move" in url for url in calls))
+
+    def test_cli_writes_received_season_normalize_dry_run_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "normalize.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+
+            with patch("urllib.request.urlopen", lambda request, timeout: _fake_mv3_received_season_normalize_response(request, moved=False, title_created=False)):
+                code = main(
+                    [
+                        "mv3-normalize-received-season",
+                        "--env-file",
+                        str(env_file),
+                        "--source-path",
+                        "/未整理/Season 1",
+                        "--title",
+                        "折腰",
+                        "--tmdb-id",
+                        "296753",
+                        "--season",
+                        "1",
+                        "--year",
+                        "2025",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["dry_run"])
+            self.assertEqual(payload["target_title_path"], "/未整理/折腰 (2025) {tmdbid=296753}")
+
     def test_wrong_root_repair_dry_run_plans_duplicate_delete_without_writes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             strm_root = Path(tmp) / "strm" / "series"
@@ -413,6 +545,73 @@ class MV3WrongRootRepairTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertTrue(payload["dry_run"])
             self.assertEqual(payload["delete_plan"]["duplicate_video_count"], 2)
+
+
+def _fake_mv3_received_season_normalize_response(request, moved=False, title_created=False, target_season_exists=False):
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            return False
+
+        def read(self, _limit=-1):
+            return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+
+        @property
+        def headers(self):
+            return {"Content-Type": "application/json"}
+
+    parsed = urllib.parse.urlparse(request.full_url)
+    query = urllib.parse.parse_qs(parsed.query)
+    path = query.get("path", [""])[0]
+    cid = query.get("cid", [""])[0]
+    target_title = "/未整理/折腰 (2025) {tmdbid=296753}"
+    target_season = f"{target_title}/Season 01"
+    source_items = [
+        {"name": "折腰 - S01E01.mkv", "fid": "file-1", "is_dir": False, "size": 100},
+        {"name": "折腰 - S01E02.mkv", "fid": "file-2", "is_dir": False, "size": 100},
+    ]
+
+    if parsed.path.endswith("/api/v1/files/115/folder"):
+        return FakeResponse({"success": True, "data": {"cid": "target-title-1"}})
+    if parsed.path.endswith("/api/v1/files/115/move"):
+        return FakeResponse({"success": True, "message": "ok", "data": None})
+    if parsed.path.endswith("/api/v1/files/cloud/info"):
+        info = {
+            "/未整理": {"name": "未整理", "cid": "staging-root", "is_dir": True},
+            "/未整理/Season 1": {} if moved else {"name": "Season 1", "cid": "source-season-1", "is_dir": True},
+            target_title: {"name": "折腰 (2025) {tmdbid=296753}", "cid": "target-title-1", "is_dir": True} if title_created or moved or target_season_exists else {},
+            target_season: (
+                {"name": "Season 01", "cid": "existing-season-1", "is_dir": True}
+                if target_season_exists
+                else ({"name": "Season 1", "cid": "source-season-1", "is_dir": True} if moved else {})
+            ),
+        }
+        return FakeResponse({"success": True, "data": info.get(path, {})})
+    if parsed.path.endswith("/api/v1/files/cloud/browse") or parsed.path.endswith("/api/v1/files/115/browse"):
+        browse = {
+            "0": [{"name": "未整理", "cid": "staging-root", "is_dir": True}],
+            "staging-root": (
+                []
+                if moved
+                else [{"name": "Season 1", "cid": "source-season-1", "is_dir": True}]
+            ),
+            "source-season-1": source_items,
+            "target-title-1": (
+                [{"name": "Season 01", "cid": "existing-season-1", "is_dir": True}]
+                if target_season_exists
+                else ([{"name": "Season 1", "cid": "source-season-1", "is_dir": True}] if moved else [])
+            ),
+            "existing-season-1": source_items,
+        }
+        return FakeResponse({"success": True, "data": {"items": browse.get(cid, [])}})
+    return FakeResponse({"success": True, "data": {}})
 
 
 def _fake_mv3_wrong_root_response(request, move_case=False, deleted=False, moved=False):
