@@ -206,6 +206,7 @@ def _batch_item(
     status = str(cloud_item.get("status") or transfer_item.get("source_status") or "")
     recommended = share_item.get("recommended_candidate") if isinstance(share_item.get("recommended_candidate"), dict) else {}
     share_candidates = share_item.get("candidates") if isinstance(share_item.get("candidates"), list) else []
+    candidate_diagnostics = _candidate_diagnostics(share_item, recommended, share_candidates, season)
     strm_root = _strm_root_from_cloud_item(cloud_item, host_strm_root)
     cloud_media_path = _cloud_media_path(cloud_root, title, tmdbid, season)
 
@@ -300,6 +301,7 @@ def _batch_item(
         "scan_candidate_count": len(scan_candidates),
         "recommended_candidate": recommended,
         "candidate_count": len(share_candidates),
+        "candidate_diagnostics": candidate_diagnostics,
         "merged_duplicate_count": int(share_item.get("merged_duplicate_count") or 0),
         "cleanup_preview_ready": _cleanup_preview_ready(cleanup_preview) if cleanup_preview else None,
         "cleanup_preview_blockers": _string_list(cleanup_preview.get("blockers")) + _string_list(cleanup_preview.get("execution_blockers")) if cleanup_preview else [],
@@ -498,6 +500,75 @@ def _candidate_has_explicit_wrong_season(candidate: Dict[str, object], expected_
     )
     seasons = _explicit_seasons_from_text(text)
     return bool(seasons and expected_season not in seasons)
+
+
+def _candidate_diagnostics(
+    share_item: Dict[str, object],
+    recommended: Dict[str, object],
+    candidates: List[object],
+    expected_season: int,
+) -> Dict[str, object]:
+    candidate_rows = [candidate for candidate in candidates if isinstance(candidate, dict)]
+    best = _best_candidate_for_diagnostics(recommended, candidate_rows)
+    blocker_counts: Counter = Counter()
+    reason_counts: Counter = Counter()
+    for candidate in candidate_rows:
+        blocker_counts.update(_candidate_diagnostic_blockers(candidate, expected_season))
+        reason_counts.update(_string_list(candidate.get("reasons")))
+
+    return {
+        "search_ok": bool(share_item.get("search_ok")) if share_item else False,
+        "search_result_count": int(share_item.get("search_result_count") or 0) if share_item else 0,
+        "search_warnings": _string_list(share_item.get("warnings")) if share_item else [],
+        "recommended_candidate_present": bool(recommended),
+        "best_candidate": _candidate_diagnostic_summary(best, expected_season) if best else {},
+        "candidate_score_max": int(best.get("score") or 0) if best else 0,
+        "candidate_blocker_counts": dict(sorted(blocker_counts.items())),
+        "candidate_reason_counts": dict(sorted(reason_counts.items())),
+        "top_candidates": [_candidate_diagnostic_summary(candidate, expected_season) for candidate in candidate_rows[:3]],
+    }
+
+
+def _best_candidate_for_diagnostics(recommended: Dict[str, object], candidates: List[Dict[str, object]]) -> Dict[str, object]:
+    if recommended:
+        return recommended
+    if not candidates:
+        return {}
+    return sorted(candidates, key=_candidate_diagnostic_rank, reverse=True)[0]
+
+
+def _candidate_diagnostic_rank(candidate: Dict[str, object]) -> Tuple[int, int, float, int]:
+    blockers = _string_list(candidate.get("blockers"))
+    size_delta = candidate.get("size_delta_ratio")
+    size_fit = 1.0 - float(size_delta) if isinstance(size_delta, (int, float)) else -1.0
+    return (
+        int(candidate.get("score") or 0),
+        -len(blockers),
+        size_fit,
+        -int(candidate.get("search_index") or 0),
+    )
+
+
+def _candidate_diagnostic_summary(candidate: Dict[str, object], expected_season: int) -> Dict[str, object]:
+    blockers = _candidate_diagnostic_blockers(candidate, expected_season)
+    return {
+        "search_index": int(candidate.get("search_index") or 0),
+        "search_keyword": str(candidate.get("search_keyword") or ""),
+        "title": str(candidate.get("title") or ""),
+        "score": int(candidate.get("score") or 0),
+        "size": str(candidate.get("size") or ""),
+        "size_bytes": int(candidate.get("size_bytes") or 0),
+        "size_delta_ratio": candidate.get("size_delta_ratio"),
+        "reasons": _string_list(candidate.get("reasons")),
+        "blockers": blockers,
+    }
+
+
+def _candidate_diagnostic_blockers(candidate: Dict[str, object], expected_season: int) -> List[str]:
+    blockers = _string_list(candidate.get("blockers"))
+    if _candidate_has_explicit_wrong_season(candidate, expected_season) and "season_mismatch" not in blockers:
+        blockers.append("season_mismatch")
+    return blockers
 
 
 def _explicit_seasons_from_text(text: str) -> List[int]:
@@ -722,6 +793,15 @@ def _render_csv(plan: Dict[str, object]) -> str:
         "recommended_candidate_title",
         "recommended_candidate_score",
         "recommended_candidate_size_delta_ratio",
+        "best_candidate_title",
+        "best_candidate_score",
+        "best_candidate_size_delta_ratio",
+        "best_candidate_blockers",
+        "candidate_blocker_counts",
+        "candidate_reason_counts",
+        "search_ok",
+        "search_result_count",
+        "search_warnings",
         "cleanup_preview_ready",
         "cleanup_preview_blockers",
         "cloud_media_path",
@@ -735,6 +815,8 @@ def _render_csv(plan: Dict[str, object]) -> str:
         if not isinstance(item, dict):
             continue
         candidate = item.get("recommended_candidate") if isinstance(item.get("recommended_candidate"), dict) else {}
+        diagnostics = item.get("candidate_diagnostics") if isinstance(item.get("candidate_diagnostics"), dict) else {}
+        best_candidate = diagnostics.get("best_candidate") if isinstance(diagnostics.get("best_candidate"), dict) else {}
         writer.writerow(
             {
                 "bucket": item.get("bucket", ""),
@@ -751,6 +833,15 @@ def _render_csv(plan: Dict[str, object]) -> str:
                 "recommended_candidate_title": candidate.get("title", "") if candidate else "",
                 "recommended_candidate_score": candidate.get("score", "") if candidate else "",
                 "recommended_candidate_size_delta_ratio": candidate.get("size_delta_ratio", "") if candidate else "",
+                "best_candidate_title": best_candidate.get("title", "") if best_candidate else "",
+                "best_candidate_score": best_candidate.get("score", "") if best_candidate else "",
+                "best_candidate_size_delta_ratio": best_candidate.get("size_delta_ratio", "") if best_candidate else "",
+                "best_candidate_blockers": "; ".join(_string_list(best_candidate.get("blockers"))) if best_candidate else "",
+                "candidate_blocker_counts": _counter_cell(diagnostics.get("candidate_blocker_counts")),
+                "candidate_reason_counts": _counter_cell(diagnostics.get("candidate_reason_counts")),
+                "search_ok": diagnostics.get("search_ok", "") if diagnostics else "",
+                "search_result_count": diagnostics.get("search_result_count", "") if diagnostics else "",
+                "search_warnings": "; ".join(_string_list(diagnostics.get("search_warnings"))) if diagnostics else "",
                 "cleanup_preview_ready": item.get("cleanup_preview_ready", ""),
                 "cleanup_preview_blockers": "; ".join(_string_list(item.get("cleanup_preview_blockers"))),
                 "cloud_media_path": item.get("cloud_media_path", ""),
@@ -759,3 +850,14 @@ def _render_csv(plan: Dict[str, object]) -> str:
             }
         )
     return output.getvalue().rstrip("\r\n")
+
+
+def _counter_cell(value: object) -> str:
+    if not isinstance(value, dict):
+        return ""
+    parts = []
+    for key, count in sorted(value.items(), key=lambda item: str(item[0])):
+        if not str(key):
+            continue
+        parts.append(f"{key}:{int(count or 0)}")
+    return "; ".join(parts)

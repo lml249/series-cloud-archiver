@@ -386,6 +386,87 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("no_recommended_mv3_share_candidate", rendered)
         self.assertIn("missing_source_paths", rendered)
 
+    def test_manual_review_includes_share_candidate_diagnostics(self) -> None:
+        plan = build_batch_plan(
+            cloud_report={
+                "items": [
+                    {
+                        "status": "cloud_strm_not_found",
+                        "title": "怪奇物语",
+                        "tmdbid": 66732,
+                        "season": 4,
+                        "size_bytes": 1000,
+                        "expected_count": 9,
+                        "source_paths": ["/volume3/hlink/TV/怪奇物语/Season 04"],
+                    }
+                ]
+            },
+            transfer_plan={
+                "items": [
+                    {
+                        "title": "怪奇物语",
+                        "tmdbid": 66732,
+                        "season": 4,
+                        "size_bytes": 1000,
+                        "expected_count": 9,
+                        "source_paths": ["/volume3/hlink/TV/怪奇物语/Season 04"],
+                    }
+                ]
+            },
+            share_search_plan={
+                "items": [
+                    {
+                        "title": "怪奇物语",
+                        "tmdbid": 66732,
+                        "season": 4,
+                        "search_ok": True,
+                        "search_result_count": 2,
+                        "warnings": ["no_candidate_passed_recommendation_gate"],
+                        "recommended_candidate": {},
+                        "candidates": [
+                            {
+                                "search_index": 8,
+                                "search_keyword": "怪奇物语 Season 04",
+                                "title": "怪奇物语：1985故事集 S01E01-E10",
+                                "score": 80,
+                                "size_delta_ratio": 0.06,
+                                "reasons": ["search_keyword_contains", "size_similar"],
+                                "blockers": [],
+                            },
+                            {
+                                "search_index": 9,
+                                "search_keyword": "怪奇物语 Season 04",
+                                "title": "Stranger Things Season 4 sample",
+                                "score": 50,
+                                "size_delta_ratio": 0.8,
+                                "reasons": ["season_matches"],
+                                "blockers": ["title_not_matched", "size_far_from_local"],
+                            },
+                        ],
+                    }
+                ]
+            },
+        )
+
+        item = plan["items"][0]
+        diagnostics = item["candidate_diagnostics"]
+
+        self.assertEqual(item["bucket"], MANUAL_REVIEW)
+        self.assertEqual(diagnostics["candidate_score_max"], 80)
+        self.assertEqual(diagnostics["best_candidate"]["title"], "怪奇物语：1985故事集 S01E01-E10")
+        self.assertIn("season_mismatch", diagnostics["best_candidate"]["blockers"])
+        self.assertEqual(diagnostics["candidate_blocker_counts"]["season_mismatch"], 1)
+        self.assertEqual(diagnostics["candidate_blocker_counts"]["title_not_matched"], 1)
+        self.assertEqual(diagnostics["candidate_reason_counts"]["size_similar"], 1)
+
+        rendered = render_batch_plan(plan, "csv")
+        header = rendered.splitlines()[0]
+        self.assertIn("best_candidate_title", header)
+        self.assertIn("candidate_blocker_counts", header)
+        self.assertIn("怪奇物语：1985故事集 S01E01-E10", rendered)
+        self.assertIn("season_mismatch:1", rendered)
+        self.assertIn("no_candidate_passed_recommendation_gate", rendered)
+
     def test_cli_writes_batch_plan_from_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
