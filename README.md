@@ -210,6 +210,8 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-plan \
 
 `--share-search-plan` 可以重复传多份，适合把分段搜索出来的 `rows21-38`、`rows39-59` 等报告合并成同一份批量计划。输出里的 `next_actions` 是阶段模板，不会自动带 `--approve-receive`、`--approve-transfer`、`--approve-delete`、`--approve-mp-cleanup` 这类审批参数。真正批量执行阶段必须先从这份只读计划进入，并继续保留每一关的验证报告。
 
+如果只是想给人工复核看，也可以把同一条命令的 `--format json` 改成 `--format csv`，输出会平铺出剧名、TMDB、季号、集数、复核原因、推荐资源、清理预览阻断和本地路径。
+
 ## MV3 预览 manifest dry-run
 
 拿到待转存清单、MV3 能力报告和 MV3 实例报告后，可以先生成“小批量预览 manifest”：
