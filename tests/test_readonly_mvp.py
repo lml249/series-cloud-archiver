@@ -35,6 +35,7 @@ from series_cloud_archiver.emby import (
 from series_cloud_archiver.episode import episode_signal
 from series_cloud_archiver.models import FileSystemSeries, EpisodeSignal, QBTorrentEvidence
 from series_cloud_archiver.moviepilot import (
+    MoviePilotClient,
     MPSubscriptionRecord,
     MPTransferHistoryRecord,
     build_mp_cleanup_preview,
@@ -2003,6 +2004,52 @@ class MoviePilotEvidenceTest(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(calls, [{"path": "/example/container/mv3/strm/series/Demo Series (2026) {tmdbid=1}", "storage": "local", "item_type": "dir"}])
         self.assertEqual(report["scrape"]["api_success"], True)
+
+    def test_moviepilot_client_scrape_media_posts_json_and_reports_request(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self):
+                return b'{"success":true,"message":"queued"}'
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["method"] = request.get_method()
+            seen["body"] = request.data.decode("utf-8")
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            result = MoviePilotClient("http://moviepilot.example", "local-token", timeout=9).scrape_media(
+                "/example/container/mv3/strm/series/Demo Series (2026) {tmdbid=1}",
+                storage="local",
+                item_type="dir",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["url"], "http://moviepilot.example/api/v1/media/scrape/local?token=local-token")
+        self.assertEqual(seen["timeout"], 9)
+        self.assertEqual(
+            json.loads(seen["body"]),
+            {
+                "path": "/example/container/mv3/strm/series/Demo Series (2026) {tmdbid=1}",
+                "storage": "local",
+                "type": "dir",
+                "name": "Demo Series (2026) {tmdbid=1}",
+                "basename": "Demo Series (2026) {tmdbid=1}",
+            },
+        )
+        self.assertEqual(result["request"]["path"], "/example/container/mv3/strm/series/Demo Series (2026) {tmdbid=1}")
+        self.assertEqual(result["response"], {"success": True, "message": "queued"})
 
     def test_mp_scrape_strm_blocks_cloud_media_path(self) -> None:
         calls = []

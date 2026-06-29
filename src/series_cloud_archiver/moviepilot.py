@@ -305,6 +305,11 @@ def render_mp_scrape_strm_report(report: Dict[str, object], output_format: str) 
     return "\n".join(lines)
 
 
+def _scrape_request_summary(body: Dict[str, object]) -> Dict[str, object]:
+    allowed = ("path", "storage", "type", "name", "basename", "extension")
+    return {key: body.get(key) for key in allowed if key in body}
+
+
 def build_mp_cleanup_preview(
     title: str,
     records: List[MPTransferHistoryRecord],
