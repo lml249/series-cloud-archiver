@@ -2444,6 +2444,111 @@ class MoviePilotEvidenceTest(unittest.TestCase):
         self.assertTrue(exact_hashes["ok"])
         self.assertEqual(exact_hashes["expected"]["hash_prefixes"], ["aaaabbbbcccc", "ddddffffeeee"])
 
+    def test_mp_cleanup_execute_can_allow_duplicate_episode_records(self) -> None:
+        preview = build_mp_cleanup_preview(
+            "9号秘事",
+            [
+                MPTransferHistoryRecord(
+                    id=10,
+                    title="9号秘事",
+                    episodes="E01",
+                    src="/example/qb-view/TV/source-a/E01.mp4",
+                    dest="/example/library-host/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 04/E01-a.mp4",
+                    mode="link",
+                    status=True,
+                    download_hash="aaaabbbbcccc1111",
+                    tmdbid=61746,
+                    seasons="S04",
+                ),
+                MPTransferHistoryRecord(
+                    id=11,
+                    title="9号秘事",
+                    episodes="E01",
+                    src="/example/qb-view/TV/source-b/E01.mp4",
+                    dest="/example/library-host/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 04/E01-b.mp4",
+                    mode="link",
+                    status=True,
+                    download_hash="ddddffffeeee2222",
+                    tmdbid=61746,
+                    seasons="S04",
+                ),
+                MPTransferHistoryRecord(
+                    id=12,
+                    title="9号秘事",
+                    episodes="E02",
+                    src="/example/qb-view/TV/source-a/E02.mp4",
+                    dest="/example/library-host/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 04/E02-a.mp4",
+                    mode="link",
+                    status=True,
+                    download_hash="aaaabbbbcccc1111",
+                    tmdbid=61746,
+                    seasons="S04",
+                ),
+                MPTransferHistoryRecord(
+                    id=13,
+                    title="9号秘事",
+                    episodes="E02",
+                    src="/example/qb-view/TV/source-b/E02.mp4",
+                    dest="/example/library-host/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 04/E02-b.mp4",
+                    mode="link",
+                    status=True,
+                    download_hash="ddddffffeeee2222",
+                    tmdbid=61746,
+                    seasons="S04",
+                ),
+            ],
+            expected_title="9号秘事",
+            expected_tmdbid=61746,
+            expected_season=4,
+        )
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def delete_transfer_history(self, history_id, deletesrc=True, deletedest=True):
+                self.calls.append((history_id, deletesrc, deletedest))
+                return {"http_status": 200, "ok": True, "response": {"success": True}}
+
+        blocked = execute_mp_cleanup_from_preview(
+            FakeClient(),
+            preview,
+            expected_title="9号秘事",
+            expected_tmdbid=61746,
+            expected_hash_prefix="",
+            expected_record_count=4,
+            expected_episode_count=2,
+            expected_episode_min=1,
+            expected_episode_max=2,
+            expected_season=4,
+            allow_multiple_hashes=True,
+            allow_multiple_source_roots=True,
+        )
+        self.assertFalse(blocked["ok"])
+        self.assertIn("duplicate_episode_number", blocked["blockers"])
+
+        client = FakeClient()
+        report = execute_mp_cleanup_from_preview(
+            client,
+            preview,
+            expected_title="9号秘事",
+            expected_tmdbid=61746,
+            expected_hash_prefix="",
+            expected_hash_prefixes=["aaaabbbbcccc", "ddddffffeeee"],
+            expected_record_count=4,
+            expected_episode_count=2,
+            expected_episode_min=1,
+            expected_episode_max=2,
+            expected_season=4,
+            allow_multiple_hashes=True,
+            allow_multiple_source_roots=True,
+            allow_duplicate_episodes=True,
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(client.calls, [(10, True, True), (11, True, True), (12, True, True), (13, True, True)])
+        self.assertTrue(report["expected"]["allow_duplicate_episodes"])
+
     def test_mp_cleanup_execute_blocks_multiple_destination_roots_even_with_allowances(self) -> None:
         preview = build_mp_cleanup_preview(
             "八千里路云和月",

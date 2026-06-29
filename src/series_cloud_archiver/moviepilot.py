@@ -436,6 +436,7 @@ def execute_mp_cleanup_from_preview_report(
     continue_on_error: bool = False,
     allow_multiple_hashes: bool = False,
     allow_multiple_source_roots: bool = False,
+    allow_duplicate_episodes: bool = False,
 ) -> Dict[str, object]:
     client = MoviePilotClient(base_url, token, timeout=timeout)
     return execute_mp_cleanup_from_preview(
@@ -456,6 +457,7 @@ def execute_mp_cleanup_from_preview_report(
         continue_on_error=continue_on_error,
         allow_multiple_hashes=allow_multiple_hashes,
         allow_multiple_source_roots=allow_multiple_source_roots,
+        allow_duplicate_episodes=allow_duplicate_episodes,
     )
 
 
@@ -477,6 +479,7 @@ def execute_mp_cleanup_from_preview(
     continue_on_error: bool = False,
     allow_multiple_hashes: bool = False,
     allow_multiple_source_roots: bool = False,
+    allow_duplicate_episodes: bool = False,
 ) -> Dict[str, object]:
     expected_episode_list = _normalize_expected_episodes(expected_episodes)
     blockers = _mp_cleanup_execution_blockers(
@@ -495,6 +498,7 @@ def execute_mp_cleanup_from_preview(
         include_deletedest=include_deletedest,
         allow_multiple_hashes=allow_multiple_hashes,
         allow_multiple_source_roots=allow_multiple_source_roots,
+        allow_duplicate_episodes=allow_duplicate_episodes,
     )
     records = preview.get("records") if isinstance(preview.get("records"), list) else []
     normalized_hash_prefixes = _normalize_hash_prefixes(expected_hash_prefixes, expected_hash_prefix)
@@ -518,6 +522,7 @@ def execute_mp_cleanup_from_preview(
             "episodes": expected_episode_list,
             "allow_multiple_hashes": allow_multiple_hashes,
             "allow_multiple_source_roots": allow_multiple_source_roots,
+            "allow_duplicate_episodes": allow_duplicate_episodes,
         },
         "summary": {
             "planned_count": len(records),
@@ -765,6 +770,7 @@ def _mp_cleanup_execution_blockers(
     include_deletedest: bool,
     allow_multiple_hashes: bool = False,
     allow_multiple_source_roots: bool = False,
+    allow_duplicate_episodes: bool = False,
 ) -> List[str]:
     blockers: List[str] = []
     expected_episode_list = _normalize_expected_episodes(expected_episodes)
@@ -775,6 +781,8 @@ def _mp_cleanup_execution_blockers(
         allowed_warnings.add("multiple_download_hashes")
     if allow_multiple_source_roots:
         allowed_warnings.add("multiple_source_roots")
+    if allow_duplicate_episodes:
+        allowed_warnings.add("duplicate_episode_records")
     if preview.get("mode") != "readonly-mp-cleanup-preview":
         blockers.append("preview_mode_not_supported")
     if not preview.get("ready_for_manual_cleanup_approval"):
@@ -830,6 +838,7 @@ def _mp_cleanup_execution_blockers(
 
     ids: Set[int] = set()
     episodes: Set[int] = set()
+    unique_episodes: Set[int] = set()
     record_hash_prefixes: List[str] = []
     for item in records:
         if not isinstance(item, dict):
@@ -844,8 +853,9 @@ def _mp_cleanup_execution_blockers(
         episode = int(item.get("episode_number") or 0)
         if episode <= 0:
             blockers.append("invalid_episode_number")
-        if episode in episodes:
+        if episode in unique_episodes and not allow_duplicate_episodes:
             blockers.append("duplicate_episode_number")
+        unique_episodes.add(episode)
         episodes.add(episode)
         record_hash_prefix = str(item.get("hash_prefix") or "").lower()
         if record_hash_prefix:
