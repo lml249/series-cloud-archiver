@@ -133,6 +133,32 @@ class ReadonlyScanTest(unittest.TestCase):
             self.assertEqual(len(report.candidates), 1)
             self.assertEqual(report.status_counts["candidate_for_cloud_check"], 2)
 
+    def test_splits_multiseason_roots_into_season_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "TV"
+            show = root / "Demo Show (2026) {tmdbid=123}"
+            for season, count in [(1, 2), (2, 3)]:
+                for index in range(1, count + 1):
+                    touch(show / f"Season {season:02d}" / f"Demo.Show.S{season:02d}E{index:02d}.mkv")
+
+            report = scan(
+                ScanConfig(
+                    media_roots=[str(root)],
+                    include_qb=False,
+                    min_seed_days=0,
+                    min_age_days=0,
+                    max_depth=2,
+                )
+            )
+
+            by_title = {candidate.title: candidate for candidate in report.candidates}
+            self.assertEqual(report.total_series, 2)
+            self.assertIn("Demo Show (2026) {tmdbid=123} Season 01", by_title)
+            self.assertIn("Demo Show (2026) {tmdbid=123} Season 02", by_title)
+            self.assertEqual(by_title["Demo Show (2026) {tmdbid=123} Season 01"].path, str(show / "Season 01"))
+            self.assertEqual(by_title["Demo Show (2026) {tmdbid=123} Season 01"].seasons, [1])
+            self.assertEqual(by_title["Demo Show (2026) {tmdbid=123} Season 02"].video_count, 3)
+
     def test_mp_subscription_history_can_prove_completion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "TV"

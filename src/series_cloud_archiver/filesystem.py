@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Iterable, Iterator, List, Sequence
+import re
+from typing import Iterable, Iterator, List, NamedTuple, Sequence
 
 from .episode import episode_signal, is_video_file
 from .models import FileSystemSeries
+
+
+class ScanTarget(NamedTuple):
+    title: str
+    path: Path
+
+
+SEASON_DIR_PATTERN = re.compile(r"(?i)^(?:season\s*0*(?P<season>\d{1,3})|s0*(?P<s_season>\d{1,3})|第\s*0*(?P<cn_season>\d{1,3})\s*季)$")
 
 
 def _is_excluded(path: Path, exclude_names: Sequence[str]) -> bool:
@@ -29,6 +38,42 @@ def _iter_video_files(root: Path, max_depth: int, exclude_names: Sequence[str]) 
                 yield path
 
 
+def _season_number_from_dir_name(name: str) -> int:
+    match = SEASON_DIR_PATTERN.match(name.strip())
+    if not match:
+        return 0
+    for value in match.groupdict().values():
+        if value:
+            return int(value)
+    return 0
+
+
+def _season_child_dirs(series_dir: Path, exclude_names: Sequence[str]) -> List[ScanTarget]:
+    targets: List[ScanTarget] = []
+    for child in sorted(series_dir.iterdir(), key=lambda item: item.name.casefold()):
+        if not child.is_dir() or _is_excluded(child, exclude_names):
+            continue
+        season = _season_number_from_dir_name(child.name)
+        if not season:
+            continue
+        targets.append(ScanTarget(title=f"{series_dir.name} Season {season:02d}", path=child))
+    return targets
+
+
+def _root_level_videos(series_dir: Path) -> bool:
+    return any(child.is_file() and is_video_file(child) for child in series_dir.iterdir())
+
+
+def _scan_targets(series_dir: Path, exclude_names: Sequence[str]) -> List[ScanTarget]:
+    season_targets = _season_child_dirs(series_dir, exclude_names)
+    if not season_targets:
+        return [ScanTarget(title=series_dir.name, path=series_dir)]
+    targets = list(season_targets)
+    if _root_level_videos(series_dir):
+        targets.append(ScanTarget(title=series_dir.name, path=series_dir))
+    return targets
+
+
 def scan_series_roots(
     roots: Iterable[str],
     max_depth: int,
@@ -45,38 +90,38 @@ def scan_series_roots(
             continue
 
         direct_children = [child for child in root.iterdir() if child.is_dir() and not _is_excluded(child, exclude_names)]
-        scan_targets = direct_children or [root]
+        series_dirs = direct_children or [root]
 
-        for target in scan_targets:
-            videos = list(_iter_video_files(target, max_depth=max_depth, exclude_names=exclude_names))
-            if not videos:
-                continue
-            total_size = 0
-            latest_mtime = 0.0
-            names = [target.name]
-            for video in videos:
-                try:
-                    stat = video.stat()
-                except OSError:
+        for series_dir in series_dirs:
+            for target in _scan_targets(series_dir, exclude_names):
+                videos = list(_iter_video_files(target.path, max_depth=max_depth, exclude_names=exclude_names))
+                if not videos:
                     continue
-                total_size += stat.st_size
-                latest_mtime = max(latest_mtime, stat.st_mtime)
-                names.append(video.name)
-            if not total_size:
-                continue
-            age_days = max(0.0, (now - latest_mtime) / 86400.0)
-            if age_days < min_age_days:
-                continue
-            results.append(
-                FileSystemSeries(
-                    title=target.name,
-                    path=str(target),
-                    size_bytes=total_size,
-                    video_count=len(videos),
-                    latest_mtime=latest_mtime,
-                    age_days=age_days,
-                    signal=episode_signal(names),
+                total_size = 0
+                latest_mtime = 0.0
+                names = [target.title, target.path.name]
+                for video in videos:
+                    try:
+                        stat = video.stat()
+                    except OSError:
+                        continue
+                    total_size += stat.st_size
+                    latest_mtime = max(latest_mtime, stat.st_mtime)
+                    names.append(video.name)
+                if not total_size:
+                    continue
+                age_days = max(0.0, (now - latest_mtime) / 86400.0)
+                if age_days < min_age_days:
+                    continue
+                results.append(
+                    FileSystemSeries(
+                        title=target.title,
+                        path=str(target.path),
+                        size_bytes=total_size,
+                        video_count=len(videos),
+                        latest_mtime=latest_mtime,
+                        age_days=age_days,
+                        signal=episode_signal(names),
+                    )
                 )
-            )
     return results
-
