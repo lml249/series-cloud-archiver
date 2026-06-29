@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path, PurePosixPath
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
@@ -274,6 +275,184 @@ def preview_cloud_hlink_orphan_cleanup(
         "blockers": sorted(set(blockers)),
         "warnings": sorted(set(warnings)),
         "safety": "readonly preview only; verifies STRM replacement and scans qBittorrent's per-torrent file lists by inode before allowing hlink-only cleanup",
+    }
+
+
+def preview_cloud_hlink_orphan_multiseason_cleanup(
+    title: str,
+    hlink_root: str,
+    season_specs: Sequence[Dict[str, object]],
+    expected_tmdbid: int = 0,
+    qb_base_url: str = "",
+    qb_user: str = "",
+    qb_pass: str = "",
+    path_aliases: Optional[Dict[str, str]] = None,
+    required_target_prefix: str = "",
+    forbidden_target_prefixes: Optional[Sequence[str]] = None,
+    mv3_base_url: str = "",
+    mv3_token: str = "",
+    cloud_media_path: str = "",
+    cloud_media_folder_id: str = "",
+    cloud_media_storage: str = "115-default",
+) -> Dict[str, object]:
+    aliases = _normalize_aliases(path_aliases or {})
+    blockers: List[str] = []
+    warnings: List[str] = []
+    specs, spec_blockers = _normalize_multiseason_specs(season_specs)
+    blockers.extend(spec_blockers)
+    if not specs:
+        blockers.append("season_spec_required")
+
+    hlink_check = _hlink_root_check(hlink_root)
+    if not hlink_check.get("exists"):
+        blockers.append("hlink_root_missing")
+    if hlink_check.get("non_video_count"):
+        warnings.append("hlink_root_contains_non_video_files")
+
+    hlink_episodes = _hlink_episode_map(hlink_root)
+    if hlink_episodes.get("unmatched_count"):
+        blockers.append("hlink_episode_signal_missing")
+    if hlink_episodes.get("duplicate_episode_pairs"):
+        warnings.append("hlink_duplicate_episode_files")
+
+    specs_by_season = {int(spec.get("season") or 0): spec for spec in specs}
+    strm_seasons: List[Dict[str, object]] = []
+    strm_episode_sets: Dict[int, Set[int]] = {}
+    for spec in specs:
+        season = int(spec.get("season") or 0)
+        expected_episodes = [int(item) for item in spec.get("expected_episodes", []) if int(item) > 0] if isinstance(spec.get("expected_episodes"), list) else []
+        verify_count = 0 if expected_episodes else int(spec.get("expected_episode_count") or 0)
+        verify_min = 0 if expected_episodes else int(spec.get("expected_episode_min") or 0)
+        verify_max = 0 if expected_episodes else int(spec.get("expected_episode_max") or 0)
+        strm_report = verify_strm_paths(
+            title,
+            [str(spec.get("strm_root") or "")],
+            expected_episode_count=verify_count,
+            expected_episode_min=verify_min,
+            expected_episode_max=verify_max,
+            required_target_prefix=required_target_prefix,
+            forbidden_target_prefixes=forbidden_target_prefixes or [],
+        )
+        combined = strm_report.get("strm", {}).get("combined", {}) if isinstance(strm_report.get("strm"), dict) else {}
+        strm_episodes = sorted({int(item) for item in combined.get("episodes", []) if isinstance(item, int) and int(item) > 0}) if isinstance(combined.get("episodes"), list) else []
+        strm_episode_sets[season] = set(strm_episodes)
+        missing_expected = [episode for episode in expected_episodes if episode not in strm_episode_sets[season]]
+        if missing_expected:
+            blockers.append("strm_expected_episodes_missing")
+        if not strm_report.get("ok"):
+            blockers.extend(str(blocker) for blocker in strm_report.get("blockers", []) if blocker)
+        warnings.extend(str(warning) for warning in strm_report.get("warnings", []) if warning)
+        strm_seasons.append(
+            {
+                "season": season,
+                "strm_root": str(spec.get("strm_root") or ""),
+                "expected_episode_count": int(spec.get("expected_episode_count") or 0),
+                "expected_episode_min": int(spec.get("expected_episode_min") or 0),
+                "expected_episode_max": int(spec.get("expected_episode_max") or 0),
+                "expected_episodes": expected_episodes,
+                "missing_expected_episodes": missing_expected,
+                "episodes": strm_episodes,
+                "report": strm_report,
+            }
+        )
+
+    hlink_missing_in_strm: List[Dict[str, object]] = []
+    hlink_season_not_covered: List[int] = []
+    for season_row in hlink_episodes.get("seasons", []) if isinstance(hlink_episodes.get("seasons"), list) else []:
+        if not isinstance(season_row, dict):
+            continue
+        season = int(season_row.get("season") or 0)
+        episodes = [int(item) for item in season_row.get("episodes", []) if int(item) > 0] if isinstance(season_row.get("episodes"), list) else []
+        if season not in specs_by_season:
+            hlink_season_not_covered.append(season)
+            continue
+        missing = [episode for episode in episodes if episode not in strm_episode_sets.get(season, set())]
+        if missing:
+            hlink_missing_in_strm.append({"season": season, "episodes": missing})
+    if hlink_season_not_covered:
+        blockers.append("hlink_season_not_covered_by_strm_specs")
+    if hlink_missing_in_strm:
+        blockers.append("strm_missing_hlink_episodes")
+
+    cloud_media_report: Dict[str, object] = {"skipped": True}
+    if cloud_media_path or cloud_media_folder_id:
+        if not mv3_base_url or not mv3_token:
+            blockers.append("mv3_credentials_required_for_cloud_media_sidecar_verify")
+            cloud_media_report = {"skipped": True, "reason": "mv3_credentials_required"}
+        else:
+            try:
+                cloud_media_report = verify_mv3_cloud_media_sidecars(
+                    mv3_base_url,
+                    mv3_token,
+                    path=cloud_media_path,
+                    folder_id=cloud_media_folder_id,
+                    storage=cloud_media_storage,
+                )
+            except Exception as exc:  # pragma: no cover - exercised by integration
+                cloud_media_report = {"ok": False, "error": f"{type(exc).__name__}:{exc}"}
+                blockers.append("cloud_media_sidecar_verify_failed")
+            if cloud_media_report and not cloud_media_report.get("ok"):
+                blockers.extend(str(blocker) for blocker in cloud_media_report.get("blockers", []) if blocker)
+            warnings.extend(str(warning) for warning in cloud_media_report.get("warnings", []) if warning)
+
+    qb_matches: List[Dict[str, object]] = []
+    qb_error = ""
+    qb_scanned_count = 0
+    if not qb_base_url:
+        blockers.append("qb_base_url_required")
+    else:
+        try:
+            qb_scan = _precise_qb_file_inode_matches(qb_base_url, qb_user, qb_pass, hlink_check, aliases)
+            qb_scanned_count = int(qb_scan.get("scanned_count") or 0)
+            qb_matches = qb_scan.get("matches", []) if isinstance(qb_scan.get("matches"), list) else []
+        except Exception as exc:  # pragma: no cover - exercised by integration
+            qb_error = f"{type(exc).__name__}:{exc}"
+            blockers.append("qb_torrent_check_failed")
+    if qb_matches:
+        blockers.append("qb_linked_torrent_present")
+
+    source_checks = [_precise_qb_source_check(row) for row in qb_matches]
+    hlink_coverage = _hlink_source_coverage(source_checks, hlink_check)
+    hlink_strm_coverage = {
+        "complete": not hlink_missing_in_strm and not hlink_season_not_covered and not hlink_episodes.get("unmatched_count"),
+        "missing": hlink_missing_in_strm,
+        "uncovered_seasons": sorted(set(hlink_season_not_covered)),
+    }
+
+    return {
+        "mode": "cloud-hlink-orphan-multiseason-cleanup-preview",
+        "title": title,
+        "expected": {
+            "tmdbid": expected_tmdbid,
+            "seasons": specs,
+            "required_target_prefix": required_target_prefix,
+            "forbidden_target_prefixes": list(forbidden_target_prefixes or []),
+            "cloud_media_path": cloud_media_path,
+            "cloud_media_folder_id": cloud_media_folder_id,
+            "cloud_media_storage": cloud_media_storage,
+        },
+        "ok": not blockers,
+        "ready_for_execute": not blockers,
+        "hlink": hlink_check,
+        "hlink_episodes": hlink_episodes,
+        "strm_seasons": strm_seasons,
+        "cloud_media": cloud_media_report,
+        "qbittorrent": {
+            "configured": bool(qb_base_url),
+            "error": qb_error,
+            "scanned_count": qb_scanned_count,
+            "linked_count": len(qb_matches),
+            "hashes": sorted({str(row.get("hash") or "") for row in qb_matches if row.get("hash")}),
+            "matches": qb_matches,
+        },
+        "filesystem": {
+            "source_roots": source_checks,
+            "hlink_coverage": hlink_coverage,
+            "hlink_strm_coverage": hlink_strm_coverage,
+        },
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "safety": "readonly multiseason hlink-only preview; verifies each STRM season, checks every local hlink episode is covered by STRM, confirms cloud media has no metadata sidecars, and scans qBittorrent file lists by inode before allowing one explicit hlink root cleanup",
     }
 
 
@@ -577,6 +756,82 @@ def execute_cloud_hlink_orphan_cleanup(
     }
 
 
+def execute_cloud_hlink_orphan_multiseason_cleanup(
+    preview: Dict[str, object],
+    qb_base_url: str,
+    qb_user: str = "",
+    qb_pass: str = "",
+    path_aliases: Optional[Dict[str, str]] = None,
+    mv3_base_url: str = "",
+    mv3_token: str = "",
+) -> Dict[str, object]:
+    blockers: List[str] = []
+    if preview.get("mode") != "cloud-hlink-orphan-multiseason-cleanup-preview":
+        blockers.append("preview_mode_not_supported")
+    if not preview.get("ready_for_execute"):
+        blockers.append("preview_not_ready_for_execute")
+    if preview.get("blockers"):
+        blockers.append("preview_has_blockers")
+    if not qb_base_url:
+        blockers.append("qb_base_url_required")
+
+    hlink = preview.get("hlink") if isinstance(preview.get("hlink"), dict) else {}
+    expected = preview.get("expected") if isinstance(preview.get("expected"), dict) else {}
+    hlink_root = str(hlink.get("path") or "")
+    season_specs = expected.get("seasons") if isinstance(expected.get("seasons"), list) else []
+    if not hlink_root:
+        blockers.append("hlink_root_required")
+    if not season_specs:
+        blockers.append("season_spec_required")
+
+    current_precheck: Dict[str, object] = {}
+    removed_hlink: Dict[str, object] = {}
+    verification: Dict[str, object] = {}
+    if not blockers:
+        current_precheck = preview_cloud_hlink_orphan_multiseason_cleanup(
+            str(preview.get("title") or ""),
+            hlink_root,
+            season_specs,
+            expected_tmdbid=int(expected.get("tmdbid") or 0),
+            qb_base_url=qb_base_url,
+            qb_user=qb_user,
+            qb_pass=qb_pass,
+            path_aliases=path_aliases,
+            required_target_prefix=str(expected.get("required_target_prefix") or ""),
+            forbidden_target_prefixes=expected.get("forbidden_target_prefixes") if isinstance(expected.get("forbidden_target_prefixes"), list) else [],
+            mv3_base_url=mv3_base_url,
+            mv3_token=mv3_token,
+            cloud_media_path=str(expected.get("cloud_media_path") or ""),
+            cloud_media_folder_id=str(expected.get("cloud_media_folder_id") or ""),
+            cloud_media_storage=str(expected.get("cloud_media_storage") or "115-default"),
+        )
+        if not current_precheck.get("ready_for_execute"):
+            blockers.append("current_precheck_not_ready_for_execute")
+
+    if not blockers:
+        removed_hlink = _remove_hlink_root(hlink_root)
+        if not removed_hlink.get("ok"):
+            blockers.append("hlink_delete_failed")
+
+    if not blockers:
+        verification = _verify_after_multiseason_orphan_execute(preview)
+        if not verification.get("ok"):
+            blockers.extend(str(blocker) for blocker in verification.get("blockers", []) if blocker)
+
+    return {
+        "mode": "cloud-hlink-orphan-multiseason-cleanup-execute",
+        "title": preview.get("title", ""),
+        "ok": not blockers,
+        "approved": True,
+        "current_precheck": current_precheck,
+        "hlink_delete": removed_hlink,
+        "verification": verification,
+        "blockers": sorted(set(blockers)),
+        "warnings": preview.get("warnings", []) if isinstance(preview.get("warnings"), list) else [],
+        "safety": "approved multiseason hlink-only cleanup; qBittorrent file lists are scanned by inode immediately before deleting only the explicit hlink root; cloud media is never scraped or deleted",
+    }
+
+
 def execute_cloud_source_orphan_cleanup(
     preview: Dict[str, object],
     qb_base_url: str,
@@ -744,6 +999,47 @@ def _verify_after_orphan_execute(preview: Dict[str, object]) -> Dict[str, object
     }
 
 
+def _verify_after_multiseason_orphan_execute(preview: Dict[str, object]) -> Dict[str, object]:
+    blockers: List[str] = []
+    hlink = preview.get("hlink") if isinstance(preview.get("hlink"), dict) else {}
+    expected = preview.get("expected") if isinstance(preview.get("expected"), dict) else {}
+    specs = expected.get("seasons") if isinstance(expected.get("seasons"), list) else []
+    strm_verifications: List[Dict[str, object]] = []
+    for spec in specs:
+        if not isinstance(spec, dict):
+            continue
+        expected_episodes = [int(item) for item in spec.get("expected_episodes", []) if int(item) > 0] if isinstance(spec.get("expected_episodes"), list) else []
+        verify_count = 0 if expected_episodes else int(spec.get("expected_episode_count") or 0)
+        verify_min = 0 if expected_episodes else int(spec.get("expected_episode_min") or 0)
+        verify_max = 0 if expected_episodes else int(spec.get("expected_episode_max") or 0)
+        strm_verify = verify_strm_paths(
+            str(preview.get("title") or ""),
+            [str(spec.get("strm_root") or "")],
+            expected_episode_count=verify_count,
+            expected_episode_min=verify_min,
+            expected_episode_max=verify_max,
+            required_target_prefix=str(expected.get("required_target_prefix") or ""),
+            forbidden_target_prefixes=expected.get("forbidden_target_prefixes") if isinstance(expected.get("forbidden_target_prefixes"), list) else [],
+        )
+        combined = strm_verify.get("strm", {}).get("combined", {}) if isinstance(strm_verify.get("strm"), dict) else {}
+        episodes = set(int(item) for item in combined.get("episodes", []) if isinstance(item, int) and int(item) > 0) if isinstance(combined.get("episodes"), list) else set()
+        missing_expected = [episode for episode in expected_episodes if episode not in episodes]
+        if missing_expected:
+            blockers.append("strm_expected_episodes_missing")
+        if not strm_verify.get("ok"):
+            blockers.extend(str(blocker) for blocker in strm_verify.get("blockers", []) if blocker)
+        strm_verifications.append({"season": int(spec.get("season") or 0), "missing_expected_episodes": missing_expected, "report": strm_verify})
+    hlink_exists = Path(str(hlink.get("path") or "")).exists()
+    if hlink_exists:
+        blockers.append("hlink_root_still_exists")
+    return {
+        "ok": not blockers,
+        "strm_seasons": strm_verifications,
+        "hlink_exists": hlink_exists,
+        "blockers": sorted(set(blockers)),
+    }
+
+
 def render_cloud_hlink_cleanup(report: Dict[str, object], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -770,6 +1066,20 @@ def render_cloud_hlink_cleanup(report: Dict[str, object], output_format: str) ->
         f"- Cloud metadata sidecars: `{cloud_scan.get('metadata_sidecar_file_count', 0)}`",
         "- Safety: preview is readonly; execute only mutates approved qB hashes and the explicit hlink root.",
     ]
+    strm_seasons = report.get("strm_seasons")
+    if isinstance(strm_seasons, list) and strm_seasons:
+        lines.extend(["", "## STRM Seasons", "", "| Season | Root | Episodes | Missing expected |", "| ---: | --- | ---: | --- |"])
+        for item in strm_seasons:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "| {season} | {root} | {count} | {missing} |".format(
+                    season=item.get("season", ""),
+                    root=str(item.get("strm_root") or ""),
+                    count=len(item.get("episodes", [])) if isinstance(item.get("episodes"), list) else 0,
+                    missing=str(item.get("missing_expected_episodes", [])),
+                )
+            )
     blockers = report.get("blockers")
     if isinstance(blockers, list) and blockers:
         lines.extend(["", "## Blockers", ""])
@@ -779,6 +1089,120 @@ def render_cloud_hlink_cleanup(report: Dict[str, object], output_format: str) ->
         lines.extend(["", "## Warnings", ""])
         lines.extend(f"- `{warning}`" for warning in warnings)
     return "\n".join(lines)
+
+
+def _normalize_multiseason_specs(season_specs: Sequence[Dict[str, object]]) -> Tuple[List[Dict[str, object]], List[str]]:
+    blockers: List[str] = []
+    rows: List[Dict[str, object]] = []
+    seen: Set[int] = set()
+    for raw in season_specs:
+        if not isinstance(raw, dict):
+            blockers.append("season_spec_invalid")
+            continue
+        try:
+            season = int(raw.get("season") or 0)
+            expected_episode_count = int(raw.get("expected_episode_count") or raw.get("episode_count") or 0)
+            expected_episode_min = int(raw.get("expected_episode_min") or raw.get("episode_min") or 0)
+            expected_episode_max = int(raw.get("expected_episode_max") or raw.get("episode_max") or 0)
+            expected_episodes = sorted({int(item) for item in raw.get("expected_episodes", []) if int(item) > 0}) if isinstance(raw.get("expected_episodes"), list) else []
+        except (TypeError, ValueError):
+            blockers.append("season_spec_invalid")
+            continue
+        strm_root = str(raw.get("strm_root") or raw.get("root") or "").strip()
+        if season <= 0:
+            blockers.append("season_spec_season_required")
+        if season in seen:
+            blockers.append("season_spec_duplicate_season")
+        if not strm_root:
+            blockers.append("season_spec_strm_root_required")
+        if expected_episodes:
+            if not expected_episode_count:
+                expected_episode_count = len(expected_episodes)
+            if not expected_episode_min:
+                expected_episode_min = min(expected_episodes)
+            if not expected_episode_max:
+                expected_episode_max = max(expected_episodes)
+        elif expected_episode_count and expected_episode_min and expected_episode_max:
+            possible_count = expected_episode_max - expected_episode_min + 1
+            if possible_count < expected_episode_count:
+                blockers.append("season_spec_episode_range_invalid")
+        rows.append(
+            {
+                "season": season,
+                "strm_root": strm_root,
+                "expected_episode_count": expected_episode_count,
+                "expected_episode_min": expected_episode_min,
+                "expected_episode_max": expected_episode_max,
+                "expected_episodes": expected_episodes,
+            }
+        )
+        seen.add(season)
+    return rows, sorted(set(blockers))
+
+
+def _hlink_episode_map(hlink_root: str) -> Dict[str, object]:
+    root = Path(hlink_root)
+    if not root.exists():
+        return {"seasons": [], "rows": [], "unmatched_count": 0, "unmatched_sample": [], "duplicate_episode_pairs": []}
+    rows: List[Dict[str, object]] = []
+    unmatched: List[str] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or not is_video_file(path):
+            continue
+        rel = str(path.relative_to(root))
+        signal = episode_signal([rel])
+        season = _season_number_from_relative_path(rel, signal.seasons)
+        episode = signal.episodes[0] if len(signal.episodes) == 1 else 0
+        if not season or not episode:
+            unmatched.append(str(path))
+            continue
+        rows.append({"path": str(path), "season": season, "episode": episode})
+
+    season_rows: Dict[int, List[Dict[str, object]]] = {}
+    for row in rows:
+        season_rows.setdefault(int(row["season"]), []).append(row)
+    duplicate_pairs: List[Dict[str, object]] = []
+    seasons = []
+    for season, items in sorted(season_rows.items()):
+        counts: Dict[int, int] = {}
+        for item in items:
+            episode = int(item["episode"])
+            counts[episode] = counts.get(episode, 0) + 1
+        duplicate_pairs.extend({"season": season, "episode": episode, "count": count} for episode, count in sorted(counts.items()) if count > 1)
+        seasons.append(
+            {
+                "season": season,
+                "video_count": len(items),
+                "episode_count": len(counts),
+                "episodes": sorted(counts),
+                "sample_files": [str(item.get("path") or "") for item in items[:8]],
+            }
+        )
+    return {
+        "seasons": seasons,
+        "rows": rows[:300],
+        "row_count": len(rows),
+        "unmatched_count": len(unmatched),
+        "unmatched_sample": unmatched[:20],
+        "duplicate_episode_pairs": duplicate_pairs[:50],
+    }
+
+
+def _season_number_from_relative_path(rel_path: str, signal_seasons: Sequence[int]) -> int:
+    seasons = sorted({int(item) for item in signal_seasons if int(item) > 0})
+    if len(seasons) == 1:
+        return seasons[0]
+    normalized = str(rel_path or "").replace("\\", "/")
+    patterns = [
+        re.compile(r"(?i)(?:^|/)Season[ ._-]*(\d{1,2})(?:/|$)"),
+        re.compile(r"(?i)(?:^|/)S(\d{1,2})(?:/|$)"),
+        re.compile(r"第\s*(\d{1,2})\s*季"),
+    ]
+    for pattern in patterns:
+        match = pattern.search(normalized)
+        if match:
+            return int(match.group(1))
+    return seasons[0] if seasons else 0
 
 
 def _verify_after_execute(

@@ -8,9 +8,11 @@ from unittest.mock import patch
 from series_cloud_archiver.cli import main
 from series_cloud_archiver.hlink_cleanup import (
     cleanup_empty_hlink_root,
+    execute_cloud_hlink_orphan_multiseason_cleanup,
     execute_cloud_hlink_orphan_cleanup,
     execute_cloud_hlink_cleanup,
     execute_cloud_source_orphan_cleanup,
+    preview_cloud_hlink_orphan_multiseason_cleanup,
     preview_cloud_hlink_orphan_cleanup,
     preview_cloud_hlink_cleanup,
     preview_cloud_source_orphan_cleanup,
@@ -796,6 +798,247 @@ class CloudHlinkCleanupTest(unittest.TestCase):
         self.assertFalse(hlink_root.exists())
         self.assertTrue(report["current_precheck"]["ok"])
         self.assertTrue(report["verification"]["ok"])
+
+    def test_multiseason_orphan_preview_allows_cloud_extra_episode_when_local_is_covered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "广告狂人 (2007)"
+            write(hlink_root / "Season 01" / "广告狂人 - S01E01.mkv")
+            write(hlink_root / "Season 01" / "广告狂人 - S01E02.mkv")
+            write(hlink_root / "Season 02" / "广告狂人 - S02E01.mkv")
+            write(hlink_root / "Season 02" / "广告狂人 - S02E03.mkv")
+            strm_root = tmp_path / "volume4" / "mv3" / "strm" / "series" / "广告狂人 (2007) {tmdbid=1104}"
+            write(strm_root / "Season 01" / "广告狂人.S01E01.strm", "/已整理/series/美剧【广告狂人】/Season 01/E01.mkv")
+            write(strm_root / "Season 01" / "广告狂人.S01E02.strm", "/已整理/series/美剧【广告狂人】/Season 01/E02.mkv")
+            write(strm_root / "Season 02" / "广告狂人.S02E01.strm", "/已整理/series/美剧【广告狂人】/Season 02/E01.mkv")
+            write(strm_root / "Season 02" / "广告狂人.S02E02.strm", "/已整理/series/美剧【广告狂人】/Season 02/E02.mkv")
+            write(strm_root / "Season 02" / "广告狂人.S02E03.strm", "/已整理/series/美剧【广告狂人】/Season 02/E03.mkv")
+
+            class EmptyClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", EmptyClient):
+                report = preview_cloud_hlink_orphan_multiseason_cleanup(
+                    "广告狂人",
+                    str(hlink_root),
+                    [
+                        {
+                            "season": 1,
+                            "strm_root": str(strm_root / "Season 01"),
+                            "expected_episode_count": 2,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 2,
+                        },
+                        {
+                            "season": 2,
+                            "strm_root": str(strm_root / "Season 02"),
+                            "expected_episodes": [1, 3],
+                        },
+                    ],
+                    expected_tmdbid=1104,
+                    qb_base_url="http://qb.example",
+                    required_target_prefix="/已整理/series/美剧【广告狂人】",
+                    cloud_media_path="",
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["ready_for_execute"])
+        self.assertEqual(report["hlink"]["video_count"], 4)
+        self.assertEqual(report["filesystem"]["hlink_strm_coverage"]["missing"], [])
+        self.assertEqual(report["strm_seasons"][1]["episodes"], [1, 2, 3])
+
+    def test_multiseason_orphan_preview_blocks_when_strm_lacks_local_episode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "广告狂人 (2007)"
+            write(hlink_root / "Season 02" / "广告狂人 - S02E03.mkv")
+            strm_root = tmp_path / "volume4" / "mv3" / "strm" / "series" / "广告狂人 (2007) {tmdbid=1104}" / "Season 02"
+            write(strm_root / "广告狂人.S02E01.strm", "/已整理/series/美剧【广告狂人】/Season 02/E01.mkv")
+
+            class EmptyClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", EmptyClient):
+                report = preview_cloud_hlink_orphan_multiseason_cleanup(
+                    "广告狂人",
+                    str(hlink_root),
+                    [{"season": 2, "strm_root": str(strm_root), "expected_episodes": [1, 3]}],
+                    expected_tmdbid=1104,
+                    qb_base_url="http://qb.example",
+                    required_target_prefix="/已整理/series/美剧【广告狂人】",
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("strm_expected_episodes_missing", report["blockers"])
+        self.assertIn("strm_missing_hlink_episodes", report["blockers"])
+        self.assertEqual(report["filesystem"]["hlink_strm_coverage"]["missing"], [{"season": 2, "episodes": [3]}])
+
+    def test_multiseason_orphan_preview_blocks_when_qb_still_links_any_hlink_inode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "qb" / "TV" / "Mad.Men.S01"
+            source_file = source / "Mad.Men.S01E01.mkv"
+            write(source_file)
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "广告狂人 (2007)"
+            hlink_file = hlink_root / "Season 01" / "广告狂人 - S01E01.mkv"
+            hlink_file.parent.mkdir(parents=True)
+            os.link(source_file, hlink_file)
+            strm_root = tmp_path / "strm" / "series" / "广告狂人" / "Season 01"
+            write(strm_root / "广告狂人.S01E01.strm", "/已整理/series/美剧【广告狂人】/Season 01/E01.mkv")
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return [
+                        {
+                            "name": "Mad.Men.S01",
+                            "hash": "6666666666666666666666666666666666666666",
+                            "state": "stalledUP",
+                            "save_path": str(tmp_path / "qb" / "TV"),
+                            "content_path": str(source),
+                            "progress": 1.0,
+                            "seeding_time": 86400 * 30,
+                            "size": source_file.stat().st_size,
+                        }
+                    ]
+
+                def torrent_files(self, _torrent_hash):
+                    return [{"name": "Mad.Men.S01/Mad.Men.S01E01.mkv", "size": source_file.stat().st_size}]
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", FakeClient):
+                report = preview_cloud_hlink_orphan_multiseason_cleanup(
+                    "广告狂人",
+                    str(hlink_root),
+                    [{"season": 1, "strm_root": str(strm_root), "expected_episode_count": 1, "expected_episode_min": 1, "expected_episode_max": 1}],
+                    expected_tmdbid=1104,
+                    qb_base_url="http://qb.example",
+                    required_target_prefix="/已整理/series/美剧【广告狂人】",
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("qb_linked_torrent_present", report["blockers"])
+        self.assertEqual(report["qbittorrent"]["hashes"], ["6666666666666666666666666666666666666666"])
+
+    def test_multiseason_orphan_execute_rechecks_and_deletes_explicit_hlink_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "广告狂人 (2007)"
+            write(hlink_root / "Season 01" / "广告狂人 - S01E01.mkv")
+            strm_root = tmp_path / "volume4" / "mv3" / "strm" / "series" / "广告狂人 (2007) {tmdbid=1104}" / "Season 01"
+            write(strm_root / "广告狂人.S01E01.strm", "/已整理/series/美剧【广告狂人】/Season 01/E01.mkv")
+            preview = {
+                "mode": "cloud-hlink-orphan-multiseason-cleanup-preview",
+                "title": "广告狂人",
+                "ready_for_execute": True,
+                "blockers": [],
+                "warnings": [],
+                "expected": {
+                    "tmdbid": 1104,
+                    "seasons": [
+                        {
+                            "season": 1,
+                            "strm_root": str(strm_root),
+                            "expected_episode_count": 1,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 1,
+                            "expected_episodes": [],
+                        }
+                    ],
+                    "required_target_prefix": "/已整理/series/美剧【广告狂人】",
+                    "forbidden_target_prefixes": [],
+                },
+                "hlink": {"path": str(hlink_root)},
+                "qbittorrent": {"hashes": [], "linked_count": 0},
+            }
+
+            class EmptyClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", EmptyClient):
+                report = execute_cloud_hlink_orphan_multiseason_cleanup(preview, "http://qb.example")
+
+        self.assertTrue(report["ok"])
+        self.assertFalse(hlink_root.exists())
+        self.assertTrue(report["current_precheck"]["ok"])
+        self.assertTrue(report["verification"]["ok"])
+
+    def test_cli_parses_multiseason_orphan_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            report_file = tmp_path / "preview.json"
+            env_file.write_text("QB_BASE_URL=http://qb.example\n", encoding="utf-8")
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "广告狂人 (2007)"
+            write(hlink_root / "Season 05" / "广告狂人 - S05E01.mkv")
+            write(hlink_root / "Season 05" / "广告狂人 - S05E03.mkv")
+            strm_root = tmp_path / "volume4" / "mv3" / "strm" / "series" / "广告狂人" / "Season 05"
+            write(strm_root / "广告狂人.S05E01.strm", "/已整理/series/美剧【广告狂人】/Season 05/E01.mkv")
+            write(strm_root / "广告狂人.S05E02.strm", "/已整理/series/美剧【广告狂人】/Season 05/E02.mkv")
+            write(strm_root / "广告狂人.S05E03.strm", "/已整理/series/美剧【广告狂人】/Season 05/E03.mkv")
+
+            class EmptyClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", EmptyClient):
+                status = main(
+                    [
+                        "cloud-hlink-orphan-multiseason-cleanup-preview",
+                        "--env-file",
+                        str(env_file),
+                        "--title",
+                        "广告狂人",
+                        "--expected-tmdbid",
+                        "1104",
+                        "--hlink-root",
+                        str(hlink_root),
+                        "--season",
+                        f"5:{strm_root}:episodes=1,3",
+                        "--required-target-prefix",
+                        "/已整理/series/美剧【广告狂人】",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(report_file),
+                    ]
+                )
+            report = json.loads(report_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(status, 0)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["expected"]["seasons"][0]["expected_episodes"], [1, 3])
 
     def test_cli_requires_approval_before_orphan_hlink_cleanup_execute(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

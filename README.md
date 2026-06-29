@@ -372,6 +372,39 @@ PYTHONPATH=src python3 -m series_cloud_archiver cloud-hlink-orphan-cleanup-previ
   --output reports/cloud-hlink-orphan-preview.json
 ```
 
+如果本地残留的是一个多季 hlink 根目录，不要逐季手动删，也不要把整部剧当成单季去骗过集数检查。使用多季 hlink-only 预览，每季重复一个 `--season`；普通连续季写成 `季号:STRM季目录:集数:起始集:结束集`，本地历史本来就不连续时写成 `季号:STRM季目录:episodes=1,3-13`。云端 STRM 多出本地没有的集数不会阻断，但本地 hlink 已有的任何一集在 STRM 中缺失都会阻断：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver cloud-hlink-orphan-multiseason-cleanup-preview \
+  --env-file .env \
+  --title 广告狂人 \
+  --expected-tmdbid 1104 \
+  --hlink-root "/media/hlink/TV/广告狂人 (2007)" \
+  --season "1:/media/cloud-strm/series/广告狂人 (2007) {tmdbid=1104}/Season 01:13:1:13" \
+  --season "5:/media/cloud-strm/series/广告狂人 (2007) {tmdbid=1104}/Season 05:episodes=1,3-13" \
+  --required-target-prefix "/已整理/series/美剧【广告狂人】" \
+  --forbidden-target-prefix "/volume3" \
+  --cloud-media-path "/已整理/series/美剧【广告狂人】1-7季全 1080P中字【373G】" \
+  --format json \
+  --output reports/cloud-hlink-orphan-multiseason-preview.json
+```
+
+执行也必须从预览 JSON 进入，并复核标题、TMDB、hlink 根和季号：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver cloud-hlink-orphan-multiseason-cleanup-execute \
+  --env-file .env \
+  --preview-report reports/cloud-hlink-orphan-multiseason-preview.json \
+  --expected-title 广告狂人 \
+  --expected-tmdbid 1104 \
+  --expected-hlink-root "/media/hlink/TV/广告狂人 (2007)" \
+  --expected-season 1 \
+  --expected-season 5 \
+  --approve-delete \
+  --format json \
+  --output reports/cloud-hlink-orphan-multiseason-execute.json
+```
+
 source-only 预览只允许清理一个显式 qB 源目录：
 
 ```bash
@@ -390,7 +423,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver cloud-source-orphan-cleanup-prev
   --output reports/cloud-source-orphan-preview.json
 ```
 
-这两个预览都会重新验证 STRM 集数和目标前缀、检查云盘媒体目录没有 `.nfo/.jpg/.jpeg/.png/.webp` 元数据旁挂，并扫描 qB 当前任务列表。只要 qB 仍然引用目标文件 inode 或源路径，预览就会阻断。真正执行必须从预览 JSON 报告进入，并显式传入标题、TMDB ID、目标根目录和 `--approve-delete`；执行时会再次预检，成功后只删除那个精确 hlink 或 source 根目录，不操作云盘、STRM、Emby 或其他 qB 任务。
+这些预览都会重新验证 STRM 集数和目标前缀、检查云盘媒体目录没有 `.nfo/.jpg/.jpeg/.png/.webp` 元数据旁挂，并扫描 qB 当前任务列表。只要 qB 仍然引用目标文件 inode 或源路径，预览就会阻断。真正执行必须从预览 JSON 报告进入，并显式传入标题、TMDB ID、目标根目录和 `--approve-delete`；执行时会再次预检，成功后只删除那个精确 hlink 或 source 根目录，不操作云盘、STRM、Emby 或其他 qB 任务。云盘实体目录仍然只承担转存和生成 STRM，不做刮削；中文 NFO、海报和 Emby 入库只在 STRM 媒体库路径完成。
 
 还有一种常见残局：STRM 已经完整，本地 source/hlink 已经不存在或只剩旁挂文件，但 qB 里还挂着“文件丢失”的孤儿任务。这个场景不要走 MP 清理，也不要手动点 qB，先用 qB task-only 预览：
 

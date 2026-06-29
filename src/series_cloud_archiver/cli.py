@@ -39,9 +39,11 @@ from .emby import (
 )
 from .hlink_cleanup import (
     cleanup_empty_hlink_root,
+    execute_cloud_hlink_orphan_multiseason_cleanup,
     execute_cloud_hlink_orphan_cleanup,
     execute_cloud_hlink_cleanup,
     execute_cloud_source_orphan_cleanup,
+    preview_cloud_hlink_orphan_multiseason_cleanup,
     preview_cloud_hlink_orphan_cleanup,
     preview_cloud_hlink_cleanup,
     preview_cloud_source_orphan_cleanup,
@@ -368,6 +370,43 @@ def build_parser() -> argparse.ArgumentParser:
     hlink_orphan_exec_parser.add_argument("--approve-delete", action="store_true", help="Required: actually delete the explicit orphan hlink root")
     hlink_orphan_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     hlink_orphan_exec_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    hlink_orphan_multi_preview_parser = subcommands.add_parser(
+        "cloud-hlink-orphan-multiseason-cleanup-preview",
+        help="Readonly hlink-only cleanup preview for a multi-season root when cloud STRM is complete and qB no longer tracks the files",
+    )
+    hlink_orphan_multi_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    hlink_orphan_multi_preview_parser.add_argument("--title", required=True, help="Series title for reporting")
+    hlink_orphan_multi_preview_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Expected TMDB ID")
+    hlink_orphan_multi_preview_parser.add_argument("--hlink-root", required=True, help="Explicit orphan hlink root to remove after checks pass")
+    hlink_orphan_multi_preview_parser.add_argument(
+        "--season",
+        action="append",
+        type=_parse_hlink_multiseason_spec,
+        required=True,
+        help="Season spec. Use season:strm_root:count:min:max or season:strm_root:episodes=1,3-13; repeat per season",
+    )
+    hlink_orphan_multi_preview_parser.add_argument("--required-target-prefix", default="", help="Every STRM target must start with this prefix")
+    hlink_orphan_multi_preview_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
+    hlink_orphan_multi_preview_parser.add_argument("--cloud-media-path", default="", help="MV3 cloud media path that must not contain NFO/JPG/PNG/WEBP before cleanup")
+    hlink_orphan_multi_preview_parser.add_argument("--cloud-media-folder-id", default="", help="MV3 cloud media folder id that must not contain NFO/JPG/PNG/WEBP before cleanup")
+    hlink_orphan_multi_preview_parser.add_argument("--cloud-media-storage", default="115-default", help="MV3 cloud storage slug for cloud media sidecar verification")
+    hlink_orphan_multi_preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    hlink_orphan_multi_preview_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    hlink_orphan_multi_exec_parser = subcommands.add_parser(
+        "cloud-hlink-orphan-multiseason-cleanup-execute",
+        help="Execute approved hlink-only cleanup from a validated multi-season orphan preview",
+    )
+    hlink_orphan_multi_exec_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    hlink_orphan_multi_exec_parser.add_argument("--preview-report", required=True, help="JSON report from cloud-hlink-orphan-multiseason-cleanup-preview")
+    hlink_orphan_multi_exec_parser.add_argument("--expected-title", required=True, help="Safety check: title must exactly match preview")
+    hlink_orphan_multi_exec_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Safety check: expected TMDB ID")
+    hlink_orphan_multi_exec_parser.add_argument("--expected-hlink-root", required=True, help="Safety check: hlink root must exactly match preview")
+    hlink_orphan_multi_exec_parser.add_argument("--expected-season", action="append", type=int, required=True, help="Safety check: expected season number; repeat per season")
+    hlink_orphan_multi_exec_parser.add_argument("--approve-delete", action="store_true", help="Required: actually delete the explicit orphan hlink root")
+    hlink_orphan_multi_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    hlink_orphan_multi_exec_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     source_orphan_preview_parser = subcommands.add_parser("cloud-source-orphan-cleanup-preview", help="Readonly source-only cleanup preview when cloud STRM is complete and qB no longer tracks the files")
     source_orphan_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -907,6 +946,54 @@ def _parse_episode_list(value: str) -> List[int]:
         else:
             episodes.add(int(token))
     return sorted(item for item in episodes if item > 0)
+
+
+def _parse_hlink_multiseason_spec(value: str) -> Dict[str, object]:
+    parts = str(value or "").split(":")
+    if len(parts) < 3:
+        raise argparse.ArgumentTypeError(
+            "season spec must be season:strm_root:count:min:max or season:strm_root:episodes=1,3-13"
+        )
+    try:
+        season = int(parts[0].strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid season number: {parts[0]}") from exc
+    strm_root = parts[1].strip()
+    if not strm_root:
+        raise argparse.ArgumentTypeError("season spec strm_root is required")
+    tail = ":".join(parts[2:]).strip()
+    if tail.startswith("episodes="):
+        episodes = _parse_episode_list(tail.split("=", 1)[1])
+        if not episodes:
+            raise argparse.ArgumentTypeError("explicit episode list is empty")
+        return {
+            "season": season,
+            "strm_root": strm_root,
+            "expected_episode_count": len(episodes),
+            "expected_episode_min": min(episodes),
+            "expected_episode_max": max(episodes),
+            "expected_episodes": episodes,
+        }
+    if len(parts) != 5:
+        raise argparse.ArgumentTypeError(
+            "season spec must be season:strm_root:count:min:max or season:strm_root:episodes=1,3-13"
+        )
+    try:
+        count = int(parts[2].strip())
+        episode_min = int(parts[3].strip())
+        episode_max = int(parts[4].strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid season episode spec: {value}") from exc
+    if season <= 0 or count <= 0 or episode_min <= 0 or episode_max <= 0 or episode_min > episode_max:
+        raise argparse.ArgumentTypeError(f"invalid season episode spec: {value}")
+    return {
+        "season": season,
+        "strm_root": strm_root,
+        "expected_episode_count": count,
+        "expected_episode_min": episode_min,
+        "expected_episode_max": episode_max,
+        "expected_episodes": [],
+    }
 
 
 def _write_text_output(path: str, text: str) -> None:
@@ -1562,6 +1649,72 @@ def main(argv: Optional[List[str]] = None) -> int:
         if str(preview_hlink.get("path") or "").rstrip("/") != args.expected_hlink_root.rstrip("/"):
             parser.error("cloud-hlink-orphan-cleanup-execute expected hlink root mismatch")
         report = execute_cloud_hlink_orphan_cleanup(
+            preview,
+            config.qb_base_url,
+            config.qb_user,
+            config.qb_pass,
+            path_aliases=config.path_aliases,
+            mv3_base_url=config.mv3_base_url,
+            mv3_token=config.mv3_token,
+        )
+        rendered = render_cloud_hlink_cleanup(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "cloud-hlink-orphan-multiseason-cleanup-preview":
+        config = config_from_env(args.env_file, [])
+        if not config.qb_base_url:
+            parser.error("cloud-hlink-orphan-multiseason-cleanup-preview requires QB_BASE_URL")
+        report = preview_cloud_hlink_orphan_multiseason_cleanup(
+            title=args.title,
+            hlink_root=args.hlink_root,
+            season_specs=args.season,
+            expected_tmdbid=args.expected_tmdbid,
+            qb_base_url=config.qb_base_url,
+            qb_user=config.qb_user,
+            qb_pass=config.qb_pass,
+            path_aliases=config.path_aliases,
+            required_target_prefix=args.required_target_prefix,
+            forbidden_target_prefixes=args.forbidden_target_prefix,
+            mv3_base_url=config.mv3_base_url,
+            mv3_token=config.mv3_token,
+            cloud_media_path=args.cloud_media_path,
+            cloud_media_folder_id=args.cloud_media_folder_id,
+            cloud_media_storage=args.cloud_media_storage,
+        )
+        rendered = render_cloud_hlink_cleanup(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "cloud-hlink-orphan-multiseason-cleanup-execute":
+        if not args.approve_delete:
+            parser.error("cloud-hlink-orphan-multiseason-cleanup-execute requires --approve-delete")
+        config = config_from_env(args.env_file, [])
+        if not config.qb_base_url:
+            parser.error("cloud-hlink-orphan-multiseason-cleanup-execute requires QB_BASE_URL")
+        preview = load_optional_json_report(args.preview_report)
+        if not isinstance(preview, dict):
+            parser.error("preview report must be a JSON object")
+        preview_hlink = preview.get("hlink") if isinstance(preview.get("hlink"), dict) else {}
+        preview_expected = preview.get("expected") if isinstance(preview.get("expected"), dict) else {}
+        preview_seasons = preview_expected.get("seasons") if isinstance(preview_expected.get("seasons"), list) else []
+        expected_seasons = sorted({int(item) for item in args.expected_season if int(item) > 0})
+        report_seasons = sorted({int(item.get("season") or 0) for item in preview_seasons if isinstance(item, dict) and int(item.get("season") or 0) > 0})
+        if str(preview.get("title") or "") != args.expected_title:
+            parser.error("cloud-hlink-orphan-multiseason-cleanup-execute expected title mismatch")
+        if int(preview_expected.get("tmdbid") or 0) != args.expected_tmdbid:
+            parser.error("cloud-hlink-orphan-multiseason-cleanup-execute expected TMDB ID mismatch")
+        if str(preview_hlink.get("path") or "").rstrip("/") != args.expected_hlink_root.rstrip("/"):
+            parser.error("cloud-hlink-orphan-multiseason-cleanup-execute expected hlink root mismatch")
+        if report_seasons != expected_seasons:
+            parser.error("cloud-hlink-orphan-multiseason-cleanup-execute expected seasons mismatch")
+        report = execute_cloud_hlink_orphan_multiseason_cleanup(
             preview,
             config.qb_base_url,
             config.qb_user,
