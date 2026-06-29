@@ -1823,6 +1823,169 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
         self.assertEqual(report["verification"]["totals"]["stale_records"], 0)
         self.assertEqual(report["root_items"][0]["id"], "local-season-3")
 
+    def test_delete_stale_emby_paths_can_replace_duplicate_season_before_strm_db_rows_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "library.db"
+            stale_host = tmp_path / "missing" / "9号秘事 (2014) {tmdbid=61746}" / "Season 01"
+            strm_root = tmp_path / "strm" / "series" / "9号秘事 (2014) {tmdbid=61746}" / "Season 1"
+            strm_root.mkdir(parents=True)
+            for index in range(1, 7):
+                (strm_root / f"9号秘事 S01E{index:02d}.strm").write_text(
+                    f"/已整理/series/9号秘事 (2014) {{tmdbid=61746}}/Season 1/9号秘事 S01E{index:02d}.mkv",
+                    encoding="utf-8",
+                )
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE MediaItems (
+                        Id TEXT,
+                        type TEXT,
+                        Name TEXT,
+                        SeriesName TEXT,
+                        Path TEXT,
+                        IndexNumber INTEGER,
+                        ParentIndexNumber INTEGER
+                    )
+                    """
+                )
+                rows = [
+                    ("local-series", "Series", "9号秘事", None, "/example/hlink/TV/9号秘事 (2014) {tmdbid=61746}", None, None),
+                    ("local-season-1", "Season", "Season 01", None, "/example/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 01", None, None),
+                    ("local-episode-1", "Episode", "第1集", "9号秘事", "/example/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 01/Inside No 9 S01E01.mkv", 1, 1),
+                    ("local-episode-6", "Episode", "第6集", "9号秘事", "/example/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 01/Inside No 9 S01E06.mkv", 6, 1),
+                ]
+                connection.executemany("INSERT INTO MediaItems VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+                connection.commit()
+            finally:
+                connection.close()
+
+            calls = []
+
+            class FakeClient:
+                def __init__(self, base_url, api_key, timeout=20):
+                    pass
+
+                def items_by_search(self, _search_term):
+                    raise AssertionError("sqlite path should be used")
+
+                def delete_item(self, item_id):
+                    calls.append(item_id)
+                    cleanup_connection = sqlite3.connect(db_path)
+                    try:
+                        cleanup_connection.execute(
+                            "DELETE FROM MediaItems WHERE Path = ? OR Path LIKE ?",
+                            (
+                                "/example/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 01",
+                                "/example/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 01/%",
+                            ),
+                        )
+                        cleanup_connection.commit()
+                    finally:
+                        cleanup_connection.close()
+                    return {"http_status": 204, "ok": True, "response": {}}
+
+            with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+                report = delete_stale_emby_paths(
+                    "http://emby.example",
+                    "token",
+                    title="9号秘事",
+                    stale_path_prefixes=["/example/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 01"],
+                    stale_host_prefix=str(stale_host),
+                    delete_scope="season",
+                    allow_season_duplicate_replacement=True,
+                    strm_filesystem_roots=[str(strm_root)],
+                    required_target_prefix="/已整理",
+                    forbidden_target_prefixes=["/series/series", "/已整理/series/series"],
+                    strm_path_prefixes=["/example/strm/series/9号秘事 (2014) {tmdbid=61746}/Season 1"],
+                    expected_episode_count=6,
+                    expected_episode_min=1,
+                    expected_episode_max=6,
+                    library_db_path=str(db_path),
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(calls, ["local-season-1"])
+        self.assertTrue(report["allow_missing_strm_db_replacement"])
+        self.assertTrue(report["strm_filesystem_verification"]["ok"])
+        self.assertEqual(report["strm_filesystem_verification"]["strm"]["combined"]["episodes"], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(report["verification"]["totals"]["stale_records"], 0)
+        self.assertEqual(report["verification"]["totals"]["strm_records"], 0)
+        self.assertEqual(report["blockers"], [])
+
+    def test_delete_stale_emby_paths_blocks_duplicate_replacement_when_strm_target_is_wrong(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "library.db"
+            stale_host = tmp_path / "missing" / "9号秘事 (2014) {tmdbid=61746}" / "Season 01"
+            strm_root = tmp_path / "strm" / "series" / "9号秘事 (2014) {tmdbid=61746}" / "Season 1"
+            strm_root.mkdir(parents=True)
+            for index in range(1, 7):
+                (strm_root / f"9号秘事 S01E{index:02d}.strm").write_text(
+                    f"/series/series/9号秘事 (2014) {{tmdbid=61746}}/Season 1/9号秘事 S01E{index:02d}.mkv",
+                    encoding="utf-8",
+                )
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE MediaItems (
+                        Id TEXT,
+                        type TEXT,
+                        Name TEXT,
+                        SeriesName TEXT,
+                        Path TEXT,
+                        IndexNumber INTEGER,
+                        ParentIndexNumber INTEGER
+                    )
+                    """
+                )
+                rows = [
+                    ("local-season-1", "Season", "Season 01", None, "/example/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 01", None, None),
+                    ("local-episode-1", "Episode", "第1集", "9号秘事", "/example/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 01/Inside No 9 S01E01.mkv", 1, 1),
+                ]
+                connection.executemany("INSERT INTO MediaItems VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+                connection.commit()
+            finally:
+                connection.close()
+
+            class FakeClient:
+                def __init__(self, base_url, api_key, timeout=20):
+                    pass
+
+                def items_by_search(self, _search_term):
+                    raise AssertionError("sqlite path should be used")
+
+                def delete_item(self, _item_id):
+                    raise AssertionError("delete should be blocked")
+
+            with patch("series_cloud_archiver.emby.EmbyClient", FakeClient):
+                report = delete_stale_emby_paths(
+                    "http://emby.example",
+                    "token",
+                    title="9号秘事",
+                    stale_path_prefixes=["/example/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 01"],
+                    stale_host_prefix=str(stale_host),
+                    delete_scope="season",
+                    allow_season_duplicate_replacement=True,
+                    strm_filesystem_roots=[str(strm_root)],
+                    required_target_prefix="/已整理",
+                    forbidden_target_prefixes=["/series/series", "/已整理/series/series"],
+                    strm_path_prefixes=["/example/strm/series/9号秘事 (2014) {tmdbid=61746}/Season 1"],
+                    expected_episode_count=6,
+                    expected_episode_min=1,
+                    expected_episode_max=6,
+                    library_db_path=str(db_path),
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["allow_missing_strm_db_replacement"])
+        self.assertIn("strm_filesystem_replacement_not_verified", report["blockers"])
+        self.assertIn("strm_target_prefix_mismatch", report["strm_filesystem_verification"]["blockers"])
+        self.assertIn("strm_forbidden_target_prefix", report["strm_filesystem_verification"]["blockers"])
+        self.assertEqual(report["delete_results"], [])
+
     def test_delete_stale_emby_paths_blocks_when_final_stale_rows_remain(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

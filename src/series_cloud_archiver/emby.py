@@ -10,6 +10,7 @@ import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from .cleanup_verify import verify_strm_paths
 from .episode import episode_signal
 from .models import EmbyEvidence, FileSystemSeries
 from .path_safety import cloud_media_paths, non_strm_side_paths
@@ -841,6 +842,10 @@ def delete_stale_emby_paths(
     strm_path_prefixes: Sequence[str],
     stale_host_prefix: str = "",
     delete_scope: str = "root",
+    allow_season_duplicate_replacement: bool = False,
+    strm_filesystem_roots: Sequence[str] = (),
+    required_target_prefix: str = "",
+    forbidden_target_prefixes: Sequence[str] = (),
     expected_episode_count: int = 0,
     expected_episode_min: int = 0,
     expected_episode_max: int = 0,
@@ -848,6 +853,27 @@ def delete_stale_emby_paths(
     timeout: int = 20,
 ) -> Dict[str, object]:
     client = EmbyClient(base_url, api_key, timeout=timeout)
+    normalized_delete_scope = str(delete_scope or "root").strip().lower()
+    strm_filesystem_verification: Dict[str, object] = {"skipped": True}
+    allow_missing_strm_db_replacement = False
+    if allow_season_duplicate_replacement:
+        strm_filesystem_verification = verify_strm_paths(
+            title=title,
+            strm_roots=strm_filesystem_roots,
+            expected_episode_count=expected_episode_count,
+            expected_episode_min=expected_episode_min,
+            expected_episode_max=expected_episode_max,
+            required_target_prefix=required_target_prefix,
+            forbidden_target_prefixes=forbidden_target_prefixes,
+        )
+        allow_missing_strm_db_replacement = (
+            normalized_delete_scope == "season"
+            and bool(strm_filesystem_roots)
+            and bool(expected_episode_count)
+            and bool(expected_episode_min)
+            and bool(expected_episode_max)
+            and bool(strm_filesystem_verification.get("ok"))
+        )
     pre_delete_verification = verify_emby_library_paths(
         client,
         title=title,
@@ -860,10 +886,15 @@ def delete_stale_emby_paths(
     )
     blockers: List[str] = []
     warnings: List[str] = list(pre_delete_verification.get("warnings", [])) if isinstance(pre_delete_verification.get("warnings"), list) else []
+    if allow_missing_strm_db_replacement:
+        warnings.append("emby_strm_db_verification_deferred_until_after_stale_season_delete")
+    allowed_pre_delete_blockers = {"emby_stale_path_records_present"}
+    if allow_missing_strm_db_replacement:
+        allowed_pre_delete_blockers.update(_MISSING_STRM_DB_REPLACEMENT_BLOCKERS)
     verification_blockers = [
         str(blocker)
         for blocker in pre_delete_verification.get("blockers", [])
-        if blocker != "emby_stale_path_records_present"
+        if blocker not in allowed_pre_delete_blockers
     ] if isinstance(pre_delete_verification.get("blockers"), list) else []
     blockers.extend(verification_blockers)
     if not stale_path_prefixes:
@@ -874,9 +905,17 @@ def delete_stale_emby_paths(
         blockers.append("library_db_required_for_stale_delete")
     if not stale_host_prefix:
         blockers.append("stale_host_prefix_required")
-    normalized_delete_scope = str(delete_scope or "root").strip().lower()
     if normalized_delete_scope not in {"root", "season"}:
         blockers.append("delete_scope_not_supported")
+    if allow_season_duplicate_replacement:
+        if normalized_delete_scope != "season":
+            blockers.append("season_duplicate_replacement_requires_season_scope")
+        if not strm_filesystem_roots:
+            blockers.append("strm_filesystem_root_required")
+        if not (expected_episode_count and expected_episode_min and expected_episode_max):
+            blockers.append("expected_episode_bounds_required")
+        if not strm_filesystem_verification.get("ok"):
+            blockers.append("strm_filesystem_replacement_not_verified")
 
     stale_rows = _db_rows_for_prefixes_path(library_db_path, stale_path_prefixes) if library_db_path else []
     root_rows = _stale_delete_rows(stale_rows, stale_path_prefixes, normalized_delete_scope)
@@ -925,7 +964,8 @@ def delete_stale_emby_paths(
             expected_episode_max=expected_episode_max,
             library_db_path=library_db_path,
         )
-        blockers.extend(str(blocker) for blocker in final_verification.get("blockers", []) if blocker)
+        allowed_final_blockers = _MISSING_STRM_DB_REPLACEMENT_BLOCKERS if allow_missing_strm_db_replacement else set()
+        blockers.extend(str(blocker) for blocker in final_verification.get("blockers", []) if blocker and blocker not in allowed_final_blockers)
         warnings.extend(str(warning) for warning in final_verification.get("warnings", []) if warning)
 
     return {
@@ -933,8 +973,11 @@ def delete_stale_emby_paths(
         "title": title,
         "ok": not blockers and bool(delete_results),
         "delete_scope": normalized_delete_scope,
+        "allow_season_duplicate_replacement": allow_season_duplicate_replacement,
+        "allow_missing_strm_db_replacement": allow_missing_strm_db_replacement,
         "pre_delete_verification": pre_delete_verification,
         "verification": final_verification,
+        "strm_filesystem_verification": strm_filesystem_verification,
         "stale_rows_count": len(stale_rows),
         "root_items": root_rows,
         "host_checks": host_checks,
@@ -956,6 +999,7 @@ def render_emby_delete_stale_paths_report(report: Dict[str, object], output_form
         f"- Title: `{report.get('title', '')}`",
         f"- OK: `{bool(report.get('ok'))}`",
         f"- Delete scope: `{report.get('delete_scope', 'root')}`",
+        f"- Duplicate season replacement: `{bool(report.get('allow_season_duplicate_replacement'))}`",
         f"- Stale rows before delete: `{report.get('stale_rows_count', 0)}`",
         f"- Root items deleted: `{len(report.get('delete_results', [])) if isinstance(report.get('delete_results'), list) else 0}`",
         f"- STRM records: `{totals.get('strm_records', 0)}`",
@@ -966,6 +1010,15 @@ def render_emby_delete_stale_paths_report(report: Dict[str, object], output_form
         lines.extend(["", "## Blockers", ""])
         lines.extend(f"- `{blocker}`" for blocker in blockers)
     return "\n".join(lines)
+
+
+_MISSING_STRM_DB_REPLACEMENT_BLOCKERS = {
+    "emby_strm_records_missing",
+    "emby_strm_record_count_mismatch",
+    "emby_strm_episode_count_mismatch",
+    "emby_strm_episode_min_mismatch",
+    "emby_strm_episode_max_mismatch",
+}
 
 
 def fetch_emby_evidence(base_url: str, api_key: str) -> List[EmbyEvidence]:

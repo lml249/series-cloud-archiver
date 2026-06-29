@@ -552,6 +552,10 @@ def build_parser() -> argparse.ArgumentParser:
     emby_delete_parser.add_argument("--stale-host-prefix", required=True, help="Host path for the same stale root; must no longer exist. Comma-separated when multiple stale prefixes are used")
     emby_delete_parser.add_argument("--strm-path-prefix", action="append", required=True, help="Replacement STRM Emby/container path prefix; can be repeated")
     emby_delete_parser.add_argument("--delete-scope", choices=["root", "season"], default="root", help="Delete a stale series root or one stale season item")
+    emby_delete_parser.add_argument("--allow-season-duplicate-replacement", action="store_true", help="Allow deleting a missing stale local season before Emby has indexed the STRM season, only when STRM filesystem verification passes")
+    emby_delete_parser.add_argument("--strm-filesystem-root", action="append", default=[], help="Host filesystem STRM season root used to verify duplicate-season replacement; can be repeated")
+    emby_delete_parser.add_argument("--required-target-prefix", default="", help="Every STRM target in --strm-filesystem-root must start with this prefix when duplicate-season replacement is allowed")
+    emby_delete_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets in --strm-filesystem-root must not start with this prefix; can be repeated")
     emby_delete_parser.add_argument("--expected-episode-count", type=int, required=True, help="Expected distinct STRM episode count")
     emby_delete_parser.add_argument("--expected-episode-min", type=int, required=True, help="Expected first STRM episode number")
     emby_delete_parser.add_argument("--expected-episode-max", type=int, required=True, help="Expected last STRM episode number")
@@ -2006,6 +2010,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             stale_path_prefixes=args.stale_path_prefix,
             stale_host_prefix=args.stale_host_prefix,
             delete_scope=args.delete_scope,
+            allow_season_duplicate_replacement=args.allow_season_duplicate_replacement,
+            strm_filesystem_roots=args.strm_filesystem_root,
+            required_target_prefix=args.required_target_prefix,
+            forbidden_target_prefixes=args.forbidden_target_prefix,
             strm_path_prefixes=args.strm_path_prefix,
             expected_episode_count=args.expected_episode_count,
             expected_episode_min=args.expected_episode_min,
