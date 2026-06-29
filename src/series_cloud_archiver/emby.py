@@ -115,6 +115,17 @@ class EmbyClient:
         return list(payload.get("Items") or [])
 
     def item(self, item_id: object) -> Dict[str, object]:
+        items_payload = self._get(
+            "/emby/Items",
+            {
+                "Ids": str(item_id),
+                "Fields": "Path,ProviderIds,RecursiveItemCount",
+            },
+        )
+        if isinstance(items_payload, dict):
+            items = list(items_payload.get("Items") or [])
+            if items and isinstance(items[0], dict):
+                return items[0]
         payload = self._get(
             f"/emby/Items/{urllib.parse.quote(str(item_id), safe='')}",
             {"Fields": "Path"},

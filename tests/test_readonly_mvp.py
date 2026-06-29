@@ -1409,6 +1409,51 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
             },
         )
 
+    def test_emby_client_item_uses_items_ids_endpoint_for_path_probe(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "Items": [
+                            {
+                                "Id": "153132",
+                                "Name": "9號秘事",
+                                "Type": "Series",
+                                "Path": "/volume4/mv3/strm/series/9号秘事 (2014) {tmdbid=61746}",
+                            }
+                        ],
+                        "TotalRecordCount": 1,
+                    }
+                ).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["headers"] = request.headers
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            item = EmbyClient("http://emby.example", "secret-key", timeout=7).item("153132")
+
+        self.assertEqual(item["Path"], "/volume4/mv3/strm/series/9号秘事 (2014) {tmdbid=61746}")
+        self.assertIn("/emby/Items?", seen["url"])
+        self.assertIn("Ids=153132", seen["url"])
+        self.assertIn("Fields=Path%2CProviderIds%2CRecursiveItemCount", seen["url"])
+        self.assertNotIn("/emby/Items/153132", seen["url"])
+        self.assertNotIn("secret-key", seen["url"])
+        self.assertEqual(seen["headers"].get("X-emby-token"), "secret-key")
+        self.assertEqual(seen["timeout"], 7)
+
     def test_emby_client_cancels_running_task_with_token_header(self) -> None:
         seen = {}
 
