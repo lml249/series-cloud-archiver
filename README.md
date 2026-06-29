@@ -552,7 +552,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-share-preview \
 
 `mv3-share-preview` 会重新搜索、选择第 N 个结果，然后调用 `/api/v1/share-transfer/parse` 和 `/api/v1/share-transfer/browse` 看分享里有哪些文件。它不会调用 `/api/v1/share-transfer/receive`，因此不会把资源转存到 115，也不会整理、生成 STRM 或操作 qB。
 
-确认预览结果后，可以只转存一个浏览条目到 `/未整理`：
+确认预览结果后，可以只转存一个浏览条目到 `/未整理`。如果分享根目录下是一个完整剧集文件夹，优先接收这个文件夹本身，而不是进入文件夹后 `--receive-all-files` 把文件平铺到 `/未整理` 根目录；接收文件夹前必须先用 `mv3-share-preview --browse-cid ...` 证明内层集数完整：
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver mv3-share-receive-one \
@@ -560,6 +560,11 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-share-receive-one \
   --keyword 楚汉传奇 \
   --selection-index 2 \
   --browse-index 1 \
+  --receive-selected-folder \
+  --verified-folder-browse-report reports/mv3-share-preview-chuhan-folder.json \
+  --expected-episode-count 80 \
+  --expected-episode-min 1 \
+  --expected-episode-max 80 \
   --expected-title-contains 楚汉传奇 \
   --target-path /未整理 \
   --storage 115-default \
@@ -568,7 +573,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-share-receive-one \
   --output reports/mv3-share-receive-chuhan.md
 ```
 
-`mv3-share-receive-one` 会重新搜索并预览同一个候选，只在通过标题校验和 `--approve-receive` 时调用 `/api/v1/share-transfer/receive`。它只转存选中的一个分享条目，不会整理、识别媒体类型、生成 STRM、操作 qB 或删除本地文件。
+`mv3-share-receive-one` 会重新搜索并预览同一个候选，只在通过标题校验和 `--approve-receive` 时调用 `/api/v1/share-transfer/receive`。接收文件夹时还会复核 `--verified-folder-browse-report` 里的 `browse_cid`、集数范围、缺失集和异常集，避免把未验证的文件夹转存进云盘。它只转存选中的一个分享条目，不会整理、识别媒体类型、生成 STRM、操作 qB 或删除本地文件。
 
 如果怀疑 115 里已经有同内容，或者分享预览暂时不可用，可以先用只读云盘搜索找候选目录。这个命令只查 115 文件名，不转存、不整理、不生成 STRM，也不会刮削云盘媒体目录：
 

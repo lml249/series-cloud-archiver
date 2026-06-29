@@ -1833,6 +1833,8 @@ def receive_mv3_share(
     browse_cid: str = "",
     browse_limit: int = 1150,
     receive_all_files: bool = False,
+    receive_selected_folder: bool = False,
+    verified_folder_browse_report: Optional[Dict[str, object]] = None,
     expected_episode_count: int = 0,
     expected_episode_min: int = 0,
     expected_episode_max: int = 0,
@@ -1870,12 +1872,27 @@ def receive_mv3_share(
         browse_selection if isinstance(browse_selection, dict) else {},
         receive_all_files,
     )
+    if receive_all_files and receive_selected_folder:
+        warnings.append("receive_mode_conflict")
+    if browse_selection and not receive_all_files and not receive_selected_folder and _share_item_kind(browse_selection) == "folder":
+        warnings.append("folder_selection_requires_browse_cid_receive_all_files")
+    if receive_selected_folder:
+        folder_verification_warnings = _share_selected_folder_receive_warnings(
+            browse_selection if isinstance(browse_selection, dict) else {},
+            verified_folder_browse_report or {},
+            expected_episode_count,
+            expected_episode_min,
+            expected_episode_max,
+        )
+        warnings.extend(folder_verification_warnings)
+        if browse_selection and _share_item_kind(browse_selection) == "folder" and not folder_verification_warnings:
+            selected_items = [browse_selection]
+            excluded_non_transfer_items = []
+            excluded_metadata_sidecars = []
     if excluded_metadata_sidecars:
         warnings.append("metadata_sidecars_excluded_from_receive")
     if excluded_non_transfer_items:
         warnings.append("non_transfer_media_excluded_from_receive")
-    if browse_selection and not receive_all_files and _share_item_kind(browse_selection) == "folder":
-        warnings.append("folder_selection_requires_browse_cid_receive_all_files")
     file_ids = [_share_item_file_id(item) for item in selected_items]
     file_ids = [item for item in file_ids if item]
     if not file_ids:
@@ -1888,6 +1905,11 @@ def receive_mv3_share(
             if episode is not None
         }
     )
+    if receive_selected_folder and isinstance(verified_folder_browse_report, dict) and verified_folder_browse_report.get("ok"):
+        episode_numbers = _positive_int_list(verified_folder_browse_report.get("episodes") or [])
+        if not episode_numbers and expected_episode_min and expected_episode_max:
+            episode_numbers = list(range(expected_episode_min, expected_episode_max + 1))
+        video_items = [{} for _ in range(int(verified_folder_browse_report.get("video_file_count") or len(episode_numbers)))]
     missing_expected = [
         episode
         for episode in range(expected_episode_min, expected_episode_max + 1)
@@ -1915,6 +1937,15 @@ def receive_mv3_share(
         "episode_range_incomplete",
         "video_file_count_mismatch",
         "folder_selection_requires_browse_cid_receive_all_files",
+        "receive_mode_conflict",
+        "selected_folder_required",
+        "verified_folder_browse_report_required",
+        "verified_folder_browse_report_not_ok",
+        "verified_folder_browse_cid_mismatch",
+        "verified_folder_episode_count_mismatch",
+        "verified_folder_episode_range_mismatch",
+        "verified_folder_missing_expected",
+        "verified_folder_unexpected_episodes",
     }
     if normalized_target_path and file_ids and share_code and not (set(warnings) & blocking_warnings):
         receive_body: Dict[str, object] = {
@@ -1946,6 +1977,7 @@ def receive_mv3_share(
     report["browse_index"] = browse_index
     report["browse_cid"] = browse_cid
     report["receive_all_files"] = receive_all_files
+    report["receive_selected_folder"] = receive_selected_folder
     report["file_id_count"] = len(file_ids)
     report["selected_item_count"] = len(selected_items)
     report["video_file_count"] = len(video_items)
@@ -1974,7 +2006,7 @@ def receive_mv3_share(
     report["storage"] = storage
     report["receive"] = receive_report
     report["warnings"] = warnings
-    report["safety"] = "exactly one approved MV3 share receive request may be sent; selected share item IDs are gated by optional episode coverage checks. Cloud receive only submits video files and subtitle sidecars; folders, metadata scraping sidecars, and other non-transfer files are excluded. Cloud storage is only for transfer and STRM generation; scraping must happen against the STRM library side. No organize/recognize/transfer, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed"
+    report["safety"] = "exactly one approved MV3 share receive request may be sent; selected share item IDs are gated by optional episode coverage checks. Cloud receive submits video files and subtitle sidecars, or one selected folder only when an explicit verified folder browse report proves complete episode coverage. Metadata scraping sidecars are excluded. Cloud storage is only for transfer and STRM generation; scraping must happen against the STRM library side. No organize/recognize/transfer, STRM generation, qBittorrent action, hlink deletion, or filesystem deletion is performed"
     return report
 
 
@@ -5405,6 +5437,38 @@ def _share_receive_items(
     if browse_selection and _share_item_is_transfer_media(browse_selection):
         return [browse_selection]
     return []
+
+
+def _share_selected_folder_receive_warnings(
+    browse_selection: Dict[str, object],
+    verified_folder_browse_report: Dict[str, object],
+    expected_episode_count: int,
+    expected_episode_min: int,
+    expected_episode_max: int,
+) -> List[str]:
+    warnings: List[str] = []
+    if not browse_selection or _share_item_kind(browse_selection) != "folder":
+        warnings.append("selected_folder_required")
+        return warnings
+    folder_id = _share_item_file_id(browse_selection)
+    if not verified_folder_browse_report:
+        warnings.append("verified_folder_browse_report_required")
+        return warnings
+    if not verified_folder_browse_report.get("ok"):
+        warnings.append("verified_folder_browse_report_not_ok")
+    if str(verified_folder_browse_report.get("browse_cid") or "") != folder_id:
+        warnings.append("verified_folder_browse_cid_mismatch")
+    if expected_episode_count and int(verified_folder_browse_report.get("episode_count") or 0) != expected_episode_count:
+        warnings.append("verified_folder_episode_count_mismatch")
+    if expected_episode_min and int(verified_folder_browse_report.get("episode_min") or 0) != expected_episode_min:
+        warnings.append("verified_folder_episode_range_mismatch")
+    if expected_episode_max and int(verified_folder_browse_report.get("episode_max") or 0) != expected_episode_max:
+        warnings.append("verified_folder_episode_range_mismatch")
+    if verified_folder_browse_report.get("missing_expected"):
+        warnings.append("verified_folder_missing_expected")
+    if verified_folder_browse_report.get("unexpected_episodes"):
+        warnings.append("verified_folder_unexpected_episodes")
+    return warnings
 
 
 def _share_metadata_sidecars_excluded_from_receive(

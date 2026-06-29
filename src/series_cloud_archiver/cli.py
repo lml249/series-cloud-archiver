@@ -702,6 +702,8 @@ def build_parser() -> argparse.ArgumentParser:
     share_receive_parser.add_argument("--browse-cid", default="", help="Optional share folder cid to browse before selecting --browse-index")
     share_receive_parser.add_argument("--browse-limit", type=int, default=1150, help="Maximum share folder items to request")
     share_receive_parser.add_argument("--receive-all-files", action="store_true", help="Receive every file in the current browsed share folder instead of one selected item")
+    share_receive_parser.add_argument("--receive-selected-folder", action="store_true", help="Receive the selected share folder after verifying a nested browse report proves complete episode coverage")
+    share_receive_parser.add_argument("--verified-folder-browse-report", default=None, help="JSON report from mv3-share-preview for the selected folder cid; required with --receive-selected-folder")
     share_receive_parser.add_argument("--expected-episode-count", type=int, default=0, help="Safety check for --receive-all-files: exact episode count")
     share_receive_parser.add_argument("--expected-episode-min", type=int, default=0, help="Safety check for --receive-all-files: first episode number")
     share_receive_parser.add_argument("--expected-episode-max", type=int, default=0, help="Safety check for --receive-all-files: last episode number")
@@ -2331,6 +2333,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             browse_cid=args.browse_cid,
             browse_limit=args.browse_limit,
             receive_all_files=args.receive_all_files,
+            receive_selected_folder=args.receive_selected_folder,
+            verified_folder_browse_report=load_optional_json_report(args.verified_folder_browse_report) if args.verified_folder_browse_report else None,
             expected_episode_count=args.expected_episode_count,
             expected_episode_min=args.expected_episode_min,
             expected_episode_max=args.expected_episode_max,
