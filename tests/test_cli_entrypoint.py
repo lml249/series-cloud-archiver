@@ -251,6 +251,71 @@ class CliEntrypointTest(unittest.TestCase):
             self.assertEqual(payload["executable_preview_items"], 1)
             self.assertIn("mv3-share-preview", payload["items"][0]["command"])
 
+    def test_batch_share_receive_plan_writes_approval_gated_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            preview = tmp_path / "batch-share-preview.json"
+            output = tmp_path / "batch-share-receive-plan.json"
+            preview.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-batch-mv3-share-preview",
+                        "items": [
+                            {
+                                "status": "preview_ready_for_receive",
+                                "title": "折腰",
+                                "tmdbid": 296753,
+                                "season": 1,
+                                "keyword": "折腰",
+                                "selection_index": 2,
+                                "expected_episode_count": 36,
+                                "expected_episode_min": 1,
+                                "expected_episode_max": 36,
+                                "expected_title_contains": "折腰",
+                                "preview_report_path": "/reports/share-preview-zheyao.json",
+                                "nested_previews": [
+                                    {"depth": 1, "cid": "series-folder", "index": "1", "folder_name": "折腰 (2025)", "ok": False},
+                                    {"depth": 2, "cid": "season-folder", "index": "1", "folder_name": "Season 1", "ok": True},
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            env = {**os.environ, "PYTHONPATH": "src"}
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "series_cloud_archiver",
+                    "batch-share-receive-plan",
+                    "--env-file",
+                    str(tmp_path / ".env"),
+                    "--batch-share-preview-report",
+                    str(preview),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ],
+                cwd=os.getcwd(),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["mode"], "readonly-batch-mv3-share-receive-plan")
+            self.assertEqual(payload["approval_required_items"], 1)
+            self.assertIn("mv3-share-receive-one", payload["items"][0]["command"])
+            self.assertNotIn("--approve-receive", payload["items"][0]["command"])
+
 
 if __name__ == "__main__":
     unittest.main()

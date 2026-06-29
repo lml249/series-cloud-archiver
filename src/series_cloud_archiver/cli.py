@@ -4,7 +4,12 @@ import argparse
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from .batch_preview import build_batch_share_preview_plan, render_batch_share_preview_report
+from .batch_preview import (
+    build_batch_share_preview_plan,
+    build_batch_share_receive_plan,
+    render_batch_share_preview_report,
+    render_batch_share_receive_plan,
+)
 from .batch_runner import build_batch_plan, render_batch_plan
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
 from .cloud_cleanup import (
@@ -670,6 +675,15 @@ def build_parser() -> argparse.ArgumentParser:
     batch_share_preview_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     batch_share_preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     batch_share_preview_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    batch_share_receive_plan_parser = subcommands.add_parser("batch-share-receive-plan", help="Build approval-gated MV3 share receive commands from a batch-share-preview report")
+    batch_share_receive_plan_parser.add_argument("--env-file", required=True, help="Local env file; used only for generated command templates")
+    batch_share_receive_plan_parser.add_argument("--batch-share-preview-report", required=True, help="JSON report from batch-share-preview --execute-preview")
+    batch_share_receive_plan_parser.add_argument("--target-path", default="/未整理", help="115 receive target path; must stay under /未整理")
+    batch_share_receive_plan_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    batch_share_receive_plan_parser.add_argument("--limit", type=int, default=0, help="Maximum approval-required rows; 0 means all")
+    batch_share_receive_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    batch_share_receive_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     preview_parser = subcommands.add_parser("plan-mv3-preview", help="Create a readonly MV3 preview manifest from a transfer plan")
     preview_parser.add_argument("--transfer-plan", required=True, help="JSON report from plan-mv3-transfer")
@@ -2294,6 +2308,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             preview_func=preview_mv3_share if args.execute_preview else None,
         )
         rendered = render_batch_share_preview_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "batch-share-receive-plan":
+        preview_report = load_optional_json_report(args.batch_share_preview_report)
+        if not isinstance(preview_report, dict):
+            parser.error("batch-share-receive-plan requires a valid --batch-share-preview-report JSON report")
+        report = build_batch_share_receive_plan(
+            preview_report,
+            env_file=args.env_file,
+            target_path=args.target_path,
+            storage=args.storage,
+            limit=args.limit,
+        )
+        rendered = render_batch_share_receive_plan(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

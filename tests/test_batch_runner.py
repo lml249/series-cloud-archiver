@@ -11,7 +11,12 @@ from series_cloud_archiver.batch_runner import (
     merge_share_search_plans,
     render_batch_plan,
 )
-from series_cloud_archiver.batch_preview import build_batch_share_preview_plan, render_batch_share_preview_report
+from series_cloud_archiver.batch_preview import (
+    build_batch_share_preview_plan,
+    build_batch_share_receive_plan,
+    render_batch_share_preview_report,
+    render_batch_share_receive_plan,
+)
 from series_cloud_archiver.cli import main
 
 
@@ -738,3 +743,60 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertEqual(calls[0].get("browse_cid"), "")
         self.assertEqual(calls[1].get("browse_cid"), "folder-1")
         self.assertEqual(calls[2].get("browse_cid"), "season-1")
+
+    def test_receive_plan_uses_verified_nested_folder_preview(self) -> None:
+        preview_report = {
+            "mode": "readonly-batch-mv3-share-preview",
+            "items": [
+                {
+                    "status": "preview_ready_for_receive",
+                    "title": "折腰",
+                    "tmdbid": 296753,
+                    "season": 1,
+                    "keyword": "折腰",
+                    "selection_index": 2,
+                    "expected_episode_count": 36,
+                    "expected_episode_min": 1,
+                    "expected_episode_max": 36,
+                    "expected_title_contains": "折腰",
+                    "preview_report_path": "/reports/share-preview-zheyao.json",
+                    "nested_previews": [
+                        {"depth": 1, "cid": "series-folder", "index": "1", "folder_name": "折腰 (2025)", "ok": False},
+                        {"depth": 2, "cid": "season-folder", "index": "1", "folder_name": "Season 1", "ok": True},
+                    ],
+                },
+                {
+                    "status": "preview_blocked",
+                    "title": "一饭封神",
+                    "tmdbid": 296217,
+                    "season": 1,
+                    "preview_blockers": ["episode_count_mismatch"],
+                },
+            ],
+        }
+
+        plan = build_batch_share_receive_plan(
+            preview_report,
+            env_file="/safe/.env",
+            target_path="/未整理",
+        )
+
+        ready = plan["items"][0]
+        skipped = plan["items"][1]
+        self.assertEqual(plan["approval_required_items"], 1)
+        self.assertEqual(ready["status"], "approval_required")
+        self.assertEqual(ready["receive_mode"], "receive_selected_folder")
+        self.assertEqual(ready["browse_cid"], "series-folder")
+        self.assertEqual(ready["browse_index"], 1)
+        self.assertEqual(ready["verified_folder_browse_report"], "/reports/share-preview-zheyao.json")
+        self.assertIn("--receive-selected-folder", ready["command"])
+        self.assertIn("--browse-cid series-folder", ready["command"])
+        self.assertIn("--verified-folder-browse-report /reports/share-preview-zheyao.json", ready["command"])
+        self.assertNotIn("--approve-receive", ready["command"])
+        self.assertIn("approval required", ready["command"])
+        self.assertEqual(skipped["status"], "skipped_receive")
+        self.assertIn("preview_not_ready_for_receive", skipped["skip_reasons"])
+
+        rendered = render_batch_share_receive_plan(plan, "markdown")
+        self.assertIn("Batch MV3 Share Receive Plan", rendered)
+        self.assertIn("折腰", rendered)

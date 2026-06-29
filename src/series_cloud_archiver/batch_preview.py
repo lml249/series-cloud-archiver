@@ -83,6 +83,7 @@ def build_batch_share_preview_plan(
                     {
                         "depth": depth,
                         "cid": nested["cid"],
+                        "index": nested["index"],
                         "folder_name": nested["name"],
                     }
                 )
@@ -188,7 +189,8 @@ def _single_nested_folder(report: Dict[str, object]) -> Dict[str, str]:
     folder = folders[0]
     cid = str(folder.get("file_id") or "")
     name = str(folder.get("name") or "")
-    return {"cid": cid, "name": name} if cid else {}
+    index = str(folder.get("index") or "")
+    return {"cid": cid, "name": name, "index": index} if cid else {}
 
 
 def render_batch_share_preview_report(report: Dict[str, object], output_format: str) -> str:
@@ -222,6 +224,85 @@ def render_batch_share_preview_report(report: Dict[str, object], output_format: 
                 episodes=item.get("expected_episode_count") or "",
                 title=_escape_cell(str(item.get("title") or "")),
                 candidate=_escape_cell(str(item.get("candidate_title") or "")),
+                reason=_escape_cell(reason),
+            )
+        )
+    return "\n".join(lines)
+
+
+def build_batch_share_receive_plan(
+    batch_share_preview_report: Dict[str, object],
+    *,
+    env_file: str = "",
+    target_path: str = "/未整理",
+    storage: str = "115-default",
+    limit: int = 0,
+) -> Dict[str, object]:
+    """Build approval-gated MV3 share receive commands from successful previews."""
+
+    rows: List[Dict[str, object]] = []
+    for index, item in enumerate(batch_share_preview_report.get("items", []), start=1):
+        if not isinstance(item, dict):
+            continue
+        row = _receive_plan_row(
+            index,
+            item,
+            env_file=env_file,
+            target_path=target_path,
+            storage=storage,
+        )
+        rows.append(row)
+        if limit > 0 and sum(1 for candidate in rows if candidate.get("status") == "approval_required") >= limit:
+            break
+
+    return {
+        "mode": "readonly-batch-mv3-share-receive-plan",
+        "source_mode": batch_share_preview_report.get("mode", ""),
+        "planned_items": len(rows),
+        "approval_required_items": sum(1 for row in rows if row.get("status") == "approval_required"),
+        "skipped_items": sum(1 for row in rows if str(row.get("status") or "").startswith("skipped")),
+        "settings": {
+            "target_path": target_path,
+            "storage": storage,
+            "limit": limit,
+        },
+        "items": rows,
+        "safety": (
+            "readonly receive plan only; no share receive, organize transfer, STRM generation, MoviePilot scrape, "
+            "Emby refresh, qBittorrent action, hlink deletion, source deletion, or filesystem deletion is performed. "
+            "Generated commands still require the explicit --approve-receive flag before MV3 can receive anything."
+        ),
+    }
+
+
+def render_batch_share_receive_plan(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# Batch MV3 Share Receive Plan",
+        "",
+        f"- Mode: `{report.get('mode', '')}`",
+        f"- Planned rows: `{report.get('planned_items', 0)}`",
+        f"- Approval required: `{report.get('approval_required_items', 0)}`",
+        f"- Skipped: `{report.get('skipped_items', 0)}`",
+        "- Safety: readonly plan only; generated commands require explicit receive approval.",
+        "",
+        "| Status | Mode | TMDB | S | Episodes | Title | Target | Reason |",
+        "| --- | --- | ---: | ---: | ---: | --- | --- | --- |",
+    ]
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        reason = ", ".join(_string_list(item.get("skip_reasons")))
+        lines.append(
+            "| {status} | {mode} | {tmdbid} | {season} | {episodes} | {title} | {target} | {reason} |".format(
+                status=item.get("status", ""),
+                mode=item.get("receive_mode", ""),
+                tmdbid=item.get("tmdbid") or "",
+                season=item.get("season") or "",
+                episodes=item.get("expected_episode_count") or "",
+                title=_escape_cell(str(item.get("title") or "")),
+                target=_escape_cell(str(item.get("target_path") or "")),
                 reason=_escape_cell(reason),
             )
         )
@@ -338,6 +419,128 @@ def _preview_report_filename(row: Dict[str, object]) -> str:
     title = "".join(ch if ch.isalnum() else "-" for ch in str(row.get("title") or "untitled")).strip("-")
     title = title[:40] or "untitled"
     return f"share-preview-{int(row.get('tmdbid') or 0)}-s{int(row.get('season') or 0):02d}-{title}.json"
+
+
+def _receive_plan_row(
+    index: int,
+    item: Dict[str, object],
+    *,
+    env_file: str,
+    target_path: str,
+    storage: str,
+) -> Dict[str, object]:
+    skip_reasons: List[str] = []
+    if item.get("status") != "preview_ready_for_receive":
+        skip_reasons.append("preview_not_ready_for_receive")
+    if not item.get("preview_report_path"):
+        skip_reasons.append("preview_report_path_missing")
+
+    nested_previews = [row for row in item.get("nested_previews", []) if isinstance(row, dict)]
+    receive_mode = ""
+    browse_cid = ""
+    browse_index = 1
+    verified_report = str(item.get("preview_report_path") or "")
+    if nested_previews:
+        receive_mode = "receive_selected_folder"
+        final = nested_previews[-1]
+        parent = nested_previews[-2] if len(nested_previews) >= 2 else {}
+        browse_cid = str(parent.get("cid") or "")
+        browse_index = int(final.get("index") or 1)
+        if not str(final.get("cid") or ""):
+            skip_reasons.append("selected_folder_cid_missing")
+        if not browse_cid and len(nested_previews) >= 2:
+            skip_reasons.append("parent_folder_cid_missing")
+    else:
+        receive_mode = "receive_all_files"
+        preview_report = item.get("preview_report") if isinstance(item.get("preview_report"), dict) else {}
+        browse_cid = str(preview_report.get("browse_cid") or "")
+
+    expected_count = int(item.get("expected_episode_count") or 0)
+    expected_min = int(item.get("expected_episode_min") or 0)
+    expected_max = int(item.get("expected_episode_max") or 0)
+    if expected_count <= 0:
+        skip_reasons.append("missing_expected_episode_count")
+    if expected_min <= 0 or expected_max <= 0:
+        skip_reasons.append("missing_expected_episode_range")
+    if not str(item.get("keyword") or ""):
+        skip_reasons.append("missing_search_keyword")
+    if int(item.get("selection_index") or 0) <= 0:
+        skip_reasons.append("missing_selection_index")
+    if not str(target_path or "").startswith("/未整理"):
+        skip_reasons.append("target_path_must_start_with_unorganized_root")
+
+    status = "approval_required" if not skip_reasons else "skipped_receive"
+    row = {
+        "source_index": index,
+        "status": status,
+        "skip_reasons": sorted(set(skip_reasons)),
+        "title": str(item.get("title") or ""),
+        "tmdbid": int(item.get("tmdbid") or 0),
+        "season": int(item.get("season") or 0),
+        "keyword": str(item.get("keyword") or ""),
+        "selection_index": int(item.get("selection_index") or 0),
+        "browse_cid": browse_cid,
+        "browse_index": browse_index,
+        "receive_mode": receive_mode,
+        "verified_folder_browse_report": verified_report if receive_mode == "receive_selected_folder" else "",
+        "target_path": target_path,
+        "storage": storage,
+        "expected_episode_count": expected_count,
+        "expected_episode_min": expected_min,
+        "expected_episode_max": expected_max,
+        "expected_title_contains": str(item.get("expected_title_contains") or ""),
+        "approval_flag_required": "--approve-receive",
+        "command": "",
+    }
+    if status == "approval_required":
+        row["command"] = _receive_command(row, env_file=env_file)
+    return row
+
+
+def _receive_command(row: Dict[str, object], *, env_file: str) -> str:
+    args = [
+        "PYTHONPATH=src",
+        "python3",
+        "-m",
+        "series_cloud_archiver",
+        "mv3-share-receive-one",
+    ]
+    if env_file:
+        args.extend(["--env-file", env_file])
+    args.extend(
+        [
+            "--keyword",
+            str(row.get("keyword") or ""),
+            "--selection-index",
+            str(row.get("selection_index") or 1),
+            "--browse-index",
+            str(row.get("browse_index") or 1),
+            "--expected-episode-count",
+            str(row.get("expected_episode_count") or 0),
+            "--expected-episode-min",
+            str(row.get("expected_episode_min") or 0),
+            "--expected-episode-max",
+            str(row.get("expected_episode_max") or 0),
+            "--expected-title-contains",
+            str(row.get("expected_title_contains") or ""),
+            "--target-path",
+            str(row.get("target_path") or ""),
+            "--storage",
+            str(row.get("storage") or ""),
+            "--format",
+            "json",
+            "--output",
+            "<receive-report.json>",
+        ]
+    )
+    if row.get("browse_cid"):
+        args.extend(["--browse-cid", str(row.get("browse_cid") or "")])
+    if row.get("receive_mode") == "receive_selected_folder":
+        args.append("--receive-selected-folder")
+        args.extend(["--verified-folder-browse-report", str(row.get("verified_folder_browse_report") or "")])
+    elif row.get("receive_mode") == "receive_all_files":
+        args.append("--receive-all-files")
+    return " ".join(_shell_quote(part) for part in args) + "  # approval required before execution"
 
 
 def _title_contains(title: str) -> str:
