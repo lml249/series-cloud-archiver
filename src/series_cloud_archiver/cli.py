@@ -638,6 +638,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_plan_parser.add_argument("--cloud-report", default=None, help="Optional JSON report from cloud-check; generated from scan when omitted")
     batch_plan_parser.add_argument("--transfer-plan", default=None, help="Optional JSON report from plan-mv3-transfer; generated from cloud report when omitted")
     batch_plan_parser.add_argument("--share-search-plan", action="append", default=[], help="Optional JSON report from plan-mv3-share-search; can be repeated")
+    batch_plan_parser.add_argument("--cleanup-preview-report", action="append", default=[], help="Optional JSON report from mp-cleanup-preview or cloud-complete cleanup plan item; can be repeated")
     batch_plan_parser.add_argument("--media-root", action="append", default=[], help="Media root to scan when --scan-report is omitted")
     batch_plan_parser.add_argument("--strm-root", action="append", default=[], help="STRM root for generated cloud-check when --cloud-report is omitted")
     batch_plan_parser.add_argument("--identity-file", default=None, help="Optional identity override file for generated cloud-check")
@@ -2220,10 +2221,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             for plan in (load_optional_json_report(path) for path in args.share_search_plan)
             if isinstance(plan, dict)
         ]
+        cleanup_preview_reports = [
+            plan
+            for plan in (load_optional_json_report(path) for path in args.cleanup_preview_report)
+            if isinstance(plan, dict)
+        ]
         report = build_batch_plan(
             cloud_report=cloud_report,
             transfer_plan=transfer_plan,
             share_search_plans=share_search_plans,
+            cleanup_preview_reports=cleanup_preview_reports,
             scan_report=scan_report,
             cloud_root=args.cloud_root,
             mv3_strm_root=args.mv3_strm_root,

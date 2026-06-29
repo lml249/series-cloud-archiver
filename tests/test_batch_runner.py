@@ -110,6 +110,91 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertNotIn("--approve-receive", commands)
         self.assertNotIn("--approve-transfer", commands)
 
+    def test_not_found_with_wrong_season_share_candidate_requires_review(self) -> None:
+        plan = build_batch_plan(
+            cloud_report={
+                "items": [
+                    {
+                        "status": "cloud_strm_not_found",
+                        "title": "怪奇物语",
+                        "tmdbid": 66732,
+                        "season": 4,
+                        "size_bytes": 1000,
+                        "expected_count": 9,
+                        "source_paths": ["/volume3/hlink/TV/怪奇物语/Season 04"],
+                    }
+                ],
+            },
+            transfer_plan={
+                "items": [
+                    {
+                        "title": "怪奇物语",
+                        "tmdbid": 66732,
+                        "season": 4,
+                        "size_bytes": 1000,
+                        "expected_count": 9,
+                        "source_paths": ["/volume3/hlink/TV/怪奇物语/Season 04"],
+                    }
+                ],
+            },
+            share_search_plan={
+                "items": [
+                    {
+                        "title": "怪奇物语",
+                        "tmdbid": 66732,
+                        "season": 4,
+                        "recommended_candidate": {
+                            "search_index": 15,
+                            "title": "怪奇物语：1985故事集 S01E01-E10",
+                            "score": 80,
+                            "size_delta_ratio": 0.06,
+                            "blockers": [],
+                        },
+                    }
+                ],
+            },
+        )
+
+        item = plan["items"][0]
+
+        self.assertEqual(item["bucket"], MANUAL_REVIEW)
+        self.assertIn("season_mismatch", item["review_reasons"])
+
+    def test_complete_cloud_item_with_blocked_cleanup_preview_requires_review(self) -> None:
+        plan = build_batch_plan(
+            cloud_report={
+                "items": [
+                    {
+                        "status": "cloud_strm_complete",
+                        "title": "兄弟连",
+                        "tmdbid": 4613,
+                        "season": 1,
+                        "size_bytes": 100,
+                        "expected_count": 10,
+                        "strm_paths_sample": ["/volume4/volume4/mv3/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 01/兄弟连 - S01E01.strm"],
+                        "source_paths": ["/volume3/hlink/TV/兄弟连 (2001) {tmdbid=4613}/Season 01"],
+                    }
+                ],
+            },
+            cleanup_preview_reports=[
+                {
+                    "mode": "readonly-mp-cleanup-preview",
+                    "ok": False,
+                    "ready_for_manual_cleanup_approval": False,
+                    "expected_tmdbid": 4613,
+                    "expected_season": 1,
+                    "blockers": ["no_matching_mp_transfer_history"],
+                }
+            ],
+        )
+
+        item = plan["items"][0]
+
+        self.assertEqual(item["bucket"], MANUAL_REVIEW)
+        self.assertIn("cleanup_preview_not_ready", item["review_reasons"])
+        self.assertIn("no_matching_mp_transfer_history", item["blockers"])
+        self.assertEqual(item["cleanup_preview_ready"], False)
+
     def test_far_size_candidate_is_manual_review(self) -> None:
         plan = build_batch_plan(
             cloud_report={
@@ -302,6 +387,8 @@ class BatchRunnerTest(unittest.TestCase):
             )
             share_a.write_text(json.dumps({"mode": "readonly-mv3-share-search-plan", "items": []}), encoding="utf-8")
             share_b.write_text(json.dumps({"mode": "readonly-mv3-share-search-plan", "items": []}), encoding="utf-8")
+            cleanup_preview = tmp_path / "cleanup-preview.json"
+            cleanup_preview.write_text(json.dumps({"expected_tmdbid": 1, "expected_season": 1, "ok": False}), encoding="utf-8")
 
             exit_code = main(
                 [
@@ -312,6 +399,8 @@ class BatchRunnerTest(unittest.TestCase):
                     str(share_a),
                     "--share-search-plan",
                     str(share_b),
+                    "--cleanup-preview-report",
+                    str(cleanup_preview),
                     "--format",
                     "json",
                     "--output",
@@ -323,4 +412,5 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(data["mode"], "readonly-batch-state-plan")
         self.assertEqual(data["settings"]["share_search_plan_count"], 2)
+        self.assertEqual(data["settings"]["cleanup_preview_report_count"], 1)
         self.assertEqual(data["items"][0]["bucket"], MANUAL_REVIEW)

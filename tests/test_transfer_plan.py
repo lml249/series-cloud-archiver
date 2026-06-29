@@ -974,6 +974,44 @@ class TransferPlanTest(unittest.TestCase):
         self.assertEqual(plan["ready_items"], 0)
         self.assertIn("possible_chinese_subtitle_mismatch", plan["items"][0]["candidates"][0]["blockers"])
 
+    def test_share_search_plan_blocks_explicit_wrong_season(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "怪奇物语",
+                    "tmdbid": 66732,
+                    "season": 4,
+                    "size_bytes": int(43.8 * 1024**3),
+                    "expected_count": 9,
+                    "search_keywords": ["怪奇物语 Season 04"],
+                    "source_paths": ["/example/怪奇物语/Season 04"],
+                }
+            ],
+        }
+        search_reports = {
+            "怪奇物语": {
+                "ok": True,
+                "result_count": 1,
+                "items": [
+                    {
+                        "index": 15,
+                        "title": "📺 电视剧：怪奇物语：1985故事集 (2026) - S01E01-E10(完结)",
+                        "size": "41.19 GB",
+                        "share_code_available": True,
+                        "search_keyword": "怪奇物语 Season 04",
+                    }
+                ],
+            }
+        }
+
+        plan = plan_mv3_share_search_from_transfer_plan(transfer_plan, search_reports, limit=1)
+
+        self.assertEqual(plan["ready_items"], 0)
+        candidate = plan["items"][0]["candidates"][0]
+        self.assertIn("season_mismatch", candidate["blockers"])
+        self.assertEqual(plan["items"][0]["recommended_candidate"], {})
+
     def test_cli_share_search_uses_all_search_keywords(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

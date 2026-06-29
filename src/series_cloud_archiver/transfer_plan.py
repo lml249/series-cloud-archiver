@@ -624,7 +624,14 @@ def _share_search_candidate(row: Dict[str, object], transfer_item: Dict[str, obj
         blockers.append("episode_coverage_unclear")
 
     season = int(transfer_item.get("season") or 0)
-    if season and _season_matches(title, season):
+    explicit_seasons = _explicit_seasons_from_text(title)
+    if season and explicit_seasons:
+        if season in explicit_seasons:
+            score += 10
+            reasons.append("season_matches")
+        else:
+            blockers.append("season_mismatch")
+    elif season and _season_matches(title, season):
         score += 10
         reasons.append("season_matches")
 
@@ -811,6 +818,21 @@ def _season_matches(text: str, season: int) -> bool:
         rf"Season\s*0?{season}\b",
     ]
     return any(re.search(pattern, text) for pattern in patterns)
+
+
+def _explicit_seasons_from_text(text: str) -> List[int]:
+    seasons = set()
+    patterns = [
+        r"(?i)\bS0?(\d{1,2})(?=E|\b)",
+        r"(?i)\bSeason\s*0?(\d{1,2})\b",
+        r"第\s*0?(\d{1,2})\s*季",
+    ]
+    for pattern in patterns:
+        for value in re.findall(pattern, text or ""):
+            season = int(value)
+            if 0 < season <= 99:
+                seasons.add(season)
+    return sorted(seasons)
 
 
 def _compact(value: str) -> str:

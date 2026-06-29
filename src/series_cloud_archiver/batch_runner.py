@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import PurePosixPath
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -21,6 +22,7 @@ def build_batch_plan(
     transfer_plan: Optional[Dict[str, object]] = None,
     share_search_plan: Optional[Dict[str, object]] = None,
     share_search_plans: Optional[Sequence[Dict[str, object]]] = None,
+    cleanup_preview_reports: Optional[Sequence[Dict[str, object]]] = None,
     scan_report: Optional[Dict[str, object]] = None,
     cloud_root: str = DEFAULT_CLOUD_ROOT,
     mv3_strm_root: str = DEFAULT_STRM_ROOT,
@@ -41,6 +43,7 @@ def build_batch_plan(
     cloud_items = [item for item in cloud_report.get("items", []) if isinstance(item, dict)]
     transfer_by_key = _items_by_identity((transfer_plan or {}).get("items", []))
     share_by_key = _items_by_identity((effective_share_search_plan or {}).get("items", []))
+    cleanup_by_key = _cleanup_previews_by_identity(cleanup_preview_reports or [])
     scan_by_key = _scan_candidates_by_identity((scan_report or {}).get("candidates", []))
     forbidden = [str(item) for item in (forbidden_target_prefixes or []) if str(item)]
 
@@ -49,12 +52,14 @@ def build_batch_plan(
         key = _identity_key(item)
         transfer_item = transfer_by_key.get(key, {})
         share_item = share_by_key.get(key, {})
+        cleanup_preview = cleanup_by_key.get(key, {})
         scan_candidates = scan_by_key.get(key, [])
         rows.append(
             _batch_item(
                 item,
                 transfer_item,
                 share_item,
+                cleanup_preview,
                 scan_candidates,
                 env_file=env_file,
                 cloud_root=cloud_root,
@@ -95,6 +100,7 @@ def build_batch_plan(
             "required_target_prefix": required_target_prefix,
             "forbidden_target_prefixes": forbidden,
             "share_search_plan_count": int((effective_share_search_plan or {}).get("input_plan_count") or 0),
+            "cleanup_preview_report_count": len(cleanup_preview_reports or []),
         },
         "items": rows,
         "auto_transfer_items": [row for row in rows if row.get("bucket") == AUTO_TRANSFER],
@@ -174,6 +180,7 @@ def _batch_item(
     cloud_item: Dict[str, object],
     transfer_item: Dict[str, object],
     share_item: Dict[str, object],
+    cleanup_preview: Dict[str, object],
     scan_candidates: List[Dict[str, object]],
     *,
     env_file: str,
@@ -206,6 +213,10 @@ def _batch_item(
     if status == "cloud_strm_complete":
         if not strm_root:
             review_reasons.append("cloud_complete_but_strm_root_unknown")
+        elif cleanup_preview and not _cleanup_preview_ready(cleanup_preview):
+            review_reasons.append("cleanup_preview_not_ready")
+            blockers.extend(_string_list(cleanup_preview.get("blockers")))
+            blockers.extend(_string_list(cleanup_preview.get("execution_blockers")))
         else:
             bucket = AUTO_CLEANUP
             next_actions = _cleanup_validation_commands(
@@ -232,6 +243,8 @@ def _batch_item(
             review_reasons.append("recommended_candidate_score_below_minimum")
         if recommended and candidate_blockers:
             review_reasons.extend(candidate_blockers)
+        if recommended and _candidate_has_explicit_wrong_season(recommended, season):
+            review_reasons.append("season_mismatch")
         if recommended and size_delta is None:
             review_reasons.append("remote_size_unknown")
         if isinstance(size_delta, (int, float)) and float(size_delta) > max_auto_size_delta:
@@ -284,6 +297,8 @@ def _batch_item(
         "recommended_candidate": recommended,
         "candidate_count": len(share_candidates),
         "merged_duplicate_count": int(share_item.get("merged_duplicate_count") or 0),
+        "cleanup_preview_ready": _cleanup_preview_ready(cleanup_preview) if cleanup_preview else None,
+        "cleanup_preview_blockers": _string_list(cleanup_preview.get("blockers")) + _string_list(cleanup_preview.get("execution_blockers")) if cleanup_preview else [],
         "strm_root": strm_root,
         "cloud_media_path": cloud_media_path,
         "review_reasons": sorted(set(review_reasons)),
@@ -436,6 +451,63 @@ def _items_by_identity(raw_items: object) -> Dict[Tuple[int, int], Dict[str, obj
         if key != (0, 0):
             result[key] = item
     return result
+
+
+def _cleanup_previews_by_identity(raw_items: Sequence[Dict[str, object]]) -> Dict[Tuple[int, int], Dict[str, object]]:
+    result: Dict[Tuple[int, int], Dict[str, object]] = {}
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        tmdbid = int(item.get("expected_tmdbid") or item.get("tmdbid") or 0)
+        season = int(item.get("expected_season") or item.get("season") or 0)
+        key = (tmdbid, season)
+        if key == (0, 0):
+            continue
+        existing = result.get(key)
+        if existing is None or _cleanup_preview_rank(item) > _cleanup_preview_rank(existing):
+            result[key] = item
+    return result
+
+
+def _cleanup_preview_rank(item: Dict[str, object]) -> Tuple[int, int]:
+    return (
+        1 if _cleanup_preview_ready(item) else 0,
+        int((item.get("summary") or {}).get("records_matched") or 0) if isinstance(item.get("summary"), dict) else 0,
+    )
+
+
+def _cleanup_preview_ready(item: Dict[str, object]) -> bool:
+    if not item:
+        return False
+    if item.get("ready_for_execute") is not None:
+        return bool(item.get("ready_for_execute"))
+    return bool(item.get("ready_for_manual_cleanup_approval") or item.get("ok"))
+
+
+def _candidate_has_explicit_wrong_season(candidate: Dict[str, object], expected_season: int) -> bool:
+    if expected_season <= 0:
+        return False
+    text = " ".join(
+        str(candidate.get(key) or "")
+        for key in ("title", "name")
+        if str(candidate.get(key) or "")
+    )
+    seasons = _explicit_seasons_from_text(text)
+    return bool(seasons and expected_season not in seasons)
+
+
+def _explicit_seasons_from_text(text: str) -> List[int]:
+    seasons = set()
+    for pattern in (
+        r"(?i)\bS0?(\d{1,2})(?=E|\b)",
+        r"(?i)\bSeason\s*0?(\d{1,2})\b",
+        r"第\s*0?(\d{1,2})\s*季",
+    ):
+        for value in re.findall(pattern, text or ""):
+            season = int(value)
+            if 0 < season <= 99:
+                seasons.add(season)
+    return sorted(seasons)
 
 
 def _share_plan_item_rank(item: Dict[str, object]) -> Tuple[int, int, int, float]:
