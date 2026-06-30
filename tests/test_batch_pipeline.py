@@ -133,6 +133,32 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertEqual(share_search["planned_items"], 1)
         self.assertEqual(report["summary"]["batch_plan"]["auto_transfer_items"], 1)
 
+    def test_pipeline_marks_empty_generated_scan_as_failed(self) -> None:
+        def empty_scan(_config):
+            return {
+                "mode": "dry-run",
+                "media_roots": ["/missing/media/root"],
+                "min_seed_days": 7,
+                "total_series": 0,
+                "status_counts": {},
+                "warnings": [],
+                "candidates": [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_pipeline(
+                output_dir=tmp,
+                run_id="empty-scan",
+                config=ScanConfig(media_roots=["/missing/media/root"]),
+                actions=BatchPipelineActions(scan=empty_scan),
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["failed_phase_count"], 1)
+        self.assertIn("scan_returned_no_series_check_media_roots", report["warnings"])
+        self.assertEqual(report["phases"][0]["name"], "scan")
+        self.assertEqual(report["phases"][0]["status"], "failed")
+
     def test_pipeline_writes_extra_source_media_plan_after_finalize_blocker(self) -> None:
         def ok_report(mode, **extra):
             return {"mode": mode, "ok": True, "ready_for_execute": True, "blockers": [], "warnings": [], **extra}
@@ -241,3 +267,35 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertEqual(payload["mode"], "batch-pipeline-state")
         self.assertEqual(payload["summary"]["batch_plan"]["auto_transfer_items"], 1)
         self.assertTrue(state_file_exists)
+
+    def test_cli_batch_pipeline_returns_nonzero_for_empty_generated_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "state.json"
+            env_file.write_text("", encoding="utf-8")
+
+            exit_code = main(
+                [
+                    "batch-pipeline",
+                    "--env-file",
+                    str(env_file),
+                    "--media-root",
+                    str(tmp_path / "missing"),
+                    "--strm-root",
+                    str(tmp_path / "strm"),
+                    "--output-dir",
+                    str(tmp_path / "runs"),
+                    "--run-id",
+                    "empty-cli",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertNotEqual(exit_code, 0)
+        self.assertFalse(payload["ok"])
+        self.assertIn("scan_returned_no_series_check_media_roots", payload["warnings"])

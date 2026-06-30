@@ -133,7 +133,12 @@ def run_batch_pipeline(
         effective_config.output_format = "json"
         scan_obj = actions.scan(effective_config)
         scan_report = _as_dict(scan_obj)
-        phases.append(_write_phase(pipeline_dir, "01-scan", scan_report))
+        scan_blockers = _scan_phase_blockers(scan_report)
+        if scan_blockers:
+            warnings.extend(scan_blockers)
+            phases.append(_write_phase(pipeline_dir, "01-scan", scan_report, ok=False))
+        else:
+            phases.append(_write_phase(pipeline_dir, "01-scan", scan_report))
     elif scan_report is not None:
         phases.append(_input_phase("scan", scan_report))
     else:
@@ -637,6 +642,14 @@ def _phase_has_approval_required(phase: JsonDict) -> bool:
             "finalize_ready_items",
         )
     )
+
+
+def _scan_phase_blockers(scan_report: JsonDict) -> List[str]:
+    if int(scan_report.get("total_series") or 0) <= 0:
+        return ["scan_returned_no_series_check_media_roots"]
+    if len(scan_report.get("candidates", [])) <= 0:
+        return ["scan_returned_no_candidates_check_filters"]
+    return []
 
 
 def _report_summary(report: JsonDict) -> JsonDict:
