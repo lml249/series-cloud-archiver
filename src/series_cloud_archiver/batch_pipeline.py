@@ -99,6 +99,7 @@ def run_batch_pipeline(
     organize_timeout: int = 180,
     refresh_after_transfer: bool = True,
     run_finalize_stage: bool = False,
+    finalize_offset: int = 0,
     finalize_limit: int = 0,
     finalize_titles: Optional[Sequence[str]] = None,
     continue_on_error: bool = False,
@@ -315,6 +316,7 @@ def run_batch_pipeline(
         service_strm_root=emby_strm_root,
         required_target_prefix="",
         forbidden_target_prefixes=forbidden_target_prefixes or [],
+        offset=finalize_offset,
         limit=finalize_limit,
     )
     phases.append(_write_phase(pipeline_dir, "12-finalize-plan", finalize_plan))
@@ -392,6 +394,8 @@ def run_batch_pipeline(
             "approve_receive": approve_receive,
             "approve_transfer": approve_transfer,
             "run_finalize_stage": run_finalize_stage,
+            "finalize_offset": finalize_offset,
+            "finalize_limit": finalize_limit,
             "execute_scrape": execute_scrape,
             "approve_cloud_duplicate_delete": approve_cloud_duplicate_delete,
             "approve_emby_stale_delete": approve_emby_stale_delete,

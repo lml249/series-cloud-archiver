@@ -141,6 +141,37 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertIn("Batch Pipeline", rendered)
         self.assertIn("batch-plan", rendered)
 
+    def test_pipeline_finalize_offset_limits_ready_finalize_rows(self) -> None:
+        cloud_report = self._cloud_complete_report()
+        second = json.loads(json.dumps(cloud_report["items"][0]))
+        second["title"] = "第二部 (2025) {tmdbid=2468}"
+        second["tmdbid"] = 2468
+        second["strm_paths_sample"] = [
+            "/example/host/strm/series/第二部 (2025) {tmdbid=2468}/Season 1/第二部 S01E01.strm"
+        ]
+        second["cloud_media_path"] = "/已整理/series/第二部 (2025) {tmdbid=2468}/Season 1"
+        cloud_report["items"].append(second)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_pipeline(
+                output_dir=tmp,
+                run_id="finalize-offset",
+                config=ScanConfig(media_roots=[]),
+                env_file="/safe/.env",
+                cloud_report=cloud_report,
+                host_strm_root="/example/host/strm",
+                emby_strm_root="/example/service/strm",
+                finalize_offset=1,
+                finalize_limit=1,
+            )
+            finalize_plan = json.loads((Path(report["run_dir"]) / "12-finalize-plan.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(report["settings"]["finalize_offset"], 1)
+        self.assertEqual(finalize_plan["settings"]["offset"], 1)
+        self.assertEqual(finalize_plan["settings"]["limit"], 1)
+        self.assertEqual(finalize_plan["finalize_ready_items"], 1)
+        self.assertEqual(finalize_plan["items"][0]["title"], "第二部 (2025) {tmdbid=2468}")
+
     def test_pipeline_reuses_ready_share_preview_report_for_transfer_stage(self) -> None:
         transfer_calls = []
 

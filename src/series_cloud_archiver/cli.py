@@ -781,6 +781,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_finalize_parser.add_argument("--service-strm-root", default="", help="Emby visible STRM root, defaults to batch-plan emby_strm_root setting")
     batch_finalize_parser.add_argument("--required-target-prefix", default="", help="Required STRM target prefix; defaults per item to cloud media path")
     batch_finalize_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
+    batch_finalize_parser.add_argument("--offset", type=int, default=0, help="Skip this many ready finalize rows before planning")
     batch_finalize_parser.add_argument("--limit", type=int, default=0, help="Maximum planned finalize rows; 0 means all")
     batch_finalize_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     batch_finalize_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
@@ -789,6 +790,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_finalize_run_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
     batch_finalize_run_parser.add_argument("--finalize-plan", required=True, help="JSON report from batch-finalize-plan")
     batch_finalize_run_parser.add_argument("--output-dir", required=True, help="Directory for per-stage JSON reports")
+    batch_finalize_run_parser.add_argument("--offset", type=int, default=0, help="Skip this many planned finalize rows before processing")
     batch_finalize_run_parser.add_argument("--limit", type=int, default=0, help="Maximum planned finalize rows to process; 0 means all")
     batch_finalize_run_parser.add_argument("--title", action="append", default=[], help="Only process titles containing this text; can be repeated")
     batch_finalize_run_parser.add_argument("--continue-on-error", action="store_true", help="Continue to the next item after a gate failure")
@@ -852,6 +854,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_pipeline_parser.add_argument("--organize-timeout", type=int, default=180)
     batch_pipeline_parser.add_argument("--no-refresh-after-transfer", action="store_true", help="Skip post-transfer cloud-check/batch-plan refresh")
     batch_pipeline_parser.add_argument("--run-finalize-stage", action="store_true", help="Run STRM scrape/Emby/cleanup gates")
+    batch_pipeline_parser.add_argument("--finalize-offset", type=int, default=0)
     batch_pipeline_parser.add_argument("--finalize-limit", type=int, default=0)
     batch_pipeline_parser.add_argument("--title", action="append", default=[], help="Only finalize titles containing this text")
     batch_pipeline_parser.add_argument("--continue-on-error", action="store_true")
@@ -2783,6 +2786,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             service_strm_root=args.service_strm_root,
             required_target_prefix=args.required_target_prefix,
             forbidden_target_prefixes=args.forbidden_target_prefix,
+            offset=args.offset,
             limit=args.limit,
         )
         rendered = render_batch_finalize_plan(report, args.format)
@@ -2801,6 +2805,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             finalize_plan,
             output_dir=args.output_dir,
             config=config,
+            offset=args.offset,
             limit=args.limit,
             title_filters=args.title,
             continue_on_error=args.continue_on_error,
@@ -2892,6 +2897,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             organize_timeout=args.organize_timeout,
             refresh_after_transfer=not args.no_refresh_after_transfer,
             run_finalize_stage=args.run_finalize_stage,
+            finalize_offset=args.finalize_offset,
             finalize_limit=args.finalize_limit,
             finalize_titles=args.title,
             continue_on_error=args.continue_on_error,

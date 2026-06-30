@@ -1042,6 +1042,73 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(data["finalize_ready_items"], 1)
         self.assertIn("cloud_hlink_cleanup_preview", [item["stage"] for item in data["items"][0]["commands"]])
 
+    def test_batch_finalize_plan_and_run_can_offset_ready_rows(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "title": "第一部",
+                    "tmdbid": 1001,
+                    "season": 1,
+                    "expected_episode_count": 1,
+                    "source_paths": ["/example/local-tv/第一部/Season 1"],
+                    "strm_root": "/example/host/strm/series/第一部 {tmdbid=1001}/Season 1",
+                    "cloud_media_path": "/已整理/series/第一部/Season 1",
+                },
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "title": "第二部",
+                    "tmdbid": 1002,
+                    "season": 1,
+                    "expected_episode_count": 1,
+                    "source_paths": ["/example/local-tv/第二部/Season 1"],
+                    "strm_root": "/example/host/strm/series/第二部 {tmdbid=1002}/Season 1",
+                    "cloud_media_path": "/已整理/series/第二部/Season 1",
+                },
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "title": "第三部",
+                    "tmdbid": 1003,
+                    "season": 1,
+                    "expected_episode_count": 1,
+                    "source_paths": ["/example/local-tv/第三部/Season 1"],
+                    "strm_root": "/example/host/strm/series/第三部 {tmdbid=1003}/Season 1",
+                    "cloud_media_path": "/已整理/series/第三部/Season 1",
+                },
+            ],
+        }
+        plan = build_batch_finalize_plan(
+            batch_plan,
+            host_strm_root="/example/host/strm",
+            service_strm_root="/example/service/strm",
+            offset=1,
+            limit=1,
+        )
+
+        self.assertEqual(plan["settings"]["offset"], 1)
+        self.assertEqual(plan["finalize_ready_items"], 1)
+        self.assertEqual([item["title"] for item in plan["items"]], ["第二部"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_finalize(
+                build_batch_finalize_plan(
+                    batch_plan,
+                    host_strm_root="/example/host/strm",
+                    service_strm_root="/example/service/strm",
+                ),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                offset=2,
+                limit=1,
+                execute_scrape=True,
+                actions=_batch_finalize_actions(FinalizeFakeActions()),
+            )
+
+        self.assertEqual(report["settings"]["offset"], 2)
+        self.assertEqual(report["processed_items"], 1)
+        self.assertEqual(report["items"][0]["title"], "第三部")
+
     def test_batch_finalize_run_default_waits_for_delete_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             actions = FinalizeFakeActions()

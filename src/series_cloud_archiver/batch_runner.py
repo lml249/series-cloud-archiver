@@ -275,6 +275,7 @@ def build_batch_finalize_plan(
     service_strm_root: str = "",
     required_target_prefix: str = "",
     forbidden_target_prefixes: Optional[Sequence[str]] = None,
+    offset: int = 0,
     limit: int = 0,
 ) -> Dict[str, object]:
     """Build a dry-run state-machine plan for STRM scrape, Emby verify, and cleanup gates."""
@@ -286,6 +287,7 @@ def build_batch_finalize_plan(
     forbidden = [str(item) for item in (forbidden_target_prefixes or settings.get("forbidden_target_prefixes") or []) if str(item)]
     rows: List[Dict[str, object]] = []
 
+    ready_seen = 0
     for index, item in enumerate(batch_plan.get("items", []), start=1):
         if not isinstance(item, dict):
             continue
@@ -300,6 +302,11 @@ def build_batch_finalize_plan(
             required_target_prefix=required_target_prefix,
             forbidden_target_prefixes=forbidden,
         )
+        if row.get("status") == "planned_finalize":
+            if ready_seen < max(0, offset):
+                ready_seen += 1
+                continue
+            ready_seen += 1
         rows.append(row)
         if limit > 0 and sum(1 for candidate in rows if candidate.get("status") == "planned_finalize") >= limit:
             break
@@ -318,6 +325,7 @@ def build_batch_finalize_plan(
             "service_strm_root": effective_service_strm_root,
             "required_target_prefix": required_target_prefix,
             "forbidden_target_prefixes": forbidden,
+            "offset": offset,
             "limit": limit,
         },
         "items": rows,
@@ -367,6 +375,7 @@ def run_batch_finalize(
     *,
     output_dir: str,
     config: object,
+    offset: int = 0,
     limit: int = 0,
     title_filters: Optional[Sequence[str]] = None,
     continue_on_error: bool = False,
@@ -393,6 +402,8 @@ def run_batch_finalize(
     output_path.mkdir(parents=True, exist_ok=True)
     filters = [value for value in (title_filters or []) if str(value)]
     candidates = _finalize_run_candidates(finalize_plan, filters)
+    if offset > 0:
+        candidates = candidates[offset:]
     if limit > 0:
         candidates = candidates[:limit]
 
@@ -441,6 +452,7 @@ def run_batch_finalize(
         "stage_counts": dict(sorted(stage_counts.items())),
         "settings": {
             "output_dir": str(output_path),
+            "offset": offset,
             "limit": limit,
             "title_filters": filters,
             "continue_on_error": continue_on_error,
