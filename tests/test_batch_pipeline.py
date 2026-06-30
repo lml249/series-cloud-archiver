@@ -254,6 +254,36 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertEqual(share_search["planned_items"], 1)
         self.assertEqual(report["summary"]["batch_plan"]["auto_transfer_items"], 1)
 
+    def test_pipeline_share_search_records_timeout_diagnostics(self) -> None:
+        def fake_search(_base_url, _token, keyword, channels=None, timeout=60):
+            return {
+                "ok": False,
+                "status": 0,
+                "error_type": "TimeoutError",
+                "error": "timed out",
+                "result_count": 0,
+                "items": [],
+                "warnings": ["mv3_resource_search_request_failed"],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_pipeline(
+                output_dir=tmp,
+                run_id="search-timeout",
+                config=ScanConfig(media_roots=[], mv3_base_url="http://mv3.local", mv3_token="token"),
+                cloud_report=self._cloud_report(),
+                execute_share_search=True,
+                share_search_limit=1,
+                actions=BatchPipelineActions(share_search=fake_search),
+            )
+            share_search = json.loads((Path(report["run_dir"]) / "04-share-search.json").read_text(encoding="utf-8"))
+
+        item = share_search["items"][0]
+        self.assertEqual(share_search["ready_items"], 0)
+        self.assertEqual(item["keyword_reports"][0]["error_type"], "TimeoutError")
+        self.assertEqual(item["search_errors"][0]["error"], "timed out")
+        self.assertIn("keyword_error:干净剧:TimeoutError", item["warnings"])
+
     def test_pipeline_marks_empty_generated_scan_as_failed(self) -> None:
         def empty_scan(_config):
             return {

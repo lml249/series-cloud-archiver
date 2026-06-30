@@ -1123,6 +1123,68 @@ class TransferPlanTest(unittest.TestCase):
             self.assertEqual(calls, ["长安二十四计", "The Vendetta of An"])
             self.assertEqual(payload["items"][0]["recommended_candidate"]["search_keyword"], "The Vendetta of An")
 
+    def test_cli_share_search_reports_keyword_timeout_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            plan_file = tmp_path / "plan.json"
+            output_file = tmp_path / "share-search.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=secret\n", encoding="utf-8")
+            plan_file.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-mv3-transfer-plan",
+                        "items": [
+                            {
+                                "title": "东宫",
+                                "tmdbid": 86857,
+                                "season": 1,
+                                "size_bytes": int(80 * 1024**3),
+                                "expected_count": 55,
+                                "search_keywords": ["东宫"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_search(_base_url, _token, keyword, channels=None, timeout=60):
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "error_type": "TimeoutError",
+                    "error": "timed out",
+                    "result_count": 0,
+                    "items": [],
+                    "warnings": ["mv3_resource_search_request_failed"],
+                }
+
+            with patch("series_cloud_archiver.cli.search_mv3_resources", side_effect=fake_search):
+                status = main(
+                    [
+                        "plan-mv3-share-search",
+                        "--env-file",
+                        str(env_file),
+                        "--transfer-plan",
+                        str(plan_file),
+                        "--limit",
+                        "1",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output_file),
+                    ]
+                )
+
+            payload = json.loads(output_file.read_text(encoding="utf-8"))
+            item = payload["items"][0]
+            self.assertEqual(status, 0)
+            self.assertEqual(payload["ready_items"], 0)
+            self.assertEqual(item["keyword_reports"][0]["error_type"], "TimeoutError")
+            self.assertEqual(item["search_errors"][0]["keyword"], "东宫")
+            self.assertIn("keyword_error:东宫:TimeoutError", item["warnings"])
+
     def test_renders_share_search_plan_markdown(self) -> None:
         plan = {
             "mode": "readonly-mv3-share-search-plan",

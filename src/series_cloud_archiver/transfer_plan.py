@@ -574,6 +574,11 @@ def _share_search_plan_item(index: int, item: Dict[str, object], search_report: 
         warnings.append("no_candidate_passed_recommendation_gate")
     if not candidates:
         warnings.append("no_search_candidates_found")
+    search_warnings = _string_list(search_report.get("warnings"))
+    for warning in search_warnings:
+        if warning not in warnings:
+            warnings.append(warning)
+    keyword_reports = _share_search_keyword_reports(search_report)
     return {
         "priority": index,
         "title": str(item.get("title") or ""),
@@ -585,10 +590,53 @@ def _share_search_plan_item(index: int, item: Dict[str, object], search_report: 
         "search_keywords": _search_keywords_for_item(item),
         "search_ok": bool(search_report.get("ok")),
         "search_result_count": int(search_report.get("result_count") or len(search_report.get("items", [])) if isinstance(search_report.get("items"), list) else 0),
+        "keyword_reports": keyword_reports,
+        "search_errors": _share_search_errors(keyword_reports),
         "recommended_candidate": recommended,
         "candidates": selected,
         "warnings": warnings,
     }
+
+
+def _share_search_keyword_reports(search_report: Dict[str, object]) -> List[Dict[str, object]]:
+    rows = search_report.get("keyword_reports")
+    if not isinstance(rows, list):
+        return []
+    reports: List[Dict[str, object]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        reports.append(
+            {
+                "keyword": str(row.get("keyword") or ""),
+                "ok": bool(row.get("ok")),
+                "result_count": int(row.get("result_count") or 0),
+                "status": int(row.get("status") or 0),
+                "error_type": str(row.get("error_type") or ""),
+                "error": str(row.get("error") or ""),
+                "warnings": _string_list(row.get("warnings")),
+            }
+        )
+    return reports
+
+
+def _share_search_errors(keyword_reports: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    errors: List[Dict[str, object]] = []
+    for row in keyword_reports:
+        if row.get("ok") and not row.get("error_type"):
+            continue
+        if not row.get("error_type") and not row.get("error") and int(row.get("status") or 0) == 0:
+            continue
+        errors.append(
+            {
+                "keyword": str(row.get("keyword") or ""),
+                "status": int(row.get("status") or 0),
+                "error_type": str(row.get("error_type") or ""),
+                "error": str(row.get("error") or ""),
+                "warnings": _string_list(row.get("warnings")),
+            }
+        )
+    return errors
 
 
 def _share_search_candidate(row: Dict[str, object], transfer_item: Dict[str, object]) -> Dict[str, object]:

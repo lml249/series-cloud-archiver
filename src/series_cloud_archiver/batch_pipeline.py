@@ -492,6 +492,9 @@ def _combined_share_search(
                 "keyword": clean_keyword,
                 "ok": bool(report.get("ok")),
                 "result_count": int(report.get("result_count") or 0),
+                "status": int(report.get("status") or 0),
+                "error_type": str(report.get("error_type") or ""),
+                "error": str(report.get("error") or ""),
                 "warnings": report.get("warnings", []) if isinstance(report.get("warnings"), list) else [],
             }
         )
@@ -511,8 +514,23 @@ def _combined_share_search(
         "items": merged_items,
         "keywords": [str(report["keyword"]) for report in keyword_reports],
         "keyword_reports": keyword_reports,
-        "warnings": [],
+        "warnings": _combined_search_warnings(keyword_reports),
     }
+
+
+def _combined_search_warnings(keyword_reports: List[JsonDict]) -> List[str]:
+    warnings: List[str] = []
+    for report in keyword_reports:
+        for warning in report.get("warnings", []) if isinstance(report.get("warnings"), list) else []:
+            text = str(warning or "")
+            if text and text not in warnings:
+                warnings.append(text)
+        error_type = str(report.get("error_type") or "")
+        if error_type:
+            text = f"keyword_error:{report.get('keyword')}:{error_type}"
+            if text not in warnings:
+                warnings.append(text)
+    return warnings
 
 
 def _share_search_keywords(item: JsonDict) -> List[str]:
