@@ -26,6 +26,7 @@ scan_files() {
       -path './venv' -prune -o \
       -path './node_modules' -prune -o \
       -name '__pycache__' -prune -o \
+      -name '._*' -prune -o \
       -name '.env' -prune -o \
       -name '.env.*' -prune -o \
       -type f -print | sed 's#^\./##'
@@ -80,6 +81,8 @@ allowed_files = {
 
 findings = []
 for path in list(root.glob("src/**/*.py")) + list(root.glob("tests/**/*.py")):
+    if path.name.startswith("._"):
+        continue
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
