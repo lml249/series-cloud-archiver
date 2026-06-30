@@ -376,6 +376,56 @@ class CloudHlinkCleanupTest(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertIn("qb_match_required", report["blockers"])
 
+    def test_preview_can_match_english_qb_release_by_size_and_inode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "qb" / "TV" / "Squid.Game.S01.2160p.Netflix.WEB-DL-HHWEB"
+            source.mkdir(parents=True)
+            hlink_root = tmp_path / "hlink" / "TV" / "鱿鱼游戏 (2021) {tmdbid=93405}" / "Season 01"
+            hlink_root.mkdir(parents=True)
+            total_size = 0
+            for episode in range(1, 10):
+                source_file = source / f"Squid.Game.S01E{episode:02d}.mkv"
+                source_file.write_bytes(bytes([episode]) * (8 * 1024 * 1024))
+                total_size += source_file.stat().st_size
+                os.link(source_file, hlink_root / f"鱿鱼游戏 S01E{episode:02d}.mkv")
+            strm_root = tmp_path / "strm" / "series" / "鱿鱼游戏 (2021) {tmdbid=93405}" / "Season 1"
+            for episode in range(1, 10):
+                write(
+                    strm_root / f"鱿鱼游戏 S01E{episode:02d}.strm",
+                    f"/已整理/series/鱿鱼游戏 (2021) {{tmdbid=93405}}/Season 1/E{episode:02d}.mkv",
+                )
+            english_release = QBTorrentEvidence(
+                name="Squid.Game.S01.2160p.Netflix.WEB-DL.DDP.5.1.Atmos.HDR.H.265-HHWEB",
+                hash="d22710358e62f176e5b5d77f0eb7550679349500",
+                state="stalledUP",
+                save_path=str(tmp_path / "qb" / "TV"),
+                content_path=str(source),
+                progress=1.0,
+                seeding_time_seconds=86400 * 70,
+                seed_days=70.0,
+                size_bytes=total_size,
+            )
+
+            with patch("series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[english_release]):
+                report = preview_cloud_hlink_cleanup(
+                    "鱿鱼游戏",
+                    str(hlink_root),
+                    str(strm_root),
+                    expected_tmdbid=93405,
+                    expected_episode_count=9,
+                    expected_episode_min=1,
+                    expected_episode_max=9,
+                    qb_base_url="http://qb.example",
+                    min_seed_days=7,
+                    required_target_prefix="/已整理/series/鱿鱼游戏 (2021) {tmdbid=93405}/Season 1",
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["ready_for_execute"])
+        self.assertEqual(report["qbittorrent"]["hashes"], ["d22710358e62f176e5b5d77f0eb7550679349500"])
+        self.assertEqual(report["filesystem"]["hlink_coverage"]["linked_hlink_inode_count"], 9)
+
     def test_preview_blocks_when_qb_matches_only_part_of_hlink_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

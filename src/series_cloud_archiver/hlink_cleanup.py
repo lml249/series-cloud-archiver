@@ -13,6 +13,9 @@ from .mv3 import verify_mv3_cloud_media_sidecars
 from .qbittorrent import QBClient, fetch_qb_evidence, match_torrent
 
 
+MIN_SIZE_ONLY_INODE_MATCH_BYTES = 64 * 1024 * 1024
+
+
 def preview_cloud_hlink_cleanup(
     title: str,
     hlink_root: str,
@@ -1592,8 +1595,7 @@ def _merge_qb_match_rows(matches: Sequence[Dict[str, object]]) -> List[Dict[str,
 
 def _candidate_torrents_for_inode_check(torrents: Iterable[object], series: FileSystemSeries) -> List[object]:
     wanted = _title_token_set(series.title)
-    if not wanted:
-        return []
+    series_size = int(series.size_bytes or 0)
     candidates = []
     for torrent in torrents:
         text = " ".join(
@@ -1604,7 +1606,10 @@ def _candidate_torrents_for_inode_check(torrents: Iterable[object], series: File
             ]
         )
         tokens = _title_token_set(text)
-        if wanted.intersection(tokens):
+        torrent_size = int(getattr(torrent, "size_bytes", 0) or 0)
+        if wanted and wanted.intersection(tokens):
+            candidates.append(torrent)
+        elif series_size >= MIN_SIZE_ONLY_INODE_MATCH_BYTES and torrent_size == series_size:
             candidates.append(torrent)
     return candidates
 
