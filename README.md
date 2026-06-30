@@ -274,6 +274,26 @@ PYTHONPATH=src python3 -m series_cloud_archiver extra-source-media-plan \
 
 如果 `13-finalize-run.json` 里某一季是 `already_cleaned_noop`，表示 STRM、NFO、Emby 和云盘侧检查已经通过，同时扫描报告里的完整 qB hash 已确认不在 qB，source/hlink 根也没有视频可删。这个状态不会执行 qB 删除或文件删除，只是把“本地早已清完”的季节从失败项中摘出来，避免后续批量复跑时反复卡在已经不存在的本地目录。
 
+如果 `batch-review-report` 里还有 `blocked_after_finalize_gates`，先生成统一的只读修复计划，再用 runner 按类别批量收集诊断证据。默认 runner 仍然只 dry-run，不执行诊断命令：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver finalize-remediation-plan \
+  --review-report /example/app/series-cloud-archiver/outputs/current-20260629/pipeline-runs/batch-review.json \
+  --finalize-run-report /example/app/series-cloud-archiver/outputs/current-20260629/pipeline-runs/RUN_ID/13-finalize-run.json \
+  --env-file /example/app/series-cloud-archiver/.env \
+  --format json \
+  --output reports/finalize-remediation-plan.json
+
+PYTHONPATH=src python3 -m series_cloud_archiver finalize-remediation-run \
+  --plan reports/finalize-remediation-plan.json \
+  --output-dir reports/finalize-remediation-diagnostics \
+  --category strm_mismatch \
+  --format json \
+  --output reports/finalize-remediation-run.json
+```
+
+确认只读计划后，才加 `--execute-readonly` 批量执行允许列表里的诊断命令。runner 只接受 `strm-verify`、`mv3-cloud-duplicate-video-cleanup` dry-run、`mv3-cloud-browse`、`mv3-cloud-search`、`qb-orphan-torrent-cleanup-preview`、`mp-cleanup-preview` 这类只读/预览命令；它会把每条命令的输出强制写到 `--output-dir`，并阻断任何 `--approve-*` 审批参数。它不会转存、整理、生成 STRM、刮削、刷新 Emby、删除云盘文件、删除 qB、删除 hlink 或删除 source。
+
 下面保留的散命令仍然可用，主要用于调试单个阶段、修复异常项，或者在 pipeline 缺少某个能力时作为构件使用。
 
 ## 批量状态计划 dry-run

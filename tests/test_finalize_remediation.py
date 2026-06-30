@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,8 @@ from series_cloud_archiver.cli import main
 from series_cloud_archiver.finalize_remediation import (
     build_finalize_remediation_plan,
     render_finalize_remediation_plan,
+    render_finalize_remediation_run,
+    run_finalize_remediation_plan,
 )
 
 
@@ -149,6 +152,147 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["mode"], "readonly-finalize-remediation-plan")
         self.assertEqual(payload["planned_items"], 5)
+
+    def test_run_defaults_to_dry_run_and_rewrites_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output_dir = tmp_path / "diagnostics"
+            calls = []
+
+            def fake_runner(*args, **kwargs):
+                calls.append((args, kwargs))
+                raise AssertionError("dry-run must not execute")
+
+            run = run_finalize_remediation_plan(
+                self._plan_report(),
+                output_dir=str(output_dir),
+                categories=["strm_mismatch"],
+                execute_readonly=False,
+                command_runner=fake_runner,
+            )
+
+        self.assertTrue(run["ok"])
+        self.assertEqual(run["planned_commands"], 2)
+        self.assertEqual(run["executed_commands"], 0)
+        self.assertEqual(calls, [])
+        for item in run["items"]:
+            self.assertIn(str(output_dir), item["command"])
+            self.assertNotIn("--approve-delete", item["command"])
+
+    def test_run_executes_allowlisted_readonly_command_and_loads_diagnostic_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output_dir = tmp_path / "diagnostics"
+            calls = []
+
+            def fake_runner(argv, **kwargs):
+                calls.append((argv, kwargs))
+                output_path = Path(argv[argv.index("--output") + 1])
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(
+                    json.dumps(
+                        {
+                            "mode": "strm-verify",
+                            "ok": False,
+                            "blockers": ["strm_episode_count_mismatch"],
+                            "warnings": ["strm_duplicate_episode_files"],
+                            "strm": {"combined": {"episode_count": 1, "episodes": [1], "missing_in_range": []}},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(argv, 1, stdout="checked", stderr="")
+
+            run = run_finalize_remediation_plan(
+                self._plan_report(),
+                output_dir=str(output_dir),
+                categories=["strm_mismatch"],
+                stages=["strm_verify_readonly"],
+                execute_readonly=True,
+                cwd="/example/app",
+                command_runner=fake_runner,
+            )
+
+        self.assertTrue(run["ok"])
+        self.assertEqual(run["planned_commands"], 1)
+        self.assertEqual(run["executed_commands"], 1)
+        self.assertEqual(run["items"][0]["status"], "diagnostic_failed")
+        self.assertFalse(run["items"][0]["diagnostic_ok"])
+        self.assertEqual(run["items"][0]["diagnostic_blockers"], ["strm_episode_count_mismatch"])
+        self.assertEqual(calls[0][0][:3], ["python3", "-m", "series_cloud_archiver"])
+        self.assertEqual(calls[0][1]["cwd"], "/example/app")
+        self.assertEqual(calls[0][1]["env"]["PYTHONPATH"], "/example/app/src")
+        rendered = render_finalize_remediation_run(run, "csv")
+        self.assertIn("strm_episode_count_mismatch", rendered)
+
+    def test_run_blocks_approval_flags_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = self._plan_report()
+            plan["items"][0]["commands"][0]["command"] += " --approve-delete"
+
+            run = run_finalize_remediation_plan(
+                plan,
+                output_dir=str(Path(tmp) / "output"),
+                categories=["strm_mismatch"],
+                execute_readonly=True,
+                command_runner=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not execute")),
+            )
+
+        self.assertFalse(run["ok"])
+        self.assertEqual(run["unsafe_blocked_count"], 1)
+        blocked = [item for item in run["items"] if item["status"] == "unsafe_blocked"][0]
+        self.assertIn("approval_flag_forbidden", blocked["safety_blockers"])
+
+    def test_run_skips_non_executable_notes_without_failing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = run_finalize_remediation_plan(
+                self._plan_report(),
+                output_dir=str(Path(tmp) / "output"),
+                categories=["cloud_duplicate_delete_review"],
+                execute_readonly=True,
+                command_runner=lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, stdout="", stderr=""),
+            )
+
+        self.assertTrue(run["ok"])
+        self.assertEqual(run["status_counts"]["skipped"], 1)
+
+    def test_cli_writes_finalize_remediation_run_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            plan = tmp_path / "plan.json"
+            output = tmp_path / "run.json"
+            plan.write_text(json.dumps(self._plan_report(), ensure_ascii=False), encoding="utf-8")
+
+            exit_code = main(
+                [
+                    "finalize-remediation-run",
+                    "--plan",
+                    str(plan),
+                    "--output-dir",
+                    str(tmp_path / "diagnostics"),
+                    "--category",
+                    "strm_mismatch",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["mode"], "readonly-finalize-remediation-run")
+        self.assertEqual(payload["planned_commands"], 2)
+        self.assertEqual(payload["executed_commands"], 0)
+
+    def _plan_report(self) -> dict:
+        return build_finalize_remediation_plan(
+            self._review_report(),
+            [self._finalize_report()],
+            env_file="/safe/.env",
+            cloud_media_storage="115-default",
+        )
 
 
 if __name__ == "__main__":
