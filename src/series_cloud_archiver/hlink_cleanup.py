@@ -1303,6 +1303,19 @@ def _verify_after_execute(
         blockers.extend(str(blocker) for blocker in strm_verify.get("blockers", []) if blocker)
     if Path(str(hlink.get("path") or "")).exists():
         blockers.append("hlink_root_still_exists")
+    filesystem = preview.get("filesystem") if isinstance(preview.get("filesystem"), dict) else {}
+    source_roots = filesystem.get("source_roots") if isinstance(filesystem.get("source_roots"), list) else []
+    source_checks = []
+    for item in source_roots:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "")
+        if not path:
+            continue
+        check = _source_root_check(path)
+        source_checks.append(check)
+        if int(check.get("video_count") or 0) > 0:
+            blockers.append("source_root_still_contains_video_files")
     qb_hashes = set(str(item) for item in (preview.get("qbittorrent", {}) or {}).get("hashes", []) if str(item)) if isinstance(preview.get("qbittorrent"), dict) else set()
     remaining = []
     try:
@@ -1318,6 +1331,7 @@ def _verify_after_execute(
         "ok": not blockers,
         "strm": strm_verify,
         "hlink_exists": Path(str(hlink.get("path") or "")).exists(),
+        "source_roots": source_checks,
         "qb_remaining": remaining,
         "blockers": sorted(set(blockers)),
     }
