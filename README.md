@@ -188,6 +188,75 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-restored-transfer-queue \
 
 `mv3-restored-transfer-queue` 只是只读汇总，不搜索、不转存、不生成 STRM、不刷新 Emby、不清理 qB/MP/hlink。它的用途是等 MV3 授权恢复后，按“已有 TMDB ID + 明确季号 + 云端 STRM 未找到”的队列继续逐条搜索和转存。
 
+## 推荐入口：批量流水线 state machine
+
+现在优先使用 `batch-pipeline`，不要再把 `batch-plan`、`batch-share-preview`、`batch-share-receive-plan`、`batch-transfer-run`、`batch-finalize-plan`、`batch-finalize-run` 手工一条条串起来。`batch-pipeline` 会把这些阶段统一编排到一个运行目录里，每一步都写 JSON 报告，最后生成 `00-pipeline-state.json`。后续排错、复跑和人工复核都从这些报告继续。
+
+默认模式只生成计划、预览计划、接收计划、finalize 计划和人工复核报告；不会搜索 MV3、不会接收分享、不会整理、不会刮削、不会刷新 Emby、不会删除 qB/hlink/source：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
+  --env-file /volume1/docker/series-cloud-archiver/.env \
+  --cloud-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/cloud-check-rescan-identity-062228a-20260630.json \
+  --transfer-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/mv3-transfer-plan-rescan-identity-062228a-20260630.json \
+  --share-search-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/share-search-identity-062228a-rows07-17-20260630.json \
+  --output-dir /volume1/docker/series-cloud-archiver/outputs/current-20260629/pipeline-runs \
+  --run-id dry-run-YYYYMMDD \
+  --cloud-root /已整理/series \
+  --mv3-strm-root /strm \
+  --host-strm-root /volume4/volume4/mv3/strm \
+  --emby-strm-root /volume4/mv3/strm \
+  --forbidden-target-prefix /series/series \
+  --forbidden-target-prefix /已整理/series/series \
+  --format json \
+  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/pipeline-runs/dry-run-YYYYMMDD.json
+```
+
+如果没有现成报告，也可以让它从媒体库根开始生成前置报告：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
+  --env-file /volume1/docker/series-cloud-archiver/.env \
+  --media-root /volume3/hlink/TV \
+  --strm-root /volume4/volume4/mv3/strm \
+  --identity-file /volume1/docker/series-cloud-archiver/outputs/current-20260629/identity-overrides-current.json \
+  --output-dir /volume1/docker/series-cloud-archiver/outputs/current-20260629/pipeline-runs \
+  --run-id scan-dry-run-YYYYMMDD \
+  --cloud-root /已整理/series \
+  --mv3-strm-root /strm \
+  --host-strm-root /volume4/volume4/mv3/strm \
+  --emby-strm-root /volume4/mv3/strm \
+  --format json \
+  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/pipeline-runs/scan-dry-run-YYYYMMDD.json
+```
+
+`batch-pipeline` 的审批闸门是分层的：
+
+- 默认分享预览计划会同时覆盖 `auto_ready_for_transfer_preview` 和可预览的 `manual_review` 条目；可以用 `--preview-bucket` 缩小范围。
+- `--execute-share-search`：实际调用 MV3 资源搜索，只读，不转存。
+- `--execute-preview`：实际解析分享并 browse，只读，不转存。
+- `--run-transfer-stage --approve-receive`：允许把预览完整的分享接收到 `/未整理`。
+- `--run-transfer-stage --approve-transfer`：允许交给 MV3 整理到 `/已整理` 并生成 STRM。
+- `--run-finalize-stage --execute-scrape`：只对 STRM 路径请求 MoviePilot 刮削。
+- `--approve-cloud-duplicate-delete`：只在 STRM 保护目标完整时删云盘重复视频。
+- `--approve-emby-stale-delete`：只在 STRM 替代完整时删 Emby 旧本地条目。
+- `--approve-delete`：最后才允许 qB/hlink/source 清理。
+
+目录角色不能混用：`--cloud-root` 是计划用的 `/已整理/series`，`--organize-target-dir` 必须是 `/已整理`，`--transfer-target-path` 必须在 `/未整理` 下，`--mv3-strm-root`/`--host-strm-root`/`--emby-strm-root` 必须是 STRM 侧路径。云盘实体目录只做转存和生成 STRM，NFO/JPG/Emby 入库验证都只在 STRM 侧跑。
+
+输出目录里最重要的文件：
+
+- `05-batch-plan.json`：分桶结果，决定哪些能自动预览、哪些要人工复核。
+- `06-share-preview.json`：分享预览计划或执行结果。
+- `07-receive-plan.json`：审批门控的接收计划。
+- `08-transfer-run.json`：如果跑了转存整理阶段，这里记录接收、整理、后置核验结果。
+- `12-finalize-plan.json`：STRM/NFO/Emby/qB/MP 清理前门禁计划。
+- `13-finalize-run.json`：如果跑了 finalize 阶段，这里记录每个门禁的结果。
+- `14-review.json`：合并人工复核报告。
+- `00-pipeline-state.json`：整次运行的索引和摘要。
+
+下面保留的散命令仍然可用，主要用于调试单个阶段、修复异常项，或者在 pipeline 缺少某个能力时作为构件使用。
+
 ## 批量状态计划 dry-run
 
 当已经有扫描、云端 STRM 检查、转存待办和 MV3 分享搜索评分报告后，可以先生成一份批量状态计划。它不会调用 MV3 搜索、转存、整理、生成 STRM，不会触发 MoviePilot 刮削或 Emby 刷新，也不会操作 qB、hlink、source 或本地文件系统；它只把现有证据分桶：

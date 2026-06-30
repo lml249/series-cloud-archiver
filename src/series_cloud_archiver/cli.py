@@ -10,6 +10,7 @@ from .batch_preview import (
     render_batch_share_preview_report,
     render_batch_share_receive_plan,
 )
+from .batch_pipeline import render_batch_pipeline_report, run_batch_pipeline
 from .batch_runner import (
     build_batch_review_report,
     build_batch_finalize_plan,
@@ -757,6 +758,67 @@ def build_parser() -> argparse.ArgumentParser:
     batch_finalize_run_parser.add_argument("--nfo-sample-limit", type=int, default=50, help="NFO sample limit per STRM root")
     batch_finalize_run_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     batch_finalize_run_parser.add_argument("--output", default=None, help="Write aggregate report to file instead of stdout")
+
+    batch_pipeline_parser = subcommands.add_parser("batch-pipeline", help="Run the resumable batch state machine and write all stage reports")
+    batch_pipeline_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    batch_pipeline_parser.add_argument("--output-dir", required=True, help="Root directory for this pipeline run/state")
+    batch_pipeline_parser.add_argument("--run-id", default="", help="Optional stable run directory name; defaults to timestamped pipeline-*")
+    batch_pipeline_parser.add_argument("--scan-report", default="", help="Optional JSON report from scan")
+    batch_pipeline_parser.add_argument("--cloud-report", default="", help="Optional JSON report from cloud-check")
+    batch_pipeline_parser.add_argument("--transfer-plan", default="", help="Optional JSON report from plan-mv3-transfer")
+    batch_pipeline_parser.add_argument("--share-search-plan", action="append", default=[], help="Optional JSON report from plan-mv3-share-search; can be repeated")
+    batch_pipeline_parser.add_argument("--cleanup-preview-report", action="append", default=[], help="Optional cleanup preview JSON; can be repeated")
+    batch_pipeline_parser.add_argument("--media-root", action="append", default=[], help="Media root to scan when no scan/cloud report is supplied")
+    batch_pipeline_parser.add_argument("--strm-root", action="append", default=[], help="STRM root for cloud-check when cloud report is omitted")
+    batch_pipeline_parser.add_argument("--identity-file", default="", help="Optional identity override file for generated cloud-check")
+    batch_pipeline_parser.add_argument("--cloud-root", default=DEFAULT_CLOUD_ROOT, help="Cloud media root for planning, usually /已整理/series")
+    batch_pipeline_parser.add_argument("--mv3-strm-root", default=DEFAULT_STRM_ROOT, help="MV3/container STRM root")
+    batch_pipeline_parser.add_argument("--host-strm-root", default="", help="Host STRM root, e.g. /volume4/volume4/mv3/strm")
+    batch_pipeline_parser.add_argument("--emby-strm-root", default="", help="MoviePilot/Emby visible STRM root")
+    batch_pipeline_parser.add_argument("--min-candidate-score", type=int, default=60)
+    batch_pipeline_parser.add_argument("--max-auto-size-delta", type=float, default=0.35)
+    batch_pipeline_parser.add_argument("--required-target-prefix", default="/已整理")
+    batch_pipeline_parser.add_argument("--forbidden-target-prefix", action="append", default=[])
+    batch_pipeline_parser.add_argument("--execute-share-search", action="store_true", help="Actually search MV3 resources for transfer rows")
+    batch_pipeline_parser.add_argument("--share-search-limit", type=int, default=0)
+    batch_pipeline_parser.add_argument("--share-search-offset", type=int, default=0)
+    batch_pipeline_parser.add_argument("--share-search-max-candidates", type=int, default=5)
+    batch_pipeline_parser.add_argument("--channel", action="append", default=[], help="Optional MV3 channel for share search/preview; can be repeated")
+    batch_pipeline_parser.add_argument("--share-search-timeout", type=int, default=60)
+    batch_pipeline_parser.add_argument("--execute-preview", action="store_true", help="Actually run readonly MV3 share previews")
+    batch_pipeline_parser.add_argument("--preview-limit", type=int, default=10)
+    batch_pipeline_parser.add_argument("--preview-bucket", action="append", default=[], help="Batch bucket to preview; defaults to auto transfer and manual review")
+    batch_pipeline_parser.add_argument("--preview-min-candidate-score", type=int, default=55)
+    batch_pipeline_parser.add_argument("--preview-allowed-best-blocker", action="append", default=[])
+    batch_pipeline_parser.add_argument("--preview-storage", default="115-default")
+    batch_pipeline_parser.add_argument("--preview-timeout", type=int, default=60)
+    batch_pipeline_parser.add_argument("--max-nested-depth", type=int, default=3)
+    batch_pipeline_parser.add_argument("--run-transfer-stage", action="store_true", help="Run approval-gated MV3 receive/organize stage")
+    batch_pipeline_parser.add_argument("--approve-receive", action="store_true", help="Allow MV3 share receive during transfer stage")
+    batch_pipeline_parser.add_argument("--approve-transfer", action="store_true", help="Allow MV3 organize transfer and STRM generation")
+    batch_pipeline_parser.add_argument("--transfer-target-path", default="/未整理", help="115 staging receive root; must start with /未整理")
+    batch_pipeline_parser.add_argument("--organize-target-dir", default="/已整理", help="MV3 organize root; must be exactly /已整理")
+    batch_pipeline_parser.add_argument("--transfer-strm-dir", default=DEFAULT_STRM_ROOT, help="MV3 STRM output root")
+    batch_pipeline_parser.add_argument("--transfer-storage", default="115-default")
+    batch_pipeline_parser.add_argument("--transfer-timeout", type=int, default=60)
+    batch_pipeline_parser.add_argument("--organize-timeout", type=int, default=180)
+    batch_pipeline_parser.add_argument("--no-refresh-after-transfer", action="store_true", help="Skip post-transfer cloud-check/batch-plan refresh")
+    batch_pipeline_parser.add_argument("--run-finalize-stage", action="store_true", help="Run STRM scrape/Emby/cleanup gates")
+    batch_pipeline_parser.add_argument("--finalize-limit", type=int, default=0)
+    batch_pipeline_parser.add_argument("--title", action="append", default=[], help="Only finalize titles containing this text")
+    batch_pipeline_parser.add_argument("--continue-on-error", action="store_true")
+    batch_pipeline_parser.add_argument("--execute-scrape", action="store_true", help="Actually request MoviePilot scrape on STRM-side paths")
+    batch_pipeline_parser.add_argument("--approve-cloud-duplicate-delete", action="store_true")
+    batch_pipeline_parser.add_argument("--approve-emby-stale-delete", action="store_true")
+    batch_pipeline_parser.add_argument("--approve-delete", action="store_true", help="Actually run final qB+hlink cleanup after gates pass")
+    batch_pipeline_parser.add_argument("--min-seed-days", type=int, default=7)
+    batch_pipeline_parser.add_argument("--cloud-media-storage", default="115-default")
+    batch_pipeline_parser.add_argument("--finalize-timeout", type=int, default=20)
+    batch_pipeline_parser.add_argument("--scrape-timeout", type=int, default=120)
+    batch_pipeline_parser.add_argument("--nfo-min-chinese-ratio", type=float, default=0.35)
+    batch_pipeline_parser.add_argument("--nfo-sample-limit", type=int, default=50)
+    batch_pipeline_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    batch_pipeline_parser.add_argument("--output", default=None, help="Write aggregate state report to file instead of stdout")
 
     preview_parser = subcommands.add_parser("plan-mv3-preview", help="Create a readonly MV3 preview manifest from a transfer plan")
     preview_parser.add_argument("--transfer-plan", required=True, help="JSON report from plan-mv3-transfer")
@@ -2532,6 +2594,94 @@ def main(argv: Optional[List[str]] = None) -> int:
             nfo_sample_limit=args.nfo_sample_limit,
         )
         rendered = render_batch_finalize_run(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "batch-pipeline":
+        scan_report = load_optional_json_report(args.scan_report) if args.scan_report else None
+        cloud_report = load_optional_json_report(args.cloud_report) if args.cloud_report else None
+        transfer_plan = load_optional_json_report(args.transfer_plan) if args.transfer_plan else None
+        share_search_plans = [
+            report
+            for report in (load_optional_json_report(path) for path in args.share_search_plan)
+            if isinstance(report, dict)
+        ]
+        cleanup_preview_reports = [
+            report
+            for report in (load_optional_json_report(path) for path in args.cleanup_preview_report)
+            if isinstance(report, dict)
+        ]
+        config = config_from_env(args.env_file, args.media_root)
+        if args.execute_share_search and (not config.mv3_base_url or not config.mv3_token):
+            parser.error("batch-pipeline --execute-share-search requires MV3_BASE_URL and MV3_API_TOKEN")
+        if args.execute_preview and (not config.mv3_base_url or not config.mv3_token):
+            parser.error("batch-pipeline --execute-preview requires MV3_BASE_URL and MV3_API_TOKEN")
+        if args.run_transfer_stage and (not config.mv3_base_url or not config.mv3_token):
+            parser.error("batch-pipeline --run-transfer-stage requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = run_batch_pipeline(
+            output_dir=args.output_dir,
+            config=config,
+            env_file=args.env_file,
+            run_id=args.run_id,
+            scan_report=scan_report,
+            cloud_report=cloud_report,
+            transfer_plan=transfer_plan,
+            share_search_plans=share_search_plans,
+            cleanup_preview_reports=cleanup_preview_reports,
+            media_roots=args.media_root,
+            strm_roots=args.strm_root,
+            identity_file=args.identity_file,
+            cloud_root=args.cloud_root,
+            mv3_strm_root=args.mv3_strm_root,
+            host_strm_root=args.host_strm_root,
+            emby_strm_root=args.emby_strm_root,
+            min_candidate_score=args.min_candidate_score,
+            max_auto_size_delta=args.max_auto_size_delta,
+            required_target_prefix=args.required_target_prefix,
+            forbidden_target_prefixes=args.forbidden_target_prefix,
+            execute_share_search=args.execute_share_search,
+            share_search_limit=args.share_search_limit,
+            share_search_offset=args.share_search_offset,
+            share_search_max_candidates=args.share_search_max_candidates,
+            share_search_channels=args.channel,
+            share_search_timeout=args.share_search_timeout,
+            execute_preview=args.execute_preview,
+            preview_limit=args.preview_limit,
+            preview_buckets=args.preview_bucket or None,
+            preview_min_candidate_score=args.preview_min_candidate_score,
+            preview_allowed_best_blockers=args.preview_allowed_best_blocker or None,
+            preview_storage=args.preview_storage,
+            preview_timeout=args.preview_timeout,
+            max_nested_depth=args.max_nested_depth,
+            run_transfer_stage=args.run_transfer_stage,
+            approve_receive=args.approve_receive,
+            approve_transfer=args.approve_transfer,
+            transfer_target_path=args.transfer_target_path,
+            organize_target_dir=args.organize_target_dir,
+            transfer_strm_dir=args.transfer_strm_dir,
+            transfer_storage=args.transfer_storage,
+            transfer_timeout=args.transfer_timeout,
+            organize_timeout=args.organize_timeout,
+            refresh_after_transfer=not args.no_refresh_after_transfer,
+            run_finalize_stage=args.run_finalize_stage,
+            finalize_limit=args.finalize_limit,
+            finalize_titles=args.title,
+            continue_on_error=args.continue_on_error,
+            execute_scrape=args.execute_scrape,
+            approve_cloud_duplicate_delete=args.approve_cloud_duplicate_delete,
+            approve_emby_stale_delete=args.approve_emby_stale_delete,
+            approve_delete=args.approve_delete,
+            min_seed_days=args.min_seed_days,
+            cloud_media_storage=args.cloud_media_storage,
+            finalize_timeout=args.finalize_timeout,
+            scrape_timeout=args.scrape_timeout,
+            nfo_min_chinese_ratio=args.nfo_min_chinese_ratio,
+            nfo_sample_limit=args.nfo_sample_limit,
+        )
+        rendered = render_batch_pipeline_report(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:
