@@ -204,6 +204,33 @@ class FinalizeFakeActions:
             cloud_media={"ok": True},
         )
 
+    def no_hash_local_absent_verify(self, **kwargs: object) -> dict:
+        self.calls.append(("no-hash-local-absent-verify", {"kwargs": kwargs}))
+        return {
+            "mode": "no-hash-local-absent-verify",
+            "title": kwargs.get("title", ""),
+            "ok": True,
+            "expected": {
+                "tmdbid": kwargs.get("expected_tmdbid"),
+                "season": kwargs.get("expected_season"),
+                "source_roots": kwargs.get("source_roots"),
+                "hlink_roots": kwargs.get("hlink_roots"),
+                "strm_roots": kwargs.get("strm_roots"),
+                "episode_count": kwargs.get("expected_episode_count"),
+                "required_target_prefix": kwargs.get("required_target_prefix"),
+            },
+            "moviepilot": {"matched_count": 0},
+            "qbittorrent": {"matched_count": 0, "matches": []},
+            "filesystem": {
+                "source_roots": [{"path": path, "exists": False, "video_count": 0} for path in kwargs.get("source_roots", [])],
+                "hlink_roots": [{"path": path, "exists": False, "video_count": 0} for path in kwargs.get("hlink_roots", [])],
+            },
+            "strm": {"ok": True, "strm": {"combined": {"episode_count": kwargs.get("expected_episode_count"), "missing_in_range": []}}},
+            "cloud_media": {"ok": True},
+            "blockers": [],
+            "warnings": [],
+        }
+
     def cleanup_execute(self, *args: object, **kwargs: object) -> dict:
         return self._ok("cloud-hlink-cleanup-execute", args=list(args), kwargs=kwargs)
 
@@ -489,6 +516,7 @@ def _batch_finalize_actions(actions: FinalizeFakeActions) -> BatchFinalizeAction
         cleanup_execute=actions.cleanup_execute,
         empty_hlink_root_cleanup=actions.empty_hlink_root_cleanup,
         qb_orphan_preview=actions.qb_orphan_preview,
+        no_hash_local_absent_verify=actions.no_hash_local_absent_verify,
     )
 
 
@@ -1564,6 +1592,35 @@ class BatchRunnerTest(unittest.TestCase):
         noop_call = next(call for call in actions.calls if call[0] == "qb-orphan-torrent-cleanup-preview")
         self.assertIn("/example/media/TV/Westworld.S02", noop_call[1]["kwargs"]["source_roots"])
         self.assertIn("/example/source/TV/Westworld.S02", noop_call[1]["kwargs"]["hlink_roots"])
+
+    def test_batch_finalize_run_uses_no_hash_absent_gate_for_missing_local_roots(self) -> None:
+        plan = self._finalize_plan()
+        plan["items"][0]["source_paths"] = ["/example/source/TV/Missing.S01"]
+        plan["items"][0]["hlink_root"] = "/example/source/TV/Missing.S01"
+        plan["items"][0]["source_qb_hashes"] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            actions.cleanup_already_absent = True
+            report = run_batch_finalize(
+                plan,
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={"/example/source": "/example/media"}),
+                execute_scrape=True,
+                approve_delete=False,
+                actions=_batch_finalize_actions(actions),
+            )
+
+        item = report["items"][0]
+        self.assertTrue(report["ok"])
+        self.assertEqual(item["status"], "already_cleaned_noop")
+        self.assertIn("local_cleanup_already_absent_noop", item["warnings"])
+        call_names = [call[0] for call in actions.calls]
+        self.assertIn("no-hash-local-absent-verify", call_names)
+        self.assertNotIn("qb-orphan-torrent-cleanup-preview", call_names)
+        noop_call = next(call for call in actions.calls if call[0] == "no-hash-local-absent-verify")
+        self.assertIn("/example/media/TV/Missing.S01", noop_call[1]["kwargs"]["source_roots"])
+        self.assertIn("/example/source/TV/Missing.S01", noop_call[1]["kwargs"]["hlink_roots"])
+        self.assertEqual(item["stages"][-1]["stage"], "no_hash_local_absent_noop_verify")
 
     def test_batch_finalize_run_moviepilot_timeout_still_stops_on_nfo_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

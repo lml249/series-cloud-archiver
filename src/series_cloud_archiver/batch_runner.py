@@ -17,7 +17,7 @@ from .emby import delete_stale_emby_paths, notify_and_verify_emby_media_updated
 from .hlink_cleanup import cleanup_empty_hlink_root, execute_cloud_hlink_cleanup, preview_cloud_hlink_cleanup
 from .moviepilot import scrape_mp_strm_path
 from .mv3 import cleanup_mv3_cloud_duplicate_videos
-from .qb_orphan_cleanup import preview_qb_orphan_torrent_cleanup
+from .qb_orphan_cleanup import preview_qb_orphan_torrent_cleanup, verify_no_hash_local_absent_cleanup
 from .reporting import human_size
 from .transfer_plan import DEFAULT_CLOUD_ROOT, DEFAULT_STRM_ROOT
 
@@ -40,6 +40,7 @@ class BatchFinalizeActions:
     cleanup_execute: Callable[..., Dict[str, object]] = execute_cloud_hlink_cleanup
     empty_hlink_root_cleanup: Callable[..., Dict[str, object]] = cleanup_empty_hlink_root
     qb_orphan_preview: Callable[..., Dict[str, object]] = preview_qb_orphan_torrent_cleanup
+    no_hash_local_absent_verify: Callable[..., Dict[str, object]] = verify_no_hash_local_absent_cleanup
 
 
 def build_batch_plan(
@@ -1150,8 +1151,8 @@ def _run_finalize_item(
         if noop_report:
             if _append_stage(
                 row,
-                _stage_report_path(output_dir, report_prefix, "05-qb-orphan-noop-preview"),
-                "qb_orphan_noop_preview",
+                _stage_report_path(output_dir, report_prefix, _noop_stage_suffix(noop_report)),
+                _noop_stage_name(noop_report),
                 noop_report,
             ):
                 _remove_row_blockers(row, _string_list(cleanup_preview.get("blockers")))
@@ -1361,12 +1362,28 @@ def _already_cleaned_noop_report(
     if not cleanup_blockers or not cleanup_blockers.issubset(_ALREADY_CLEANED_CLEANUP_BLOCKERS):
         return {}
     hashes = _valid_full_hashes(source_qb_hashes)
-    if not hashes:
-        return {}
     source_roots = _cleanup_source_root_variants(source_paths, getattr(config, "path_aliases", {}) or {})
     hlink_roots = _cleanup_hlink_root_variants(hlink_root, source_paths)
     if not source_roots or not hlink_roots:
         return {}
+    if not hashes:
+        return _already_cleaned_no_hash_absent_report(
+            actions=actions,
+            config=config,
+            title=title,
+            tmdbid=tmdbid,
+            source_roots=source_roots,
+            hlink_roots=hlink_roots,
+            strm_root=strm_root,
+            expected_count=expected_count,
+            expected_min=expected_min,
+            expected_max=expected_max,
+            required_prefix=required_prefix,
+            forbidden_prefixes=forbidden_prefixes,
+            cloud_title_path=cloud_title_path,
+            cloud_media_storage=cloud_media_storage,
+            timeout=timeout,
+        )
     report = actions.qb_orphan_preview(
         title=title,
         expected_hashes=hashes,
@@ -1422,6 +1439,75 @@ def _already_cleaned_noop_report(
         "and STRM/cloud gates remain valid. No qBittorrent action or filesystem deletion is performed"
     )
     return enriched
+
+
+def _already_cleaned_no_hash_absent_report(
+    *,
+    actions: BatchFinalizeActions,
+    config: object,
+    title: str,
+    tmdbid: int,
+    source_roots: Sequence[str],
+    hlink_roots: Sequence[str],
+    strm_root: str,
+    expected_count: int,
+    expected_min: int,
+    expected_max: int,
+    required_prefix: str,
+    forbidden_prefixes: Sequence[str],
+    cloud_title_path: str,
+    cloud_media_storage: str,
+    timeout: int,
+) -> Dict[str, object]:
+    report = actions.no_hash_local_absent_verify(
+        title=title,
+        source_roots=source_roots,
+        hlink_roots=hlink_roots,
+        strm_roots=[strm_root],
+        expected_tmdbid=tmdbid,
+        expected_season=0,
+        expected_episode_count=expected_count,
+        expected_episode_min=expected_min,
+        expected_episode_max=expected_max,
+        qb_base_url=_config_value(config, "qb_base_url"),
+        qb_user=_config_value(config, "qb_user"),
+        qb_pass=_config_value(config, "qb_pass"),
+        mp_base_url=_config_value(config, "mp_base_url"),
+        mp_token=_config_value(config, "mp_token"),
+        path_aliases=getattr(config, "path_aliases", {}) or {},
+        expected_title_contains=title.split(" (", 1)[0].strip() or title,
+        expected_title_tokens=[],
+        required_target_prefix=required_prefix,
+        forbidden_target_prefixes=forbidden_prefixes,
+        mv3_base_url=_config_value(config, "mv3_base_url"),
+        mv3_token=_config_value(config, "mv3_token"),
+        cloud_media_path=cloud_title_path,
+        cloud_media_storage=cloud_media_storage,
+        timeout=timeout,
+    )
+    if not report.get("ok"):
+        return report
+    enriched = dict(report)
+    enriched["ready_for_execute"] = False
+    enriched["noop"] = True
+    enriched["warnings"] = sorted(set(_string_list(report.get("warnings")) + ["no_hash_local_cleanup_already_absent"]))
+    enriched["safety"] = (
+        "readonly no-op cleanup verification; no qB hash was available, but qB/MP title/path absence, "
+        "source/hlink absence, STRM, and cloud sidecar gates passed. No qBittorrent action or filesystem deletion is performed"
+    )
+    return enriched
+
+
+def _noop_stage_name(report: Dict[str, object]) -> str:
+    if report.get("mode") == "no-hash-local-absent-verify":
+        return "no_hash_local_absent_noop_verify"
+    return "qb_orphan_noop_preview"
+
+
+def _noop_stage_suffix(report: Dict[str, object]) -> str:
+    if report.get("mode") == "no-hash-local-absent-verify":
+        return "05-no-hash-local-absent-verify"
+    return "05-qb-orphan-noop-preview"
 
 
 def _roots_contain_videos(rows: Sequence[object]) -> bool:
