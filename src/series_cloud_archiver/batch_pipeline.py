@@ -58,6 +58,7 @@ def run_batch_pipeline(
     cloud_report: Optional[JsonDict] = None,
     transfer_plan: Optional[JsonDict] = None,
     share_search_plans: Optional[Sequence[JsonDict]] = None,
+    share_preview_report: Optional[JsonDict] = None,
     cleanup_preview_reports: Optional[Sequence[JsonDict]] = None,
     media_roots: Optional[Sequence[str]] = None,
     strm_roots: Optional[Sequence[str]] = None,
@@ -212,25 +213,30 @@ def run_batch_pipeline(
     phases.append(batch_plan_phase)
     active_batch_plan = batch_plan
 
-    preview_dir = pipeline_dir / "share-previews"
-    share_preview_report = build_batch_share_preview_plan(
-        active_batch_plan,
-        env_file=env_file,
-        buckets=preview_buckets or [AUTO_TRANSFER, MANUAL_REVIEW],
-        min_candidate_score=preview_min_candidate_score,
-        allowed_best_blockers=preview_allowed_best_blockers,
-        limit=preview_limit,
-        execute_preview=execute_preview,
-        base_url=getattr(config, "mv3_base_url", "") if execute_preview else "",
-        token=getattr(config, "mv3_token", "") if execute_preview else "",
-        channels=share_search_channels,
-        storage=preview_storage,
-        timeout=preview_timeout,
-        preview_output_dir=str(preview_dir) if execute_preview else "",
-        max_nested_depth=max_nested_depth,
-        preview_func=actions.share_preview if execute_preview else None,
-    )
-    phases.append(_write_phase(pipeline_dir, "06-share-preview", share_preview_report))
+    if share_preview_report is not None:
+        phase = _write_phase(pipeline_dir, "06-share-preview", share_preview_report)
+        phase["status"] = "input"
+        phases.append(phase)
+    else:
+        preview_dir = pipeline_dir / "share-previews"
+        share_preview_report = build_batch_share_preview_plan(
+            active_batch_plan,
+            env_file=env_file,
+            buckets=preview_buckets or [AUTO_TRANSFER, MANUAL_REVIEW],
+            min_candidate_score=preview_min_candidate_score,
+            allowed_best_blockers=preview_allowed_best_blockers,
+            limit=preview_limit,
+            execute_preview=execute_preview,
+            base_url=getattr(config, "mv3_base_url", "") if execute_preview else "",
+            token=getattr(config, "mv3_token", "") if execute_preview else "",
+            channels=share_search_channels,
+            storage=preview_storage,
+            timeout=preview_timeout,
+            preview_output_dir=str(preview_dir) if execute_preview else "",
+            max_nested_depth=max_nested_depth,
+            preview_func=actions.share_preview if execute_preview else None,
+        )
+        phases.append(_write_phase(pipeline_dir, "06-share-preview", share_preview_report))
 
     receive_plan = build_batch_share_receive_plan(
         share_preview_report,

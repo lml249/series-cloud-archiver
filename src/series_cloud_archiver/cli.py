@@ -806,6 +806,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_pipeline_parser.add_argument("--cloud-report", default="", help="Optional JSON report from cloud-check")
     batch_pipeline_parser.add_argument("--transfer-plan", default="", help="Optional JSON report from plan-mv3-transfer")
     batch_pipeline_parser.add_argument("--share-search-plan", action="append", default=[], help="Optional JSON report from plan-mv3-share-search; can be repeated")
+    batch_pipeline_parser.add_argument("--share-preview-report", default="", help="Optional JSON report from a prior batch-pipeline/batch-share-preview execution")
     batch_pipeline_parser.add_argument("--cleanup-preview-report", action="append", default=[], help="Optional cleanup preview JSON; can be repeated")
     batch_pipeline_parser.add_argument("--media-root", action="append", default=[], help="Media root to scan when no scan/cloud report is supplied")
     batch_pipeline_parser.add_argument("--strm-root", action="append", default=[], help="STRM root for cloud-check when cloud report is omitted")
@@ -2754,6 +2755,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         scan_report = load_optional_json_report(args.scan_report) if args.scan_report else None
         cloud_report = load_optional_json_report(args.cloud_report) if args.cloud_report else None
         transfer_plan = load_optional_json_report(args.transfer_plan) if args.transfer_plan else None
+        share_preview_report = load_optional_json_report(args.share_preview_report) if args.share_preview_report else None
         share_search_plans = [
             report
             for report in (load_optional_json_report(path) for path in args.share_search_plan)
@@ -2780,6 +2782,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             cloud_report=cloud_report,
             transfer_plan=transfer_plan,
             share_search_plans=share_search_plans,
+            share_preview_report=share_preview_report if isinstance(share_preview_report, dict) else None,
             cleanup_preview_reports=cleanup_preview_reports,
             media_roots=args.media_root,
             strm_roots=args.strm_root,

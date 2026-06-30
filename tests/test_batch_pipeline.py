@@ -51,6 +51,44 @@ class BatchPipelineTest(unittest.TestCase):
             ],
         }
 
+    def _ready_share_preview_report(self) -> dict:
+        return {
+            "mode": "readonly-batch-mv3-share-preview",
+            "planned_items": 1,
+            "executable_preview_items": 0,
+            "executed_preview_items": 1,
+            "ready_for_receive_items": 1,
+            "blocked_preview_items": 0,
+            "skipped_items": 0,
+            "items": [
+                {
+                    "status": "preview_ready_for_receive",
+                    "title": "干净剧 (2025) {tmdbid=456}",
+                    "tmdbid": 456,
+                    "season": 1,
+                    "keyword": "干净剧",
+                    "selection_index": 2,
+                    "browse_cid": "",
+                    "expected_episode_count": 10,
+                    "expected_episode_min": 1,
+                    "expected_episode_max": 10,
+                    "expected_episodes": list(range(1, 11)),
+                    "preview_report_path": "/example/outputs/share-preview-clean.json",
+                    "preview_report": {
+                        "mode": "readonly-mv3-share-preview",
+                        "ok": True,
+                        "episodes": list(range(1, 11)),
+                        "episode_count": 10,
+                        "video_file_count": 10,
+                        "blockers": [],
+                        "missing_expected": [],
+                        "unexpected_episodes": [],
+                        "browse": {"items": [{"kind": "folder", "name": "干净剧", "file_id": "folder-1"}]},
+                    },
+                }
+            ],
+        }
+
     def _cloud_complete_report(self) -> dict:
         return {
             "mode": "readonly-cloud-check",
@@ -98,10 +136,89 @@ class BatchPipelineTest(unittest.TestCase):
             self.assertEqual(report["settings"]["mp_strm_root"], "/example/mp/strm")
             self.assertEqual(finalize_plan["settings"]["mp_strm_root"], "/example/mp/strm")
             self.assertEqual(report["settings"]["organize_target_dir"], "/已整理")
-            self.assertEqual(report["settings"]["approve_delete"], False)
-            rendered = render_batch_pipeline_report(report, "markdown")
-            self.assertIn("Batch Pipeline", rendered)
-            self.assertIn("batch-plan", rendered)
+        self.assertEqual(report["settings"]["approve_delete"], False)
+        rendered = render_batch_pipeline_report(report, "markdown")
+        self.assertIn("Batch Pipeline", rendered)
+        self.assertIn("batch-plan", rendered)
+
+    def test_pipeline_reuses_ready_share_preview_report_for_transfer_stage(self) -> None:
+        transfer_calls = []
+
+        class TransferActions:
+            def receive_share(self, *args, **kwargs):
+                transfer_calls.append(("receive", args, kwargs))
+                return {
+                    "mode": "mv3-share-receive-one-result",
+                    "ok": True,
+                    "target_path": kwargs.get("target_path"),
+                    "browse_selection": {"name": "干净剧"},
+                    "warnings": [],
+                }
+
+            def browse_cloud(self, *args, **kwargs):
+                transfer_calls.append(("browse", args, kwargs))
+                path = str(kwargs.get("path") or "")
+                if path.startswith("/已整理/series"):
+                    return {
+                        "mode": "mv3-cloud-browse",
+                        "ok": True,
+                        "path": path,
+                        "summary": {"video_file_count": 10, "metadata_sidecar_file_count": 0},
+                        "items": [
+                            {"kind": "file", "media_kind": "video", "name": f"干净剧.E{episode:02d}.mkv", "episode": episode}
+                            for episode in range(1, 11)
+                        ],
+                    }
+                if path.startswith("/未整理"):
+                    return {
+                        "mode": "mv3-cloud-browse",
+                        "ok": True,
+                        "path": path,
+                        "summary": {"video_file_count": 0, "metadata_sidecar_file_count": 0},
+                        "items": [],
+                    }
+                return {"mode": "mv3-cloud-browse", "ok": False, "path": path, "summary": {}, "items": [], "warnings": ["not_found"]}
+
+            def organize_transfer(self, *args, **kwargs):
+                transfer_calls.append(("organize", args, kwargs))
+                return {
+                    "mode": "mv3-organize-transfer-result",
+                    "ok": True,
+                    "source_path": "/未整理/干净剧",
+                    "target_dir": kwargs.get("target_dir"),
+                    "strm_dir": kwargs.get("strm_dir"),
+                    "blockers": [],
+                    "warnings": [],
+                }
+
+        def fail_preview(*_args, **_kwargs):
+            raise AssertionError("share preview should be reused, not executed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_pipeline(
+                output_dir=tmp,
+                run_id="reuse-preview",
+                config=ScanConfig(media_roots=[], mv3_base_url="http://mv3.local", mv3_token="token"),
+                env_file="/safe/.env",
+                cloud_report=self._cloud_report(),
+                share_search_plans=[self._share_search_plan()],
+                share_preview_report=self._ready_share_preview_report(),
+                run_transfer_stage=True,
+                approve_receive=True,
+                approve_transfer=True,
+                refresh_after_transfer=False,
+                actions=BatchPipelineActions(share_preview=fail_preview, transfer_actions=TransferActions()),
+            )
+            run_dir = Path(report["run_dir"])
+            copied_preview = json.loads((run_dir / "06-share-preview.json").read_text(encoding="utf-8"))
+            receive_plan = json.loads((run_dir / "07-receive-plan.json").read_text(encoding="utf-8"))
+            transfer_run = json.loads((run_dir / "08-transfer-run.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(copied_preview["items"][0]["status"], "preview_ready_for_receive")
+        self.assertEqual(receive_plan["approval_required_items"], 1)
+        self.assertEqual(transfer_run["organized_items"], 1)
+        self.assertIn("organize", [call[0] for call in transfer_calls])
+        self.assertEqual(next(phase for phase in report["phases"] if phase["name"] == "share-preview")["status"], "input")
 
     def test_pipeline_executes_share_search_when_requested(self) -> None:
         calls = []
@@ -271,6 +388,50 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertEqual(payload["mode"], "batch-pipeline-state")
         self.assertEqual(payload["summary"]["batch_plan"]["auto_transfer_items"], 1)
         self.assertTrue(state_file_exists)
+
+    def test_cli_batch_pipeline_reuses_share_preview_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            cloud = tmp_path / "cloud.json"
+            share = tmp_path / "share.json"
+            preview = tmp_path / "preview.json"
+            output = tmp_path / "state.json"
+            env_file.write_text("", encoding="utf-8")
+            cloud.write_text(json.dumps(self._cloud_report(), ensure_ascii=False), encoding="utf-8")
+            share.write_text(json.dumps(self._share_search_plan(), ensure_ascii=False), encoding="utf-8")
+            preview.write_text(json.dumps(self._ready_share_preview_report(), ensure_ascii=False), encoding="utf-8")
+
+            exit_code = main(
+                [
+                    "batch-pipeline",
+                    "--env-file",
+                    str(env_file),
+                    "--cloud-report",
+                    str(cloud),
+                    "--share-search-plan",
+                    str(share),
+                    "--share-preview-report",
+                    str(preview),
+                    "--output-dir",
+                    str(tmp_path / "runs"),
+                    "--run-id",
+                    "cli-reuse-preview",
+                    "--host-strm-root",
+                    "/example/host/strm",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            copied_preview = json.loads((Path(payload["run_dir"]) / "06-share-preview.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["summary"]["share_preview"]["ready_for_receive_items"], 1)
+        self.assertEqual(copied_preview["items"][0]["status"], "preview_ready_for_receive")
+        self.assertEqual(next(phase for phase in payload["phases"] if phase["name"] == "share-preview")["status"], "input")
 
     def test_cli_batch_pipeline_returns_nonzero_for_empty_generated_scan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
