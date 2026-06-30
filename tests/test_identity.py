@@ -11,10 +11,13 @@ from series_cloud_archiver.identity import (
 
 class FakeMoviePilotClient:
     calls = []
+    init_kwargs = []
 
-    def __init__(self, base_url, token):
+    def __init__(self, base_url, token, **kwargs):
         self.base_url = base_url
         self.token = token
+        self.timeout = kwargs.get("timeout")
+        self.__class__.init_kwargs.append(kwargs)
 
     def recognize_file(self, path):
         self.__class__.calls.append(path)
@@ -39,6 +42,7 @@ class FakeMoviePilotClient:
 class IdentityResolveTest(unittest.TestCase):
     def setUp(self) -> None:
         FakeMoviePilotClient.calls = []
+        FakeMoviePilotClient.init_kwargs = []
 
     def test_resolves_missing_candidate_identity(self) -> None:
         report = {
@@ -193,6 +197,37 @@ class IdentityResolveTest(unittest.TestCase):
         self.assertEqual(payload["summary"]["attempted"], 1)
         self.assertEqual(written["summary"]["attempted"], 1)
         self.assertEqual(written["summary"]["resolved"], 1)
+
+    def test_passes_timeout_to_moviepilot_client(self) -> None:
+        report = {
+            "items": [
+                {
+                    "status": "needs_identity_review",
+                    "title": "Foundation.S01.2021",
+                    "season": 1,
+                    "expected_count": 3,
+                    "expected_episodes": [1, 2, 3],
+                    "source_paths": ["/example/local-tv/Foundation/Season 1"],
+                }
+            ]
+        }
+
+        import series_cloud_archiver.identity as identity_module
+
+        original = identity_module.MoviePilotClient
+        identity_module.MoviePilotClient = FakeMoviePilotClient
+        try:
+            payload = resolve_identity_overrides_from_cloud_report(
+                report,
+                "http://example.invalid",
+                "token",
+                timeout=7,
+            )
+        finally:
+            identity_module.MoviePilotClient = original
+
+        self.assertEqual(payload["summary"]["resolved"], 1)
+        self.assertEqual(FakeMoviePilotClient.init_kwargs, [{"timeout": 7}])
 
 
 if __name__ == "__main__":

@@ -662,6 +662,7 @@ def build_parser() -> argparse.ArgumentParser:
     identity_parser.add_argument("--cloud-report", default="", help="Optional JSON report from cloud-check; resolves only needs_identity_review rows")
     identity_parser.add_argument("--output", required=True, help="Write identity override JSON to file")
     identity_parser.add_argument("--top", type=int, default=None, help="Maximum missing-identity candidates to resolve")
+    identity_parser.add_argument("--timeout", type=int, default=20, help="MoviePilot request timeout in seconds")
 
     transfer_parser = subcommands.add_parser("plan-mv3-transfer", help="Create a readonly MV3 transfer queue from cloud-check JSON")
     transfer_parser.add_argument("--cloud-report", required=True, help="JSON report from cloud-check")
@@ -2471,7 +2472,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 config.mp_token,
                 top=top,
                 output_path=args.output,
-                progress=print,
+                timeout=args.timeout,
+                progress=lambda message: print(message, flush=True),
             )
         else:
             payload = resolve_identity_overrides_from_scan_report(
@@ -2480,7 +2482,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 config.mp_token,
                 top=top,
                 output_path=args.output,
-                progress=print,
+                timeout=args.timeout,
+                progress=lambda message: print(message, flush=True),
             )
         print(render_identity_overrides({"summary": payload["summary"], "warnings": payload["warnings"]}))
         return 0

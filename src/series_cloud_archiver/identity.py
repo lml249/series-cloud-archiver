@@ -65,6 +65,7 @@ def resolve_identity_overrides_from_scan_report(
     mp_token: str,
     top: int = 0,
     output_path: str = "",
+    timeout: int = 20,
     progress: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, object]:
     return _resolve_identity_overrides_from_candidates(
@@ -73,6 +74,7 @@ def resolve_identity_overrides_from_scan_report(
         mp_token,
         top=top,
         output_path=output_path,
+        timeout=timeout,
         progress=progress,
     )
 
@@ -83,6 +85,7 @@ def resolve_identity_overrides_from_cloud_report(
     mp_token: str,
     top: int = 0,
     output_path: str = "",
+    timeout: int = 20,
     progress: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, object]:
     return _resolve_identity_overrides_from_candidates(
@@ -91,6 +94,7 @@ def resolve_identity_overrides_from_cloud_report(
         mp_token,
         top=top,
         output_path=output_path,
+        timeout=timeout,
         progress=progress,
     )
 
@@ -101,9 +105,10 @@ def _resolve_identity_overrides_from_candidates(
     mp_token: str,
     top: int = 0,
     output_path: str = "",
+    timeout: int = 20,
     progress: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, object]:
-    client = MoviePilotClient(mp_base_url, mp_token)
+    client = MoviePilotClient(mp_base_url, mp_token, timeout=timeout)
     records: List[Dict[str, object]] = []
     warnings: List[str] = []
     if top > 0:
