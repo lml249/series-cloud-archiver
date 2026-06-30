@@ -103,6 +103,7 @@ class ScanReport:
     status_counts: Dict[str, int]
     candidates: List[ScanCandidate]
     warnings: List[str]
+    missing_media_roots: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -112,6 +113,7 @@ class ScanReport:
             "total_series": self.total_series,
             "status_counts": self.status_counts,
             "warnings": self.warnings,
+            "missing_media_roots": self.missing_media_roots,
             "candidates": [candidate.to_dict() for candidate in self.candidates],
         }
 

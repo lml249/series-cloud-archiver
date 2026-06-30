@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import Path
 from typing import List, Optional
 
 from .config import ScanConfig
@@ -154,6 +155,8 @@ def classify(
 
 def scan(config: ScanConfig) -> ScanReport:
     warnings: List[str] = []
+    missing_media_roots = [root for root in config.media_roots if root and not Path(root).exists()]
+    warnings.extend(f"media_root_missing:{root}" for root in missing_media_roots)
     series_items = scan_series_roots(
         config.media_roots,
         max_depth=config.max_depth,
@@ -212,4 +215,5 @@ def scan(config: ScanConfig) -> ScanReport:
         status_counts=dict(sorted(counts.items())),
         candidates=candidates,
         warnings=warnings,
+        missing_media_roots=missing_media_roots,
     )

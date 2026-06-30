@@ -390,6 +390,33 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertEqual(report["phases"][0]["name"], "scan")
         self.assertEqual(report["phases"][0]["status"], "failed")
 
+    def test_pipeline_reports_missing_media_root_as_scan_failure(self) -> None:
+        def missing_root_scan(_config):
+            return {
+                "mode": "dry-run",
+                "media_roots": ["/missing/media/root"],
+                "min_seed_days": 7,
+                "total_series": 0,
+                "status_counts": {},
+                "warnings": ["media_root_missing:/missing/media/root"],
+                "missing_media_roots": ["/missing/media/root"],
+                "candidates": [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_pipeline(
+                output_dir=tmp,
+                run_id="missing-root",
+                config=ScanConfig(media_roots=["/missing/media/root"]),
+                actions=BatchPipelineActions(scan=missing_root_scan),
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["failed_phase_count"], 1)
+        self.assertIn("scan_media_roots_missing", report["warnings"])
+        self.assertNotIn("scan_returned_no_series_check_media_roots", report["warnings"])
+        self.assertEqual(report["phases"][0]["status"], "failed")
+
     def test_pipeline_writes_extra_source_media_plan_after_finalize_blocker(self) -> None:
         def ok_report(mode, **extra):
             return {"mode": mode, "ok": True, "ready_for_execute": True, "blockers": [], "warnings": [], **extra}
@@ -573,4 +600,4 @@ class BatchPipelineTest(unittest.TestCase):
 
         self.assertNotEqual(exit_code, 0)
         self.assertFalse(payload["ok"])
-        self.assertIn("scan_returned_no_series_check_media_roots", payload["warnings"])
+        self.assertIn("scan_media_roots_missing", payload["warnings"])

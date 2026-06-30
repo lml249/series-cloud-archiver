@@ -709,11 +709,19 @@ def _phase_has_approval_required(phase: JsonDict) -> bool:
 
 
 def _scan_phase_blockers(scan_report: JsonDict) -> List[str]:
+    if _string_list(scan_report.get("missing_media_roots")):
+        return ["scan_media_roots_missing"]
     if int(scan_report.get("total_series") or 0) <= 0:
         return ["scan_returned_no_series_check_media_roots"]
     if len(scan_report.get("candidates", [])) <= 0:
         return ["scan_returned_no_candidates_check_filters"]
     return []
+
+
+def _string_list(value: object) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item)]
 
 
 def _report_summary(report: JsonDict) -> JsonDict:

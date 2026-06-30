@@ -96,6 +96,25 @@ class ReadonlyScanTest(unittest.TestCase):
             self.assertEqual(report.candidates[0].status, "candidate_for_cloud_check")
             self.assertIn("filesystem_looks_complete", report.candidates[0].reasons)
 
+    def test_reports_missing_media_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_root = Path(tmp) / "missing-tv"
+
+            report = scan(
+                ScanConfig(
+                    media_roots=[str(missing_root)],
+                    include_qb=False,
+                    min_seed_days=0,
+                    min_age_days=0,
+                    max_depth=2,
+                )
+            )
+
+            payload = report.to_dict()
+            self.assertEqual(report.total_series, 0)
+            self.assertEqual(payload["missing_media_roots"], [str(missing_root)])
+            self.assertIn(f"media_root_missing:{missing_root}", payload["warnings"])
+
     def test_blocks_incomplete_folder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "TV"
