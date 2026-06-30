@@ -1934,9 +1934,11 @@ def _review_post_cleanup_by_identity(reports: Sequence[Dict[str, object]]) -> Di
                 continue
             enriched = dict(item)
             enriched["post_cleanup_report_index"] = report_index
-            existing = result.get(key)
-            if existing is None or _review_post_cleanup_rank(enriched) > _review_post_cleanup_rank(existing):
-                result[key] = enriched
+            existing = result.get(key, {})
+            merged = _merge_post_cleanup_items(existing, enriched) if existing else enriched
+            if existing and _review_post_cleanup_rank(existing) > _review_post_cleanup_rank(merged):
+                merged = existing
+            result[key] = merged
     return result
 
 
@@ -1944,7 +1946,111 @@ def _review_post_cleanup_items(report: Dict[str, object]) -> List[Dict[str, obje
     raw_items = report.get("items")
     if isinstance(raw_items, list):
         return [_normalize_post_cleanup_item(item) for item in raw_items if isinstance(item, dict)]
+    evidence = _post_cleanup_gate_item(report)
+    if evidence:
+        return [_normalize_post_cleanup_item(evidence)]
     return [_normalize_post_cleanup_item(report)]
+
+
+def _post_cleanup_gate_item(report: Dict[str, object]) -> Dict[str, object]:
+    mode = str(report.get("mode") or "")
+    if mode == "mp-cleanup-verify":
+        return _post_cleanup_item_from_mp_verify(report)
+    if mode == "strm-nfo-language-audit":
+        return _post_cleanup_item_from_nfo_audit(report)
+    if mode in {"emby-refresh-verify", "emby-media-updated", "emby-item-refresh-verify"}:
+        return _post_cleanup_item_from_emby_verify(report)
+    if mode == "strm-verify":
+        return _post_cleanup_item_from_strm_verify(report)
+    return {}
+
+
+def _post_cleanup_item_from_mp_verify(report: Dict[str, object]) -> Dict[str, object]:
+    expected = report.get("expected") if isinstance(report.get("expected"), dict) else {}
+    filesystem = report.get("filesystem") if isinstance(report.get("filesystem"), dict) else {}
+    qb = report.get("qbittorrent") if isinstance(report.get("qbittorrent"), dict) else {}
+    mp_history = report.get("mp_transfer_history") if isinstance(report.get("mp_transfer_history"), dict) else {}
+    strm = report.get("strm") if isinstance(report.get("strm"), dict) else {}
+    combined = strm.get("combined") if isinstance(strm.get("combined"), dict) else {}
+    roots = strm.get("roots") if isinstance(strm.get("roots"), list) else []
+    identity = _post_cleanup_identity_from_paths(_paths_from_strm_roots(roots))
+    source_roots = filesystem.get("source_roots") if isinstance(filesystem.get("source_roots"), list) else []
+    destination_roots = filesystem.get("destination_roots") if isinstance(filesystem.get("destination_roots"), list) else []
+    episode_count = int(combined.get("episode_count") or expected.get("episode_count") or 0)
+    return {
+        "mode": "post-cleanup-gate-summary",
+        "source_mode": "mp-cleanup-verify",
+        "title": report.get("title", ""),
+        "tmdbid": int(expected.get("tmdbid") or identity[0] or 0),
+        "season": int(expected.get("season") or identity[1] or 0),
+        "status": "post_cleanup_gates_partial",
+        "qb_remaining": str(int(qb.get("matched_count") or 0)),
+        "hlink_exists": _bool_string(any(bool(item.get("exists")) for item in destination_roots if isinstance(item, dict))),
+        "source_exists": _bool_string(any(bool(item.get("exists")) for item in source_roots if isinstance(item, dict))),
+        "strm_ok": _bool_string(bool(report.get("ok")) and episode_count > 0 and not combined.get("missing_in_range")),
+        "mp_history_remaining": str(int(mp_history.get("records_matched") or 0)),
+        "episode_count": episode_count,
+        "blockers": _string_list(report.get("blockers")),
+        "reports": "mp-cleanup-verify",
+    }
+
+
+def _post_cleanup_item_from_strm_verify(report: Dict[str, object]) -> Dict[str, object]:
+    expected = report.get("expected") if isinstance(report.get("expected"), dict) else {}
+    strm = report.get("strm") if isinstance(report.get("strm"), dict) else {}
+    roots = strm.get("roots") if isinstance(strm.get("roots"), list) else []
+    combined = strm.get("combined") if isinstance(strm.get("combined"), dict) else {}
+    identity = _post_cleanup_identity_from_paths(_paths_from_strm_roots(roots) + [str(expected.get("required_target_prefix") or "")])
+    return {
+        "mode": "post-cleanup-gate-summary",
+        "source_mode": "strm-verify",
+        "title": report.get("title", ""),
+        "tmdbid": identity[0],
+        "season": identity[1],
+        "status": "post_cleanup_gates_partial",
+        "strm_ok": _bool_string(bool(report.get("ok")) and int(combined.get("episode_count") or 0) > 0 and not combined.get("missing_in_range")),
+        "episode_count": int(combined.get("episode_count") or expected.get("episode_count") or 0),
+        "blockers": _string_list(report.get("blockers")),
+        "reports": "strm-verify",
+    }
+
+
+def _post_cleanup_item_from_nfo_audit(report: Dict[str, object]) -> Dict[str, object]:
+    roots = report.get("roots") if isinstance(report.get("roots"), list) else []
+    identity = _post_cleanup_identity_from_paths(_paths_from_strm_roots(roots))
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    return {
+        "mode": "post-cleanup-gate-summary",
+        "source_mode": "strm-nfo-language-audit",
+        "tmdbid": identity[0],
+        "season": identity[1],
+        "status": "post_cleanup_gates_partial",
+        "nfo_ok": _bool_string(bool(report.get("ok"))),
+        "nfo_count": int(summary.get("nfo_count") or 0),
+        "blockers": _string_list(report.get("blockers")),
+        "reports": "strm-nfo-language-audit",
+    }
+
+
+def _post_cleanup_item_from_emby_verify(report: Dict[str, object]) -> Dict[str, object]:
+    verification = report.get("verification") if isinstance(report.get("verification"), dict) else {}
+    strm_paths = verification.get("strm_paths") if isinstance(verification.get("strm_paths"), list) else []
+    strm = verification.get("strm") if isinstance(verification.get("strm"), dict) else {}
+    identity = _post_cleanup_identity_from_paths([str(item.get("prefix") or "") for item in strm_paths if isinstance(item, dict)])
+    totals = verification.get("totals") if isinstance(verification.get("totals"), dict) else {}
+    return {
+        "mode": "post-cleanup-gate-summary",
+        "source_mode": str(report.get("mode") or ""),
+        "title": report.get("title", ""),
+        "tmdbid": identity[0],
+        "season": identity[1],
+        "status": "post_cleanup_gates_partial",
+        "emby_ok": _bool_string(bool(report.get("ok")) and int(totals.get("stale_records") or 0) == 0 and int(strm.get("episode_count") or 0) > 0 and not strm.get("missing_in_range")),
+        "emby_records": int(totals.get("strm_records") or 0),
+        "episode_count": int(strm.get("episode_count") or 0),
+        "blockers": _string_list(report.get("blockers")) + _string_list(verification.get("blockers")),
+        "reports": str(report.get("mode") or ""),
+    }
 
 
 def _normalize_post_cleanup_item(item: Dict[str, object]) -> Dict[str, object]:
@@ -1960,11 +2066,93 @@ def _normalize_post_cleanup_item(item: Dict[str, object]) -> Dict[str, object]:
         normalized["season"] = normalized.get("season_number")
     if not normalized.get("status"):
         normalized["status"] = _post_cleanup_status(normalized)
+    if str(normalized.get("mode") or "") == "post-cleanup-gate-summary" and not normalized.get("result_zh"):
+        normalized["result_zh"] = _post_cleanup_verified_result(normalized) if _post_cleanup_gate_values_verified(normalized) else _post_cleanup_partial_result(normalized)
     return normalized
+
+
+def _merge_post_cleanup_items(left: Dict[str, object], right: Dict[str, object]) -> Dict[str, object]:
+    merged = dict(left)
+    for key, value in right.items():
+        if key in {"blockers", "warnings"}:
+            merged[key] = sorted(set(_string_list(merged.get(key)) + _string_list(value)))
+            continue
+        if key == "reports":
+            reports = [part for part in str(merged.get(key) or "").split("; ") if part]
+            reports.extend(part for part in str(value or "").split("; ") if part)
+            merged[key] = "; ".join(dict.fromkeys(reports))
+            continue
+        if key in {"qb_remaining", "hlink_exists", "source_exists", "strm_ok", "nfo_ok", "emby_ok", "mp_history_remaining"}:
+            merged[key] = _merge_gate_value(merged.get(key), value)
+            continue
+        if key == "episode_count":
+            merged[key] = max(int(merged.get(key) or 0), int(value or 0))
+            continue
+        if not merged.get(key) and value not in (None, ""):
+            merged[key] = value
+
+    merged["status"] = _merged_post_cleanup_status(merged)
+    if merged["status"] == "cleanup_executed_verified":
+        merged["result_zh"] = _post_cleanup_verified_result(merged)
+    elif not merged.get("result_zh"):
+        merged["result_zh"] = _post_cleanup_partial_result(merged)
+    return merged
+
+
+def _merge_gate_value(left: object, right: object) -> str:
+    left_value = str(left or "").lower()
+    right_value = str(right or "").lower()
+    if right_value in {"true", "false", "0"}:
+        return right_value
+    return left_value or right_value
+
+
+def _merged_post_cleanup_status(item: Dict[str, object]) -> str:
+    if _post_cleanup_gate_values_verified(item):
+        return "cleanup_executed_verified"
+    existing = str(item.get("status") or "")
+    return existing if existing and existing != "cleanup_executed_verified" else "post_cleanup_gates_partial"
+
+
+def _post_cleanup_gate_values_verified(item: Dict[str, object]) -> bool:
+    expected_values = {
+        "qb_remaining": "0",
+        "hlink_exists": "false",
+        "source_exists": "false",
+        "strm_ok": "true",
+        "nfo_ok": "true",
+        "emby_ok": "true",
+    }
+    if str(item.get("mp_history_remaining") or "0").lower() not in {"", "0"}:
+        return False
+    return all(str(item.get(key) or "").lower() == expected for key, expected in expected_values.items())
+
+
+def _post_cleanup_verified_result(item: Dict[str, object]) -> str:
+    episode_count = int(item.get("episode_count") or 0)
+    episode_text = f"{episode_count}/{episode_count}" if episode_count else "已"
+    return f"已完成清理：qB 种子不存在；本地 hlink/source 均不存在；STRM {episode_text} 完整；NFO 中文审计通过；Emby 验证通过"
+
+
+def _post_cleanup_partial_result(item: Dict[str, object]) -> str:
+    missing = []
+    for key, label, expected in (
+        ("qb_remaining", "qB 清理", "0"),
+        ("hlink_exists", "hlink 删除", "false"),
+        ("source_exists", "source 删除", "false"),
+        ("strm_ok", "STRM 完整性", "true"),
+        ("nfo_ok", "NFO 中文审计", "true"),
+        ("emby_ok", "Emby 验证", "true"),
+    ):
+        if str(item.get(key) or "").lower() != expected:
+            missing.append(label)
+    return "清理后证据未凑齐：" + "、".join(missing)
 
 
 def _post_cleanup_status(item: Dict[str, object]) -> str:
     mode = str(item.get("mode") or "")
+    if mode == "post-cleanup-gate-summary":
+        return _merged_post_cleanup_status(item)
     if mode == "cloud-hlink-cleanup-execute":
         return "cleanup_executed_verified" if bool(item.get("ok")) else "cleanup_execute_failed"
     if mode in {"mp-cleanup-verify", "strm-verify", "strm-nfo-language-audit", "emby-refresh-verify", "emby-media-updated"}:
@@ -1978,6 +2166,35 @@ def _season_from_text(value: str) -> int:
         return int(match.group(1))
     match = re.search(r"\bS0?(\d+)\b", value, flags=re.IGNORECASE)
     return int(match.group(1)) if match else 0
+
+
+def _paths_from_strm_roots(roots: Sequence[object]) -> List[str]:
+    paths: List[str] = []
+    for item in roots:
+        if isinstance(item, dict):
+            path = str(item.get("path") or item.get("prefix") or "")
+        else:
+            path = str(item or "")
+        if path:
+            paths.append(path)
+    return paths
+
+
+def _post_cleanup_identity_from_paths(paths: Sequence[str]) -> Tuple[int, int]:
+    tmdbid = 0
+    season = 0
+    for path in paths:
+        if not tmdbid:
+            tmdbid = _tmdbid_from_text(path)
+        if not season:
+            season = _season_from_text(path)
+        if tmdbid and season:
+            break
+    return tmdbid, season
+
+
+def _bool_string(value: bool) -> str:
+    return "true" if value else "false"
 
 
 def _review_post_cleanup_rank(item: Dict[str, object]) -> Tuple[int, int, int]:
@@ -2007,15 +2224,7 @@ def _post_cleanup_verified(item: Dict[str, object]) -> bool:
         return False
     if str(item.get("status") or "") != "cleanup_executed_verified":
         return False
-    expected_values = {
-        "qb_remaining": "0",
-        "hlink_exists": "false",
-        "source_exists": "false",
-        "strm_ok": "true",
-        "nfo_ok": "true",
-        "emby_ok": "true",
-    }
-    return all(str(item.get(key) or "").lower() == expected for key, expected in expected_values.items())
+    return _post_cleanup_gate_values_verified(item)
 
 
 def _batch_review_row(

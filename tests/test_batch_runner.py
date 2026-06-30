@@ -2030,6 +2030,118 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("done_cleanup_verified", rendered)
         self.assertIn("post_cleanup_status", rendered.splitlines()[0])
 
+    def test_batch_review_report_combines_post_cleanup_gate_reports_as_verified_done(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "state": "planned_validation_then_cleanup",
+                    "title": "夫妻的世界",
+                    "tmdbid": 96164,
+                    "season": 1,
+                    "cloud_status": "cloud_strm_complete",
+                    "expected_episode_count": 16,
+                }
+            ],
+        }
+        mp_verify = {
+            "mode": "mp-cleanup-verify",
+            "title": "夫妻的世界",
+            "ok": True,
+            "expected": {
+                "tmdbid": 96164,
+                "season": 1,
+                "episode_count": 16,
+                "episode_min": 1,
+                "episode_max": 16,
+            },
+            "mp_transfer_history": {"records_matched": 0},
+            "qbittorrent": {"matched_count": 0},
+            "filesystem": {
+                "source_roots": [{"path": "/example/source/fuqi", "exists": False}],
+                "destination_roots": [{"path": "/example/hlink/TV/夫妻的世界 (2020) {tmdbid=96164}/Season 01", "exists": False}],
+            },
+            "strm": {
+                "roots": [{"path": "/example/mv3/strm/series/夫妻的世界 (2020) {tmdbid=96164}/Season 1", "exists": True}],
+                "combined": {"episode_count": 16, "episode_min": 1, "episode_max": 16, "missing_in_range": []},
+            },
+            "blockers": [],
+        }
+        nfo_audit = {
+            "mode": "strm-nfo-language-audit",
+            "ok": True,
+            "expected": {"expected_nfo_count": 16},
+            "summary": {"nfo_count": 17, "suspect_english_count": 0},
+            "roots": [{"path": "/example/mv3/strm/series/夫妻的世界 (2020) {tmdbid=96164}/Season 1"}],
+            "blockers": [],
+        }
+        emby_verify = {
+            "mode": "emby-media-updated",
+            "title": "夫妻的世界",
+            "ok": True,
+            "verification": {
+                "strm_paths": [
+                    {
+                        "prefix": "/example/service/strm/series/夫妻的世界 (2020) {tmdbid=96164}/Season 1",
+                        "episode_count": 16,
+                    }
+                ],
+                "strm": {"episode_count": 16, "episode_min": 1, "episode_max": 16, "missing_in_range": []},
+                "totals": {"stale_records": 0, "strm_records": 17},
+                "blockers": [],
+            },
+            "blockers": [],
+        }
+
+        report = build_batch_review_report(
+            batch_plan,
+            post_cleanup_reports=[mp_verify, nfo_audit, emby_verify],
+        )
+
+        self.assertEqual(report["decision_counts"]["done_cleanup_verified"], 1)
+        item = report["items"][0]
+        self.assertEqual(item["decision"], "done_cleanup_verified")
+        self.assertEqual(item["post_cleanup_status"], "cleanup_executed_verified")
+        self.assertEqual(item["post_cleanup_result"], "已完成清理：qB 种子不存在；本地 hlink/source 均不存在；STRM 16/16 完整；NFO 中文审计通过；Emby 验证通过")
+        self.assertIn("mp-cleanup-verify", item["post_cleanup_reports"])
+        self.assertIn("strm-nfo-language-audit", item["post_cleanup_reports"])
+        self.assertIn("emby-media-updated", item["post_cleanup_reports"])
+
+    def test_batch_review_report_keeps_partial_post_cleanup_gates_unverified(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "title": "夫妻的世界",
+                    "tmdbid": 96164,
+                    "season": 1,
+                }
+            ],
+        }
+        mp_verify = {
+            "mode": "mp-cleanup-verify",
+            "title": "夫妻的世界",
+            "ok": True,
+            "expected": {"tmdbid": 96164, "season": 1, "episode_count": 16},
+            "mp_transfer_history": {"records_matched": 0},
+            "qbittorrent": {"matched_count": 0},
+            "filesystem": {
+                "source_roots": [{"exists": False}],
+                "destination_roots": [{"exists": False}],
+            },
+            "strm": {"combined": {"episode_count": 16, "missing_in_range": []}},
+            "blockers": [],
+        }
+
+        report = build_batch_review_report(batch_plan, post_cleanup_reports=[mp_verify])
+        item = report["items"][0]
+
+        self.assertEqual(item["decision"], "ready_for_finalize_gates")
+        self.assertNotEqual(item["post_cleanup_status"], "cleanup_executed_verified")
+        self.assertIn("NFO", item["post_cleanup_result"])
+
     def test_cli_writes_batch_review_report_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
