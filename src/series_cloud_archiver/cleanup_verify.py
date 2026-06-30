@@ -145,6 +145,7 @@ def audit_strm_nfo_language(
     strm_roots: Sequence[str],
     min_chinese_ratio: float = 0.35,
     sample_limit: int = 50,
+    expected_nfo_count: int = 0,
 ) -> Dict[str, object]:
     blockers: List[str] = []
     warnings: List[str] = []
@@ -165,6 +166,8 @@ def audit_strm_nfo_language(
     total_nfo = sum(int(item.get("nfo_count") or 0) for item in roots)
     suspect_count = sum(int(item.get("suspect_english_count") or 0) for item in roots)
     parse_error_count = sum(int(item.get("parse_error_count") or 0) for item in roots)
+    if expected_nfo_count > 0 and total_nfo < expected_nfo_count:
+        blockers.append("strm_nfo_count_below_expected")
     if suspect_count:
         blockers.append("strm_nfo_language_not_chinese")
     if parse_error_count:
@@ -176,6 +179,7 @@ def audit_strm_nfo_language(
         "expected": {
             "min_chinese_ratio": min_chinese_ratio,
             "sample_limit": sample_limit,
+            "expected_nfo_count": expected_nfo_count,
             "blocked_cloud_media_roots": blocked_cloud_media_roots,
             "blocked_non_strm_roots": blocked_non_strm_roots,
         },
@@ -203,6 +207,7 @@ def render_strm_nfo_language_audit(report: Dict[str, object], output_format: str
         "",
         f"- OK: `{bool(report.get('ok'))}`",
         f"- NFO files: `{summary.get('nfo_count', 0)}`",
+        f"- Expected NFO files: `{expected.get('expected_nfo_count', 0)}`",
         f"- Suspect English NFO files: `{summary.get('suspect_english_count', 0)}`",
         f"- Parse errors: `{summary.get('parse_error_count', 0)}`",
         f"- Min Chinese ratio: `{expected.get('min_chinese_ratio', 0)}`",

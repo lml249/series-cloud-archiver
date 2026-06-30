@@ -820,6 +820,8 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(scrape_call[1]["kwargs"]["strm_path"], "/example/host/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
         self.assertEqual(scrape_call[1]["kwargs"]["mp_path"], "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
         self.assertNotIn("/已整理", scrape_call[1]["kwargs"]["strm_path"])
+        nfo_call = next(call for call in actions.calls if call[0] == "strm-nfo-language-audit")
+        self.assertEqual(nfo_call[1]["expected"]["expected_nfo_count"], 36)
         cloud_duplicate_call = next(call for call in actions.calls if call[0] == "mv3-cloud-duplicate-video-cleanup-result")
         self.assertEqual(
             cloud_duplicate_call[1]["kwargs"]["season_path"],

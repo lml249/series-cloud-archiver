@@ -3171,6 +3171,20 @@ class MoviePilotEvidenceTest(unittest.TestCase):
             self.assertEqual(report["summary"]["nfo_count"], 1)
             self.assertIn("NFO files", rendered)
 
+    def test_strm_nfo_language_audit_blocks_missing_expected_nfo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm" / "series" / "终极三国 (2009) {tmdbid=16365}" / "Season 01"
+            strm_root.mkdir(parents=True)
+
+            report = audit_strm_nfo_language([str(strm_root)], expected_nfo_count=53)
+            rendered = render_strm_nfo_language_audit(report, "markdown")
+
+            self.assertFalse(report["ok"])
+            self.assertIn("strm_nfo_count_below_expected", report["blockers"])
+            self.assertEqual(report["expected"]["expected_nfo_count"], 53)
+            self.assertEqual(report["summary"]["nfo_count"], 0)
+            self.assertIn("Expected NFO files", rendered)
+
     def test_strm_nfo_language_audit_blocks_english_plot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             strm_root = Path(tmp) / "strm" / "series" / "Demo (2026) {tmdbid=1}" / "Season 01"

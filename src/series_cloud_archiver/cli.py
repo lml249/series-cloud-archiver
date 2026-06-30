@@ -504,6 +504,7 @@ def build_parser() -> argparse.ArgumentParser:
     strm_nfo_parser.add_argument("--strm-root", action="append", required=True, help="STRM root to scan; can be repeated")
     strm_nfo_parser.add_argument("--min-chinese-ratio", type=float, default=0.35, help="Minimum Chinese-character ratio for plot text")
     strm_nfo_parser.add_argument("--sample-limit", type=int, default=50, help="Maximum NFO files to inspect per root")
+    strm_nfo_parser.add_argument("--expected-nfo-count", type=int, default=0, help="Require at least this many STRM-side NFO files")
     strm_nfo_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     strm_nfo_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
@@ -2158,6 +2159,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             strm_roots=args.strm_root,
             min_chinese_ratio=args.min_chinese_ratio,
             sample_limit=args.sample_limit,
+            expected_nfo_count=args.expected_nfo_count,
         )
         rendered = render_strm_nfo_language_audit(report, args.format)
         if args.output:

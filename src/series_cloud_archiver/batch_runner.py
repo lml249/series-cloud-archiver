@@ -695,6 +695,7 @@ def _run_finalize_item(
             strm_roots=[strm_root],
             min_chinese_ratio=nfo_min_chinese_ratio,
             sample_limit=nfo_sample_limit,
+            expected_nfo_count=expected_count,
         ),
     ):
         row["status"] = "failed_nfo_language"
@@ -1192,7 +1193,8 @@ def _cleanup_validation_commands(
             "stage": "strm_nfo_language_audit",
             "command": (
                 f'PYTHONPATH=src python3 -m series_cloud_archiver strm-nfo-language-audit '
-                f'--strm-root "{strm_root}" --format json --output <nfo-language-audit.json>'
+                f'--strm-root "{strm_root}" --expected-nfo-count {expected_count} '
+                f'--format json --output <nfo-language-audit.json>'
             ),
         },
         {
@@ -1369,7 +1371,8 @@ def _finalize_commands(
             "output": f"{report_prefix}-nfo-language.json",
             "command": (
                 f"PYTHONPATH=src python3 -m series_cloud_archiver strm-nfo-language-audit "
-                f"--strm-root {strm_q} --format json --output {report_prefix}-nfo-language.json"
+                f"--strm-root {strm_q} --expected-nfo-count {expected_count} "
+                f"--format json --output {report_prefix}-nfo-language.json"
             ),
         },
         {
