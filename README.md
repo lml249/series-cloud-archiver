@@ -1020,6 +1020,21 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-repair-wrong-root \
 
 修复规则很保守：重复副本只有在错根和正确根集数一致、且 STRM 没有指向错根时才删；错根媒体只有在正确根缺失或不完整、STRM 指向正确根、并且所有待移动文件都有 115 file id 时才移。它不会调用 MV3 整理转存、不会重新生成 STRM、不会刮削云盘文件、不会操作 qB、MP 或 Emby。
 
+如果错根不是 `/已整理/series/series/剧名...`，而是一个合集目录本身，例如 `/已整理/series/美剧广告狂人1-7季/S07`，同一个命令也可以先 dry-run。此时 `--correct-root` 可以直接写正确标题目录，`--strm-root` 可以写 STRM 的标题目录：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-repair-wrong-root \
+  --env-file .env \
+  --wrong-root "/已整理/series/错误合集目录" \
+  --correct-root "/已整理/series/广告狂人 (2007) {tmdbid=1104}" \
+  --strm-root "/strm-host/mv3/strm/series/广告狂人 (2007) {tmdbid=1104}" \
+  --storage 115-default \
+  --format json \
+  --output reports/mv3-repair-wrong-root-direct-season-dry-run.json
+```
+
+这类报告会把错根下的 `S07`、`Season 07` 等直接季目录逐季列出，只在 STRM 指向正确标题根、正确季目录存在、集数/文件 id 检查通过时，才给出可审批的移动或删除动作。
+
 ## MV3 只读探针
 
 正式接入 MV3 转存前，先确认 MV3 的地址、鉴权方式和可用接口：
