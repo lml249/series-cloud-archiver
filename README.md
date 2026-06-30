@@ -242,6 +242,49 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-share-preview \
 
 `batch-share-preview --execute-preview` 仍然只调用 MV3 的搜索、分享解析和 browse 预览接口，不会调用 `/api/v1/share-transfer/receive`，不会转存到 115，不会整理、生成 STRM、刮削、刷新 Emby，也不会操作 qB、hlink、source 或本地文件。只有预览报告证明集数完整的条目，才允许进入后续“接收到 `/未整理` -> MV3 整理到 `/已整理` -> 生成 STRM -> STRM 侧刮削/验证”的阶段。
 
+## 批量 MV3 接收与整理 runner
+
+分享预览通过后，先生成审批门控的接收计划：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver batch-share-receive-plan \
+  --env-file /volume1/docker/series-cloud-archiver/.env \
+  --batch-share-preview-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-share-preview-executed-YYYYMMDD.json \
+  --target-path /未整理 \
+  --format json \
+  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-share-receive-plan-YYYYMMDD.json
+```
+
+然后交给批量 runner。默认不接收、不整理，只报告需要审批的项目：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver batch-transfer-run \
+  --env-file /volume1/docker/series-cloud-archiver/.env \
+  --receive-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-share-receive-plan-YYYYMMDD.json \
+  --output-dir /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-stages \
+  --format json \
+  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-YYYYMMDD.json
+```
+
+确认计划后，才分阶段显式审批：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver batch-transfer-run \
+  --env-file /volume1/docker/series-cloud-archiver/.env \
+  --receive-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-share-receive-plan-YYYYMMDD.json \
+  --output-dir /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-stages \
+  --title 折腰 \
+  --approve-receive \
+  --approve-transfer \
+  --target-path /未整理 \
+  --organize-target-dir /已整理 \
+  --strm-dir /strm \
+  --format json \
+  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-approved-YYYYMMDD.json
+```
+
+`batch-transfer-run` 只处理 `batch-share-receive-plan` 中 `approval_required` 的条目。`--approve-receive` 只允许把已验证完整的分享接收到 `/未整理`；`--approve-transfer` 才允许把已收到的云盘目录交给 MV3 整理到 `/已整理` 并生成 STRM。它不会刮削云盘实体目录，不会刷新 Emby，不会操作 qB，也不会删除 hlink/source。本地清理必须等后续 `batch-finalize-run` 的 STRM、中文 NFO、Emby、qB/MP/hlink/source 门禁全部通过后再单独审批。
+
 ## MV3 预览 manifest dry-run
 
 拿到待转存清单、MV3 能力报告和 MV3 实例报告后，可以先生成“小批量预览 manifest”：

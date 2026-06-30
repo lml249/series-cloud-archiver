@@ -18,6 +18,7 @@ from .batch_runner import (
     render_batch_plan,
     run_batch_finalize,
 )
+from .batch_transfer import render_batch_transfer_run, run_batch_transfer
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
 from .cloud_cleanup import (
     execute_cloud_complete_cleanup_plan,
@@ -693,6 +694,23 @@ def build_parser() -> argparse.ArgumentParser:
     batch_share_receive_plan_parser.add_argument("--limit", type=int, default=0, help="Maximum approval-required rows; 0 means all")
     batch_share_receive_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     batch_share_receive_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    batch_transfer_run_parser = subcommands.add_parser("batch-transfer-run", help="Run approval-gated MV3 share receive and organize transfer stages from a receive plan")
+    batch_transfer_run_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    batch_transfer_run_parser.add_argument("--receive-plan", required=True, help="JSON report from batch-share-receive-plan")
+    batch_transfer_run_parser.add_argument("--output-dir", required=True, help="Directory for per-stage JSON reports")
+    batch_transfer_run_parser.add_argument("--limit", type=int, default=0, help="Maximum approval-required rows to process; 0 means all")
+    batch_transfer_run_parser.add_argument("--title", action="append", default=[], help="Only process titles containing this text; can be repeated")
+    batch_transfer_run_parser.add_argument("--target-path", default="/未整理", help="115 staging receive root; must start with /未整理")
+    batch_transfer_run_parser.add_argument("--organize-target-dir", default="/已整理", help="MV3 organize root; must be /已整理")
+    batch_transfer_run_parser.add_argument("--strm-dir", default="/strm", help="MV3 STRM output root; must be STRM-side")
+    batch_transfer_run_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    batch_transfer_run_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    batch_transfer_run_parser.add_argument("--transfer-timeout", type=int, default=180, help="MV3 organize transfer timeout in seconds")
+    batch_transfer_run_parser.add_argument("--approve-receive", action="store_true", help="Required: actually receive approved share items to staging")
+    batch_transfer_run_parser.add_argument("--approve-transfer", action="store_true", help="Required: actually ask MV3 to organize received items and generate STRM")
+    batch_transfer_run_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    batch_transfer_run_parser.add_argument("--output", default=None, help="Write aggregate report to file instead of stdout")
 
     batch_finalize_parser = subcommands.add_parser("batch-finalize-plan", help="Build readonly post-transfer scrape/Emby/cleanup gate commands from a batch-plan report")
     batch_finalize_parser.add_argument("--env-file", required=True, help="Local env file; used only for generated command templates")
@@ -2385,6 +2403,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(rendered)
         return 0
+
+    if args.command == "batch-transfer-run":
+        receive_plan = load_optional_json_report(args.receive_plan)
+        if not isinstance(receive_plan, dict):
+            parser.error("batch-transfer-run requires a valid --receive-plan JSON report")
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("batch-transfer-run requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = run_batch_transfer(
+            receive_plan,
+            output_dir=args.output_dir,
+            config=config,
+            limit=args.limit,
+            title_filters=args.title,
+            approve_receive=args.approve_receive,
+            approve_transfer=args.approve_transfer,
+            target_path=args.target_path,
+            organize_target_dir=args.organize_target_dir,
+            strm_dir=args.strm_dir,
+            storage=args.storage,
+            timeout=args.timeout,
+            transfer_timeout=args.transfer_timeout,
+        )
+        rendered = render_batch_transfer_run(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
 
     if args.command == "batch-finalize-plan":
         batch_plan = load_optional_json_report(args.batch_plan)

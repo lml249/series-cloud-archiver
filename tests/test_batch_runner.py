@@ -24,6 +24,11 @@ from series_cloud_archiver.batch_preview import (
     render_batch_share_preview_report,
     render_batch_share_receive_plan,
 )
+from series_cloud_archiver.batch_transfer import (
+    BatchTransferActions,
+    render_batch_transfer_run,
+    run_batch_transfer,
+)
 from series_cloud_archiver.cli import main
 
 
@@ -86,6 +91,51 @@ class FinalizeFakeActions:
         return self._ok("cloud-hlink-cleanup-execute", args=list(args), kwargs=kwargs)
 
 
+class TransferFakeActions:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def receive_share(self, *args: object, **kwargs: object) -> dict:
+        self.calls.append(("receive", {"args": list(args), "kwargs": kwargs}))
+        return {
+            "mode": "mv3-share-receive-one-result",
+            "ok": True,
+            "warnings": [],
+            "target_path": kwargs.get("target_path"),
+            "browse_selection": {"name": "折腰"},
+        }
+
+    def browse_cloud(self, *args: object, **kwargs: object) -> dict:
+        self.calls.append(("browse", {"args": list(args), "kwargs": kwargs}))
+        return {
+            "mode": "readonly-mv3-cloud-browse",
+            "ok": True,
+            "path": kwargs.get("path"),
+            "items": [
+                {
+                    "kind": "file",
+                    "media_kind": "video",
+                    "name": f"折腰 - S01E{episode:02d}.mkv",
+                    "file_id": f"file-{episode}",
+                }
+                for episode in range(1, 37)
+            ],
+            "warnings": [],
+        }
+
+    def organize_transfer(self, *args: object, **kwargs: object) -> dict:
+        self.calls.append(("organize", {"args": list(args), "kwargs": kwargs}))
+        return {
+            "mode": "mv3-organize-transfer-result",
+            "ok": True,
+            "source_path": "/未整理/折腰",
+            "target_dir": kwargs.get("target_dir"),
+            "strm_dir": kwargs.get("strm_dir"),
+            "blockers": [],
+            "warnings": [],
+        }
+
+
 class BatchRunnerTest(unittest.TestCase):
     def _finalize_plan(self) -> dict:
         return {
@@ -108,6 +158,90 @@ class BatchRunnerTest(unittest.TestCase):
                 }
             ],
         }
+
+    def _receive_plan(self, preview_report_path: str = "/tmp/preview.json") -> dict:
+        return {
+            "mode": "readonly-batch-mv3-share-receive-plan",
+            "items": [
+                {
+                    "status": "approval_required",
+                    "title": "折腰",
+                    "tmdbid": 296753,
+                    "season": 1,
+                    "keyword": "折腰",
+                    "selection_index": 2,
+                    "browse_cid": "parent-cid",
+                    "browse_index": 1,
+                    "receive_mode": "receive_selected_folder",
+                    "verified_folder_browse_report": preview_report_path,
+                    "target_path": "/未整理",
+                    "storage": "115-default",
+                    "expected_episode_count": 36,
+                    "expected_episode_min": 1,
+                    "expected_episode_max": 36,
+                    "expected_title_contains": "折腰",
+                }
+            ],
+        }
+
+    def test_batch_transfer_run_default_requires_receive_approval(self) -> None:
+        actions = TransferFakeActions()
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_transfer(
+                self._receive_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(),
+                actions=BatchTransferActions(
+                    receive_share=actions.receive_share,
+                    browse_cloud=actions.browse_cloud,
+                    organize_transfer=actions.organize_transfer,
+                ),
+            )
+
+        self.assertEqual(report["planned_items"], 1)
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["dry_run_items"], 1)
+        self.assertEqual(actions.calls, [])
+        self.assertEqual(report["items"][0]["status"], "approval_required")
+        self.assertIn("receive_approval_required", report["items"][0]["blockers"])
+        self.assertIn("Batch Transfer Run", render_batch_transfer_run(report, "markdown"))
+
+    def test_batch_transfer_run_receives_browses_and_organizes_after_approval(self) -> None:
+        actions = TransferFakeActions()
+        with tempfile.TemporaryDirectory() as tmp:
+            preview = Path(tmp) / "preview.json"
+            preview.write_text(
+                json.dumps({"ok": True, "episodes": list(range(1, 37)), "video_file_count": 36}),
+                encoding="utf-8",
+            )
+            report = run_batch_transfer(
+                self._receive_plan(str(preview)),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(),
+                approve_receive=True,
+                approve_transfer=True,
+                actions=BatchTransferActions(
+                    receive_share=actions.receive_share,
+                    browse_cloud=actions.browse_cloud,
+                    organize_transfer=actions.organize_transfer,
+                ),
+            )
+            stage_files = [
+                path
+                for path in Path(tmp).glob("*.json")
+                if path.name != "preview.json"
+            ]
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["received_items"], 1)
+        self.assertEqual(report["organized_items"], 1)
+        self.assertEqual([call[0] for call in actions.calls], ["receive", "browse", "organize"])
+        self.assertEqual(actions.calls[0][1]["kwargs"]["target_path"], "/未整理")
+        self.assertEqual(actions.calls[1][1]["kwargs"]["path"], "/未整理/折腰")
+        self.assertEqual(actions.calls[2][1]["kwargs"]["target_dir"], "/已整理")
+        self.assertEqual(actions.calls[2][1]["kwargs"]["strm_dir"], "/strm")
+        self.assertEqual(report["items"][0]["status"], "organized_requires_finalize")
+        self.assertEqual(len(stage_files), 3)
 
     def test_batch_finalize_plan_builds_ordered_post_transfer_gates(self) -> None:
         batch_plan = {

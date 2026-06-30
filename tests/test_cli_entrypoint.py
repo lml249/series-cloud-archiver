@@ -316,6 +316,73 @@ class CliEntrypointTest(unittest.TestCase):
             self.assertIn("mv3-share-receive-one", payload["items"][0]["command"])
             self.assertNotIn("--approve-receive", payload["items"][0]["command"])
 
+    def test_batch_transfer_run_cli_writes_approval_gated_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            receive_plan = tmp_path / "receive-plan.json"
+            output = tmp_path / "batch-transfer-run.json"
+            stages = tmp_path / "stages"
+            receive_plan.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-batch-mv3-share-receive-plan",
+                        "items": [
+                            {
+                                "status": "approval_required",
+                                "title": "折腰",
+                                "tmdbid": 296753,
+                                "season": 1,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            class FakeConfig:
+                mv3_base_url = "http://mv3.example"
+                mv3_token = "token"
+
+            def fake_run(receive_plan_payload, **kwargs):
+                return {
+                    "mode": "batch-transfer-run",
+                    "ok": False,
+                    "planned_items": 1,
+                    "dry_run_items": 1,
+                    "items": [{"status": "approval_required", "title": "折腰", "blockers": ["receive_approval_required"]}],
+                    "settings": {
+                        "approve_receive": kwargs["approve_receive"],
+                        "approve_transfer": kwargs["approve_transfer"],
+                        "output_dir": kwargs["output_dir"],
+                    },
+                }
+
+            from series_cloud_archiver import cli
+
+            with patch.object(cli, "config_from_env", return_value=FakeConfig()), patch.object(cli, "run_batch_transfer", side_effect=fake_run):
+                code = cli.main(
+                    [
+                        "batch-transfer-run",
+                        "--env-file",
+                        str(tmp_path / ".env"),
+                        "--receive-plan",
+                        str(receive_plan),
+                        "--output-dir",
+                        str(stages),
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["mode"], "batch-transfer-run")
+            self.assertEqual(payload["settings"]["approve_receive"], False)
+            self.assertIn("receive_approval_required", payload["items"][0]["blockers"])
+
 
 if __name__ == "__main__":
     unittest.main()
