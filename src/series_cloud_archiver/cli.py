@@ -79,9 +79,11 @@ from .identity import (
     resolve_identity_overrides_from_scan_report,
 )
 from .extra_source_media import (
+    build_extra_source_media_summary,
     build_extra_source_media_plan,
     render_extra_source_media_plan,
     render_extra_source_media_run,
+    render_extra_source_media_summary,
     run_extra_source_media_plan,
 )
 from .finalize_remediation import (
@@ -863,6 +865,15 @@ def build_parser() -> argparse.ArgumentParser:
     extra_source_run_parser.add_argument("--process-timeout", type=int, default=300, help="Per-command process timeout in seconds")
     extra_source_run_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     extra_source_run_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    extra_source_summary_parser = subcommands.add_parser(
+        "extra-source-media-summary",
+        help="Summarize extra-source-media-run reports into conservative cleanup gates",
+    )
+    extra_source_summary_parser.add_argument("--run-report", action="append", default=[], help="JSON report from extra-source-media-run; can be repeated")
+    extra_source_summary_parser.add_argument("--run-dir", action="append", default=[], help="Directory containing *.run.json reports; can be repeated")
+    extra_source_summary_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
+    extra_source_summary_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     batch_share_preview_parser = subcommands.add_parser("batch-share-preview", help="Build or execute readonly MV3 share previews from a batch-plan report")
     batch_share_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -3056,6 +3067,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
+
+    if args.command == "extra-source-media-summary":
+        run_paths: List[str] = list(args.run_report or [])
+        for directory in args.run_dir or []:
+            run_paths.extend(str(path) for path in sorted(Path(directory).glob("*.run.json")) if path.is_file())
+        run_reports = [
+            report
+            for report in (load_optional_json_report(path) for path in run_paths)
+            if isinstance(report, dict)
+        ]
+        if not run_reports:
+            parser.error("extra-source-media-summary requires --run-report or --run-dir")
+        report = build_extra_source_media_summary(run_reports)
+        rendered = render_extra_source_media_summary(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
 
     if args.command == "batch-share-preview":
         batch_plan = load_optional_json_report(args.batch_plan)

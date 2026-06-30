@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import csv
 import io
 import json
@@ -265,6 +266,72 @@ def render_extra_source_media_run(report: JsonDict, output_format: str) -> str:
                 episode=item.get("episode") or "",
                 title=_escape_cell(str(item.get("title") or "")),
                 output=_escape_cell(str(item.get("output") or "")),
+            )
+        )
+    return "\n".join(lines)
+
+
+def build_extra_source_media_summary(run_reports: Sequence[JsonDict]) -> JsonDict:
+    """Summarize extra-source scan runs into conservative cleanup decisions."""
+
+    rows = [_summary_row(report, index) for index, report in enumerate(run_reports, start=1) if isinstance(report, dict)]
+    details: List[JsonDict] = []
+    for index, report in enumerate(run_reports, start=1):
+        if isinstance(report, dict):
+            details.extend(_summary_detail_rows(report, index))
+    status_counts = Counter(str(row.get("status") or "") for row in rows)
+    gate_counts = Counter(str(row.get("cleanup_gate") or "") for row in rows)
+    return {
+        "mode": "readonly-extra-source-media-summary",
+        "ok": True,
+        "run_report_count": len(rows),
+        "blocked_items": sum(1 for row in rows if row.get("cleanup_gate") == "blocked"),
+        "review_items": sum(1 for row in rows if row.get("cleanup_gate") != "clear"),
+        "clear_items": sum(1 for row in rows if row.get("cleanup_gate") == "clear"),
+        "status_counts": dict(sorted(status_counts.items())),
+        "cleanup_gate_counts": dict(sorted(gate_counts.items())),
+        "items": rows,
+        "details": details,
+        "safety": (
+            "readonly summary only; it reads existing extra-source scan run JSON and classifies evidence. "
+            "It does not call MV3/MoviePilot/Emby/qBittorrent, write STRM/NFO/JPG, transfer cloud media, "
+            "or delete hlink/source files."
+        ),
+    }
+
+
+def render_extra_source_media_summary(report: JsonDict, output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    if output_format == "csv":
+        return _render_summary_csv(report)
+    lines = [
+        "# Extra Source Media Summary",
+        "",
+        f"- Run reports: `{report.get('run_report_count', 0)}`",
+        f"- Blocked: `{report.get('blocked_items', 0)}`",
+        f"- Status counts: `{report.get('status_counts', {})}`",
+        "- Safety: readonly evidence summary only; no transfer, scraping, Emby refresh, qB action, or deletion is performed.",
+        "",
+        "| Status | Gate | TMDB | Main S | Extra S | Extra E | Title | Scan | Candidate | In Library | Next action |",
+        "| --- | --- | ---: | --- | --- | --- | --- | ---: | ---: | ---: | --- |",
+    ]
+    for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {status} | {gate} | {tmdbid} | {main_seasons} | {suggested_seasons} | {episodes} | {title} | {total} | {candidate} | {in_library} | {next_action} |".format(
+                status=_escape_cell(str(item.get("status") or "")),
+                gate=_escape_cell(str(item.get("cleanup_gate") or "")),
+                tmdbid=item.get("tmdbid") or "",
+                main_seasons=_escape_cell(str(item.get("main_seasons") or "")),
+                suggested_seasons=_escape_cell(str(item.get("suggested_seasons") or "")),
+                episodes=_escape_cell(str(item.get("episodes") or "")),
+                title=_escape_cell(str(item.get("title") or "")),
+                total=item.get("scan_total_count") or 0,
+                candidate=item.get("candidate_count") or 0,
+                in_library=item.get("in_library_count") or 0,
+                next_action=_escape_cell(str(item.get("next_action") or "")),
             )
         )
     return "\n".join(lines)
@@ -712,6 +779,187 @@ def _render_run_csv(report: JsonDict) -> str:
             }
         )
     return output.getvalue().rstrip("\r\n")
+
+
+def _summary_row(report: JsonDict, report_index: int) -> JsonDict:
+    executed = [item for item in _items(report.get("items")) if bool(item.get("executed"))]
+    planned_or_skipped = _items(report.get("items"))
+    title_values = sorted({str(item.get("title") or "") for item in planned_or_skipped if str(item.get("title") or "")})
+    tmdb_values = sorted({int(item.get("tmdbid") or 0) for item in planned_or_skipped if int(item.get("tmdbid") or 0)})
+    main_seasons = sorted({int(item.get("main_season") or 0) for item in planned_or_skipped if "main_season" in item})
+    suggested_seasons = sorted({int(item.get("suggested_season") or 0) for item in executed if "suggested_season" in item})
+    episodes = sorted({int(item.get("episode") or 0) for item in executed if int(item.get("episode") or 0) > 0})
+    warnings = sorted({warning for item in executed for warning in _strings(item.get("diagnostic_warnings"))})
+    blockers = sorted({blocker for item in executed for blocker in _strings(item.get("diagnostic_blockers"))})
+    total_count = sum(_int_from_summary(item, "total") for item in executed)
+    candidate_count = sum(_int_from_summary(item, "candidate") for item in executed)
+    in_library_count = sum(_int_from_summary(item, "in_library") for item in executed)
+    failed_count = sum(1 for item in planned_or_skipped if str(item.get("status") or "") in {"diagnostic_failed", "timeout", "runner_error", "unsafe_blocked"})
+    no_scan_count = sum(1 for item in executed if "no_scan_items_found" in _strings(item.get("diagnostic_warnings")))
+    all_in_library_count = sum(1 for item in executed if "all_scan_items_marked_in_library" in _strings(item.get("diagnostic_warnings")))
+
+    status = "manual_review_required"
+    cleanup_gate = "blocked"
+    next_action = "人工复核额外源文件；清理门保持阻塞"
+    reason_codes: List[str] = []
+    if not planned_or_skipped:
+        status = "empty_run_report"
+        reason_codes.append("run_report_has_no_items")
+        next_action = "回到上游 finalize/cleanup 报告确认是否还有 source_root_check_failed"
+    elif not executed:
+        status = "no_readonly_diagnostics"
+        reason_codes.append("no_executed_scan_source_diagnostics")
+        next_action = "先执行 extra-source-media-run --execute-readonly 获取诊断"
+    elif failed_count:
+        status = "diagnostic_failed"
+        reason_codes.append("diagnostic_command_failed")
+        next_action = "先修复失败的只读诊断，再重新汇总"
+    elif candidate_count > 0 and in_library_count >= candidate_count:
+        status = "extra_source_already_in_library"
+        cleanup_gate = "clear"
+        reason_codes.append("all_scan_candidates_marked_in_library")
+        next_action = "可重新跑 finalize/cleanup 预检；若其它门全绿才允许清理"
+    elif candidate_count > 0:
+        status = "extra_source_transfer_review_required"
+        reason_codes.append("scan_found_not_in_library_candidates")
+        next_action = "把这些额外视频作为单独迁移/映射项处理，不允许直接清理"
+    elif no_scan_count == len(executed):
+        status = "source_not_visible_to_mv3_or_empty"
+        reason_codes.append("scan_source_returned_no_items")
+        next_action = "复核本地源路径是否仍存在且 MV3 可见；不能作为已清理证据"
+    else:
+        status = "manual_review_required"
+        reason_codes.append("scan_result_unclear")
+
+    return {
+        "status": status,
+        "cleanup_gate": cleanup_gate,
+        "report_index": report_index,
+        "title": title_values[0] if len(title_values) == 1 else "; ".join(title_values),
+        "tmdbid": tmdb_values[0] if len(tmdb_values) == 1 else "",
+        "main_seasons": _range_text(main_seasons),
+        "suggested_seasons": _range_text(suggested_seasons),
+        "episodes": _range_text(episodes),
+        "selected_items": report.get("selected_items", 0),
+        "executed_commands": report.get("executed_commands", 0),
+        "scan_total_count": total_count,
+        "candidate_count": candidate_count,
+        "in_library_count": in_library_count,
+        "no_scan_items_count": no_scan_count,
+        "all_in_library_scan_count": all_in_library_count,
+        "failed_command_count": failed_count,
+        "warnings": warnings,
+        "blockers": blockers,
+        "reason_codes": reason_codes,
+        "next_action": next_action,
+        "source_output_dir": str(report.get("output_dir") or ""),
+    }
+
+
+def _summary_detail_rows(report: JsonDict, report_index: int) -> List[JsonDict]:
+    rows: List[JsonDict] = []
+    for item in _items(report.get("items")):
+        if not bool(item.get("executed")):
+            continue
+        rows.append(
+            {
+                "report_index": report_index,
+                "status": item.get("status", ""),
+                "diagnostic_ok": item.get("diagnostic_ok", ""),
+                "title": item.get("title", ""),
+                "tmdbid": item.get("tmdbid", ""),
+                "main_season": item.get("main_season", ""),
+                "suggested_season": item.get("suggested_season", ""),
+                "episode": item.get("episode", ""),
+                "media_kind": item.get("media_kind", ""),
+                "file_name": item.get("file_name", ""),
+                "source_path": item.get("source_path", ""),
+                "scan_total": _int_from_summary(item, "total"),
+                "candidate": _int_from_summary(item, "candidate"),
+                "in_library": _int_from_summary(item, "in_library"),
+                "warnings": _strings(item.get("diagnostic_warnings")),
+                "blockers": _strings(item.get("diagnostic_blockers")),
+                "output": item.get("output", ""),
+            }
+        )
+    return rows
+
+
+def _render_summary_csv(report: JsonDict) -> str:
+    fieldnames = [
+        "status",
+        "cleanup_gate",
+        "title",
+        "tmdbid",
+        "main_seasons",
+        "suggested_seasons",
+        "episodes",
+        "selected_items",
+        "executed_commands",
+        "scan_total_count",
+        "candidate_count",
+        "in_library_count",
+        "no_scan_items_count",
+        "failed_command_count",
+        "reason_codes",
+        "warnings",
+        "blockers",
+        "next_action",
+        "source_output_dir",
+    ]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        writer.writerow(
+            {
+                "status": item.get("status", ""),
+                "cleanup_gate": item.get("cleanup_gate", ""),
+                "title": item.get("title", ""),
+                "tmdbid": item.get("tmdbid", ""),
+                "main_seasons": item.get("main_seasons", ""),
+                "suggested_seasons": item.get("suggested_seasons", ""),
+                "episodes": item.get("episodes", ""),
+                "selected_items": item.get("selected_items", ""),
+                "executed_commands": item.get("executed_commands", ""),
+                "scan_total_count": item.get("scan_total_count", ""),
+                "candidate_count": item.get("candidate_count", ""),
+                "in_library_count": item.get("in_library_count", ""),
+                "no_scan_items_count": item.get("no_scan_items_count", ""),
+                "failed_command_count": item.get("failed_command_count", ""),
+                "reason_codes": "; ".join(_strings(item.get("reason_codes"))),
+                "warnings": "; ".join(_strings(item.get("warnings"))),
+                "blockers": "; ".join(_strings(item.get("blockers"))),
+                "next_action": item.get("next_action", ""),
+                "source_output_dir": item.get("source_output_dir", ""),
+            }
+        )
+    return output.getvalue().rstrip("\r\n")
+
+
+def _items(value: object) -> List[JsonDict]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _int_from_summary(item: JsonDict, key: str) -> int:
+    summary = item.get("diagnostic_summary") if isinstance(item.get("diagnostic_summary"), dict) else {}
+    try:
+        return int(summary.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _range_text(values: Sequence[int]) -> str:
+    clean = sorted({int(value) for value in values})
+    if not clean:
+        return ""
+    if len(clean) == 1:
+        return str(clean[0])
+    if clean == list(range(clean[0], clean[-1] + 1)):
+        return f"{clean[0]}-{clean[-1]}"
+    return ",".join(str(value) for value in clean)
 
 
 def _strings(value: object) -> List[str]:

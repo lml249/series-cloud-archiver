@@ -6,9 +6,11 @@ from pathlib import Path
 
 from series_cloud_archiver.cli import main
 from series_cloud_archiver.extra_source_media import (
+    build_extra_source_media_summary,
     build_extra_source_media_plan,
     render_extra_source_media_plan,
     render_extra_source_media_run,
+    render_extra_source_media_summary,
     run_extra_source_media_plan,
 )
 
@@ -234,6 +236,112 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
         self.assertEqual(payload["mode"], "readonly-extra-source-media-run")
         self.assertEqual(payload["planned_commands"], 4)
         self.assertEqual(payload["executed_commands"], 0)
+
+    def test_summary_blocks_empty_scan_source_results(self) -> None:
+        run = {
+            "mode": "readonly-extra-source-media-run",
+            "selected_items": 1,
+            "executed_commands": 1,
+            "output_dir": "/example/output",
+            "items": [
+                {
+                    "status": "executed",
+                    "executed": True,
+                    "title": "9号秘事",
+                    "tmdbid": 61746,
+                    "main_season": 1,
+                    "suggested_season": 3,
+                    "episode": 1,
+                    "diagnostic_ok": True,
+                    "diagnostic_summary": {"total": 0, "candidate": 0, "in_library": 0},
+                    "diagnostic_warnings": ["no_scan_items_found"],
+                }
+            ],
+        }
+
+        summary = build_extra_source_media_summary([run])
+
+        self.assertEqual(summary["blocked_items"], 1)
+        self.assertEqual(summary["items"][0]["status"], "source_not_visible_to_mv3_or_empty")
+        self.assertEqual(summary["items"][0]["cleanup_gate"], "blocked")
+        self.assertIn("不能作为已清理证据", render_extra_source_media_summary(summary, "markdown"))
+
+    def test_summary_clears_when_all_scan_candidates_are_in_library(self) -> None:
+        run = {
+            "mode": "readonly-extra-source-media-run",
+            "selected_items": 1,
+            "executed_commands": 1,
+            "items": [
+                {
+                    "status": "executed",
+                    "executed": True,
+                    "title": "示例剧",
+                    "tmdbid": 123,
+                    "main_season": 1,
+                    "suggested_season": 1,
+                    "episode": 1,
+                    "diagnostic_ok": True,
+                    "diagnostic_summary": {"total": 1, "candidate": 1, "in_library": 1},
+                    "diagnostic_warnings": ["all_scan_items_marked_in_library"],
+                }
+            ],
+        }
+
+        summary = build_extra_source_media_summary([run])
+
+        self.assertEqual(summary["clear_items"], 1)
+        self.assertEqual(summary["items"][0]["status"], "extra_source_already_in_library")
+        self.assertEqual(summary["items"][0]["cleanup_gate"], "clear")
+        self.assertIn("extra_source_already_in_library", render_extra_source_media_summary(summary, "csv"))
+
+    def test_cli_writes_extra_source_media_summary_from_run_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            run_dir = tmp_path / "runs"
+            run_dir.mkdir()
+            output = tmp_path / "summary.json"
+            (run_dir / "one.run.json").write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-extra-source-media-run",
+                        "selected_items": 1,
+                        "executed_commands": 1,
+                        "items": [
+                            {
+                                "status": "executed",
+                                "executed": True,
+                                "title": "示例剧",
+                                "tmdbid": 123,
+                                "main_season": 1,
+                                "suggested_season": 2,
+                                "episode": 3,
+                                "diagnostic_summary": {"total": 0, "candidate": 0, "in_library": 0},
+                                "diagnostic_warnings": ["no_scan_items_found"],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code = main(
+                [
+                    "extra-source-media-summary",
+                    "--run-dir",
+                    str(run_dir),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["mode"], "readonly-extra-source-media-summary")
+        self.assertEqual(payload["items"][0]["suggested_seasons"], "2")
+        self.assertEqual(payload["items"][0]["episodes"], "3")
 
 
 if __name__ == "__main__":
