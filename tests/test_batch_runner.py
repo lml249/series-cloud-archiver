@@ -2087,6 +2087,54 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("source_root_check_failed", rendered)
         self.assertIn("SP2.The.Making", rendered)
 
+    def test_batch_review_report_marks_already_cleaned_noop_as_done(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "state": "planned_validation_then_cleanup",
+                    "title": "西部世界",
+                    "tmdbid": 63247,
+                    "season": 2,
+                    "cloud_status": "cloud_strm_complete",
+                    "expected_episode_count": 10,
+                    "expected_episodes": list(range(1, 11)),
+                    "source_paths": ["/example/local-tv/Westworld.S02"],
+                    "strm_root": "/example/service/strm/series/西部世界 (2016) {tmdbid=63247}/Season 02",
+                    "cloud_media_path": "/已整理/series/西部世界 (2016)/Season 2",
+                }
+            ],
+        }
+        finalize_report = {
+            "mode": "batch-finalize-run",
+            "items": [
+                {
+                    "status": "already_cleaned_noop",
+                    "title": "西部世界",
+                    "tmdbid": 63247,
+                    "season": 2,
+                    "blockers": [],
+                    "warnings": ["local_cleanup_already_absent_noop"],
+                    "stages": [
+                        {"stage": "strm_verify", "ok": True},
+                        {"stage": "qb_orphan_noop_preview", "ok": True},
+                    ],
+                }
+            ],
+        }
+
+        report = build_batch_review_report(batch_plan, finalize_run_reports=[finalize_report])
+
+        self.assertEqual(report["decision_counts"]["done_already_cleaned_noop"], 1)
+        item = report["items"][0]
+        self.assertEqual(item["decision"], "done_already_cleaned_noop")
+        self.assertEqual(item["finalize_status"], "already_cleaned_noop")
+        self.assertEqual(item["finalize_last_stage"], "qb_orphan_noop_preview")
+        self.assertIn("no-op", item["next_action"])
+        rendered = render_batch_review_report(report, "csv")
+        self.assertIn("done_already_cleaned_noop", rendered)
+
     def test_batch_review_report_marks_failed_transfer_for_manual_review(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",

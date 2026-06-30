@@ -2124,6 +2124,7 @@ def _review_finalize_by_identity(reports: Sequence[Dict[str, object]]) -> Dict[T
 def _review_finalize_rank(item: Dict[str, object]) -> Tuple[int, int, int]:
     status = str(item.get("status") or "")
     status_rank = {
+        "already_cleaned_noop": 5,
         "cleanup_executed": 5,
         "cleanup_waiting_for_approval": 4,
         "failed_cleanup_preview": 3,
@@ -2523,6 +2524,8 @@ def _review_decision(
         return "done_cleanup_verified"
 
     finalize_status = str(finalize_item.get("status") or "")
+    if finalize_status == "already_cleaned_noop":
+        return "done_already_cleaned_noop"
     if finalize_status == "cleanup_executed":
         return "done_cleanup_executed"
     if finalize_status == "cleanup_waiting_for_approval":
@@ -2593,6 +2596,8 @@ def _review_post_cleanup_reasons(post_cleanup_item: Dict[str, object]) -> List[s
 def _review_next_action(decision: str, reasons: Sequence[str]) -> str:
     if decision == "done_cleanup_verified":
         return "已完成并复核清理，保留报告归档"
+    if decision == "done_already_cleaned_noop":
+        return "已确认本地/qB 此前已清理，保留 no-op 验证报告归档"
     if decision == "done_cleanup_executed":
         return "已完成清理，保留报告归档"
     if decision == "ready_for_cleanup_approval":
