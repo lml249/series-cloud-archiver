@@ -14,6 +14,7 @@ from series_cloud_archiver.finalize_remediation import (
     render_finalize_expected_update_plan,
     render_finalize_remediation_plan,
     render_finalize_remediation_run,
+    run_finalize_cleanup_remediation_plan,
     run_finalize_remediation_plan,
 )
 
@@ -524,6 +525,92 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["mode"], "readonly-finalize-cleanup-remediation-plan")
         self.assertEqual(payload["planned_items"], 4)
+
+    def test_cleanup_remediation_run_executes_allowlisted_preview_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output_dir = tmp_path / "diagnostics"
+            plan = build_finalize_cleanup_remediation_plan(self._cleanup_finalize_report(tmp_path), env_file="/safe/.env")
+            calls = []
+
+            def fake_runner(argv, **kwargs):
+                calls.append((argv, kwargs))
+                output_path = Path(argv[argv.index("--output") + 1])
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                mode = argv[3]
+                output_path.write_text(
+                    json.dumps({"mode": mode, "ok": mode == "qb-orphan-torrent-cleanup-preview", "blockers": ["approval_required"] if mode == "hlink-empty-root-cleanup" else []}),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(argv, 0 if mode == "qb-orphan-torrent-cleanup-preview" else 1, stdout="", stderr="")
+
+            run = run_finalize_cleanup_remediation_plan(
+                plan,
+                output_dir=str(output_dir),
+                categories=["qb_orphan_preview_candidate", "empty_hlink_root_review"],
+                execute_readonly=True,
+                cwd="/example/app",
+                command_runner=fake_runner,
+            )
+
+        self.assertTrue(run["ok"])
+        self.assertEqual(run["mode"], "readonly-finalize-cleanup-remediation-run")
+        self.assertEqual(run["planned_commands"], 2)
+        self.assertEqual(run["executed_commands"], 2)
+        self.assertEqual(run["status_counts"], {"diagnostic_failed": 1, "executed": 1})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0][:3], ["python3", "-m", "series_cloud_archiver"])
+        self.assertTrue(all(str(output_dir) in item["command"] for item in run["items"]))
+        self.assertTrue(any(item["stage"] == "hlink_empty_root_review" and item["status"] == "diagnostic_failed" for item in run["items"]))
+        self.assertTrue(any(item["stage"] == "qb_orphan_preview_readonly" and item["status"] == "executed" for item in run["items"]))
+
+    def test_cleanup_remediation_run_blocks_approval_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            plan = build_finalize_cleanup_remediation_plan(self._cleanup_finalize_report(tmp_path), env_file="/safe/.env")
+            plan["items"][0]["commands"][0]["command"] += " --approve-delete"
+
+            run = run_finalize_cleanup_remediation_plan(
+                plan,
+                output_dir=str(tmp_path / "diagnostics"),
+                categories=["qb_orphan_preview_candidate"],
+                execute_readonly=True,
+                command_runner=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not execute")),
+            )
+
+        self.assertFalse(run["ok"])
+        self.assertEqual(run["unsafe_blocked_count"], 1)
+        self.assertIn("approval_flag_forbidden", run["items"][0]["safety_blockers"])
+
+    def test_cli_writes_finalize_cleanup_remediation_run_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            plan = tmp_path / "cleanup-plan.json"
+            output = tmp_path / "cleanup-run.json"
+            plan.write_text(
+                json.dumps(build_finalize_cleanup_remediation_plan(self._cleanup_finalize_report(tmp_path), env_file="/safe/.env"), ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            exit_code = main(
+                [
+                    "finalize-cleanup-remediation-run",
+                    "--plan",
+                    str(plan),
+                    "--output-dir",
+                    str(tmp_path / "diagnostics"),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["mode"], "readonly-finalize-cleanup-remediation-run")
+        self.assertEqual(payload["planned_commands"], 2)
+        self.assertEqual(payload["executed_commands"], 0)
 
     def _plan_report(self) -> dict:
         return build_finalize_remediation_plan(

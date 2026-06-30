@@ -23,6 +23,7 @@ READONLY_REMEDIATION_COMMANDS = {
     "mv3-cloud-search",
     "qb-orphan-torrent-cleanup-preview",
     "mp-cleanup-preview",
+    "hlink-empty-root-cleanup",
 }
 
 
@@ -184,6 +185,41 @@ def run_finalize_remediation_plan(
             "rewrites report outputs under output_dir, and blocks any approval flag before execution."
         ),
     }
+
+
+def run_finalize_cleanup_remediation_plan(
+    plan_report: JsonDict,
+    *,
+    output_dir: str,
+    categories: Optional[Sequence[str]] = None,
+    stages: Optional[Sequence[str]] = None,
+    titles: Optional[Sequence[str]] = None,
+    limit: int = 0,
+    execute_readonly: bool = False,
+    cwd: str = "",
+    process_timeout: int = 300,
+    command_runner: Optional[CommandRunner] = None,
+) -> JsonDict:
+    """Run or dry-run readonly commands from a cleanup remediation plan."""
+
+    report = run_finalize_remediation_plan(
+        plan_report,
+        output_dir=output_dir,
+        categories=categories,
+        stages=stages,
+        titles=titles,
+        limit=limit,
+        execute_readonly=execute_readonly,
+        cwd=cwd,
+        process_timeout=process_timeout,
+        command_runner=command_runner,
+    )
+    report["mode"] = "readonly-finalize-cleanup-remediation-run"
+    report["safety"] = (
+        "readonly cleanup remediation runner only; it executes a fixed allowlist of preview/review commands, "
+        "rewrites report outputs under output_dir, and blocks any approval flag before execution."
+    )
+    return report
 
 
 def render_finalize_remediation_run(report: JsonDict, output_format: str) -> str:

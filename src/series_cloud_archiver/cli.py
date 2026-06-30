@@ -86,6 +86,7 @@ from .finalize_remediation import (
     render_finalize_expected_update_plan,
     render_finalize_remediation_plan,
     render_finalize_remediation_run,
+    run_finalize_cleanup_remediation_plan,
     run_finalize_remediation_plan,
 )
 from .moviepilot import (
@@ -745,6 +746,22 @@ def build_parser() -> argparse.ArgumentParser:
     finalize_cleanup_remediation_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in generated command templates")
     finalize_cleanup_remediation_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     finalize_cleanup_remediation_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    finalize_cleanup_remediation_run_parser = subcommands.add_parser(
+        "finalize-cleanup-remediation-run",
+        help="Dry-run or execute allowlisted readonly commands from a cleanup remediation plan",
+    )
+    finalize_cleanup_remediation_run_parser.add_argument("--plan", required=True, help="JSON report from finalize-cleanup-remediation-plan")
+    finalize_cleanup_remediation_run_parser.add_argument("--output-dir", required=True, help="Directory for per-command diagnostic reports")
+    finalize_cleanup_remediation_run_parser.add_argument("--category", action="append", default=[], help="Limit to cleanup category; can be repeated")
+    finalize_cleanup_remediation_run_parser.add_argument("--stage", action="append", default=[], help="Limit to command stage; can be repeated")
+    finalize_cleanup_remediation_run_parser.add_argument("--title", action="append", default=[], help="Limit to titles containing this text; can be repeated")
+    finalize_cleanup_remediation_run_parser.add_argument("--limit", type=int, default=0, help="Maximum selected plan items; 0 means all")
+    finalize_cleanup_remediation_run_parser.add_argument("--execute-readonly", action="store_true", help="Actually run allowlisted readonly preview/review commands")
+    finalize_cleanup_remediation_run_parser.add_argument("--cwd", default="", help="Working directory for executed diagnostics; defaults to current directory")
+    finalize_cleanup_remediation_run_parser.add_argument("--process-timeout", type=int, default=300, help="Per-command process timeout in seconds")
+    finalize_cleanup_remediation_run_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
+    finalize_cleanup_remediation_run_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     finalize_remediation_run_parser = subcommands.add_parser("finalize-remediation-run", help="Dry-run or execute allowlisted readonly commands from a finalize remediation plan")
     finalize_remediation_run_parser.add_argument("--plan", required=True, help="JSON report from finalize-remediation-plan")
@@ -2812,6 +2829,28 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(rendered)
         return 0
+
+    if args.command == "finalize-cleanup-remediation-run":
+        plan_report = load_optional_json_report(args.plan)
+        if not isinstance(plan_report, dict):
+            parser.error("finalize-cleanup-remediation-run requires a valid --plan JSON report")
+        report = run_finalize_cleanup_remediation_plan(
+            plan_report,
+            output_dir=args.output_dir,
+            categories=args.category,
+            stages=args.stage,
+            titles=args.title,
+            limit=args.limit,
+            execute_readonly=args.execute_readonly,
+            cwd=args.cwd,
+            process_timeout=args.process_timeout,
+        )
+        rendered = render_finalize_remediation_run(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
 
     if args.command == "finalize-remediation-run":
         plan_report = load_optional_json_report(args.plan)
