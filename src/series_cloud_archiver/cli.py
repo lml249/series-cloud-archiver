@@ -732,6 +732,8 @@ def build_parser() -> argparse.ArgumentParser:
     batch_finalize_run_parser.add_argument("--title", action="append", default=[], help="Only process titles containing this text; can be repeated")
     batch_finalize_run_parser.add_argument("--continue-on-error", action="store_true", help="Continue to the next item after a gate failure")
     batch_finalize_run_parser.add_argument("--execute-scrape", action="store_true", help="Actually request MoviePilot to scrape STRM-side paths")
+    batch_finalize_run_parser.add_argument("--approve-cloud-duplicate-delete", action="store_true", help="Actually delete duplicate cloud videos after STRM target protection verifies")
+    batch_finalize_run_parser.add_argument("--approve-emby-stale-delete", action="store_true", help="Actually delete stale Emby local-source items after STRM replacement verifies")
     batch_finalize_run_parser.add_argument("--approve-delete", action="store_true", help="Actually execute qB+hlink cleanup after all gates pass")
     batch_finalize_run_parser.add_argument("--min-seed-days", type=int, default=7, help="Minimum qB seed days for cleanup preview")
     batch_finalize_run_parser.add_argument("--cloud-media-storage", default="115-default", help="MV3 cloud storage slug for cloud sidecar verification")
@@ -2467,6 +2469,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             title_filters=args.title,
             continue_on_error=args.continue_on_error,
             execute_scrape=args.execute_scrape,
+            approve_cloud_duplicate_delete=args.approve_cloud_duplicate_delete,
+            approve_emby_stale_delete=args.approve_emby_stale_delete,
             approve_delete=args.approve_delete,
             min_seed_days=args.min_seed_days,
             cloud_media_storage=args.cloud_media_storage,

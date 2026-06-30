@@ -769,7 +769,15 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-finalize-run \
   --output reports/batch-finalize-run-sample.json
 ```
 
-`batch-finalize-run` 会逐部剧季执行 `strm-verify -> mp-scrape-strm -> strm-nfo-language-audit -> emby-media-updated -> cloud-hlink-cleanup-preview`。任何一步失败都会停止当前项并写报告；默认不会删除 qB、种子文件或 hlink。只有在前面所有门禁都通过，并且显式加上 `--approve-delete` 时，才会继续执行 `cloud-hlink-cleanup-execute`。这个 runner 只把 STRM 路径传给 MP/Emby 刮削和刷新；云盘 `/已整理/...` 路径只用于检查实体目录里有没有误写入的 NFO/JPG 等旁挂。
+`batch-finalize-run` 会逐部剧季执行 `strm-verify -> mv3-cloud-duplicate-video-cleanup dry-run -> mp-scrape-strm -> strm-nfo-language-audit -> emby-media-updated -> cloud-hlink-cleanup-preview`。任何一步失败都会停止当前项并写报告；默认不会删除云盘重复视频、Emby 旧条目、qB、种子文件或 hlink。
+
+三个删除动作分开审批：
+
+- `--approve-cloud-duplicate-delete`：只在 STRM 保护目标完整、重复视频数量明确时，删除云盘 Season 里未被 STRM 引用的重复视频，并立刻复核云盘/STRM。
+- `--approve-emby-stale-delete`：只在 STRM 替代完整时，删除 Emby 里旧本地源的 Season/root 条目，避免库里同时显示本地源和 STRM 源。
+- `--approve-delete`：只在前面所有门禁都通过、`cloud-hlink-cleanup-preview` 显示 `ready_for_execute=true` 后，才执行 qB/hlink/source 本地清理。
+
+这个 runner 只把 STRM 路径传给 MP/Emby 刮削和刷新；云盘 `/已整理/...` 路径只用于检查实体目录里有没有误写入的 NFO/JPG 等旁挂。
 
 单独调用 `mv3-strm-generate` 时也保持同样边界：只生成 STRM，不允许顺手整理或刮削云盘媒体。`--target-dir` 必须是 STRM 侧根目录，不能传 `/已整理`、`/未整理` 或 `/series`。命令里的 `--organize` 会被项目阻断；即使传了旧版兼容参数 `--allow-organize` 也不会放行。正常迁移流程应先用 `mv3-organize-transfer-from-browse` 完成云盘整理和 STRM 生成，再只刷新/刮削 STRM 侧媒体库。
 

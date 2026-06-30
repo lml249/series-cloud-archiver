@@ -51,6 +51,7 @@ class FinalizeFakeActions:
     def __init__(self, fail_stage: str = "") -> None:
         self.fail_stage = fail_stage
         self.calls: list[tuple[str, dict]] = []
+        self.cloud_duplicate_count = 0
 
     def _ok(self, stage: str, **extra: object) -> dict:
         self.calls.append((stage, dict(extra)))
@@ -67,6 +68,25 @@ class FinalizeFakeActions:
     def verify_strm(self, **kwargs: object) -> dict:
         return self._ok("strm-verify", expected=kwargs)
 
+    def cloud_duplicate_cleanup(self, *args: object, **kwargs: object) -> dict:
+        report = self._ok(
+            "mv3-cloud-duplicate-video-cleanup-result",
+            args=list(args),
+            kwargs=kwargs,
+            delete_plan={
+                "duplicate_video_count": self.cloud_duplicate_count,
+                "expected_delete_count": kwargs.get("expected_delete_count"),
+            },
+            summary={
+                "video_file_count": 36 + self.cloud_duplicate_count,
+                "episode_count": 36,
+                "duplicate_episodes": list(range(1, self.cloud_duplicate_count + 1)),
+            },
+        )
+        if kwargs.get("approve_delete"):
+            self.cloud_duplicate_count = 0
+        return report
+
     def scrape_mp_strm(self, *args: object, **kwargs: object) -> dict:
         return self._ok("mp-scrape-strm-result", args=list(args), kwargs=kwargs)
 
@@ -75,6 +95,20 @@ class FinalizeFakeActions:
 
     def emby_media_updated(self, *args: object, **kwargs: object) -> dict:
         return self._ok("emby-media-updated", args=list(args), kwargs=kwargs)
+
+    def emby_delete_stale(self, *args: object, **kwargs: object) -> dict:
+        return self._ok(
+            "emby-delete-stale-paths",
+            args=list(args),
+            kwargs=kwargs,
+            delete_results=[
+                {
+                    "id": f"emby-{len([call for call in self.calls if call[0] == 'emby-delete-stale-paths'])}",
+                    "path": (kwargs.get("stale_path_prefixes") or [""])[0],
+                    "ok": True,
+                }
+            ],
+        )
 
     def cleanup_preview(self, **kwargs: object) -> dict:
         return self._ok(
@@ -236,6 +270,19 @@ class TransferFakeActions:
             "blockers": [],
             "warnings": [],
         }
+
+
+def _batch_finalize_actions(actions: FinalizeFakeActions) -> BatchFinalizeActions:
+    return BatchFinalizeActions(
+        verify_strm=actions.verify_strm,
+        cloud_duplicate_cleanup=actions.cloud_duplicate_cleanup,
+        scrape_mp_strm=actions.scrape_mp_strm,
+        audit_nfo_language=actions.audit_nfo_language,
+        emby_media_updated=actions.emby_media_updated,
+        emby_delete_stale=actions.emby_delete_stale,
+        cleanup_preview=actions.cleanup_preview,
+        cleanup_execute=actions.cleanup_execute,
+    )
 
 
 class BatchRunnerTest(unittest.TestCase):
@@ -542,24 +589,66 @@ class BatchRunnerTest(unittest.TestCase):
                 config=FinalizeFakeConfig(path_aliases={}),
                 execute_scrape=True,
                 approve_delete=False,
-                actions=BatchFinalizeActions(
-                    verify_strm=actions.verify_strm,
-                    scrape_mp_strm=actions.scrape_mp_strm,
-                    audit_nfo_language=actions.audit_nfo_language,
-                    emby_media_updated=actions.emby_media_updated,
-                    cleanup_preview=actions.cleanup_preview,
-                    cleanup_execute=actions.cleanup_execute,
-                ),
+                actions=_batch_finalize_actions(actions),
             )
             stage_files = sorted(Path(tmp).glob("*.json"))
 
         self.assertTrue(report["ok"])
         self.assertEqual(report["items"][0]["status"], "cleanup_waiting_for_approval")
         self.assertNotIn("cloud-hlink-cleanup-execute", [call[0] for call in actions.calls])
-        self.assertEqual(len(stage_files), 5)
+        self.assertEqual(len(stage_files), 6)
         rendered = render_batch_finalize_run(report, "markdown")
         self.assertIn("Batch Finalize Run", rendered)
         self.assertIn("cleanup_waiting_for_approval", rendered)
+
+    def test_batch_finalize_run_waits_for_cloud_duplicate_delete_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            actions.cloud_duplicate_count = 36
+            report = run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=False,
+                actions=_batch_finalize_actions(actions),
+            )
+
+        self.assertFalse(report["ok"])
+        item = report["items"][0]
+        self.assertEqual(item["status"], "cloud_duplicate_cleanup_waiting_for_approval")
+        self.assertEqual(item["cloud_duplicate_video_count"], 36)
+        self.assertIn("cloud_duplicate_delete_approval_required", item["blockers"])
+        self.assertNotIn("mp-scrape-strm-result", [call[0] for call in actions.calls])
+
+    def test_batch_finalize_run_deletes_cloud_duplicates_and_emby_stale_before_local_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            actions.cloud_duplicate_count = 36
+            report = run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}, emby_library_db_path="/emby/library.db"),
+                execute_scrape=True,
+                approve_cloud_duplicate_delete=True,
+                approve_emby_stale_delete=True,
+                approve_delete=False,
+                actions=_batch_finalize_actions(actions),
+            )
+
+        item = report["items"][0]
+        self.assertTrue(report["ok"])
+        self.assertEqual(item["status"], "cleanup_waiting_for_approval")
+        self.assertEqual(item["cloud_duplicate_video_count_after_cleanup"], 0)
+        call_names = [call[0] for call in actions.calls]
+        self.assertGreaterEqual(call_names.count("mv3-cloud-duplicate-video-cleanup-result"), 3)
+        self.assertEqual(call_names.count("emby-delete-stale-paths"), 2)
+        self.assertNotIn("cloud-hlink-cleanup-execute", call_names)
+        stale_calls = [call for call in actions.calls if call[0] == "emby-delete-stale-paths"]
+        self.assertEqual(stale_calls[0][1]["kwargs"]["delete_scope"], "season")
+        self.assertEqual(stale_calls[1][1]["kwargs"]["delete_scope"], "root")
+        self.assertEqual(stale_calls[0][1]["kwargs"]["stale_path_prefixes"], ["/volume3/hlink/TV/折腰 (2025)/Season 1"])
+        self.assertEqual(stale_calls[1][1]["kwargs"]["stale_path_prefixes"], ["/volume3/hlink/TV/折腰 (2025)"])
 
     def test_batch_finalize_run_gate_failure_stops_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -570,14 +659,7 @@ class BatchRunnerTest(unittest.TestCase):
                 config=FinalizeFakeConfig(path_aliases={}),
                 execute_scrape=True,
                 approve_delete=True,
-                actions=BatchFinalizeActions(
-                    verify_strm=actions.verify_strm,
-                    scrape_mp_strm=actions.scrape_mp_strm,
-                    audit_nfo_language=actions.audit_nfo_language,
-                    emby_media_updated=actions.emby_media_updated,
-                    cleanup_preview=actions.cleanup_preview,
-                    cleanup_execute=actions.cleanup_execute,
-                ),
+                actions=_batch_finalize_actions(actions),
             )
 
         self.assertFalse(report["ok"])
@@ -595,14 +677,7 @@ class BatchRunnerTest(unittest.TestCase):
                 config=FinalizeFakeConfig(path_aliases={}),
                 execute_scrape=True,
                 approve_delete=True,
-                actions=BatchFinalizeActions(
-                    verify_strm=actions.verify_strm,
-                    scrape_mp_strm=actions.scrape_mp_strm,
-                    audit_nfo_language=actions.audit_nfo_language,
-                    emby_media_updated=actions.emby_media_updated,
-                    cleanup_preview=actions.cleanup_preview,
-                    cleanup_execute=actions.cleanup_execute,
-                ),
+                actions=_batch_finalize_actions(actions),
             )
 
         self.assertTrue(report["ok"])
@@ -618,14 +693,7 @@ class BatchRunnerTest(unittest.TestCase):
                 config=FinalizeFakeConfig(path_aliases={}),
                 execute_scrape=True,
                 approve_delete=False,
-                actions=BatchFinalizeActions(
-                    verify_strm=actions.verify_strm,
-                    scrape_mp_strm=actions.scrape_mp_strm,
-                    audit_nfo_language=actions.audit_nfo_language,
-                    emby_media_updated=actions.emby_media_updated,
-                    cleanup_preview=actions.cleanup_preview,
-                    cleanup_execute=actions.cleanup_execute,
-                ),
+                actions=_batch_finalize_actions(actions),
             )
 
         scrape_call = next(call for call in actions.calls if call[0] == "mp-scrape-strm-result")
@@ -653,14 +721,7 @@ class BatchRunnerTest(unittest.TestCase):
                 config=FinalizeFakeConfig(path_aliases={}),
                 execute_scrape=True,
                 approve_delete=False,
-                actions=BatchFinalizeActions(
-                    verify_strm=actions.verify_strm,
-                    scrape_mp_strm=actions.scrape_mp_strm,
-                    audit_nfo_language=actions.audit_nfo_language,
-                    emby_media_updated=actions.emby_media_updated,
-                    cleanup_preview=actions.cleanup_preview,
-                    cleanup_execute=actions.cleanup_execute,
-                ),
+                actions=_batch_finalize_actions(actions),
             )
 
         verify_call = next(call for call in actions.calls if call[0] == "strm-verify")

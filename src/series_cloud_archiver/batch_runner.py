@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .cleanup_verify import audit_strm_nfo_language, verify_strm_paths
-from .emby import notify_and_verify_emby_media_updated
+from .emby import delete_stale_emby_paths, notify_and_verify_emby_media_updated
 from .hlink_cleanup import execute_cloud_hlink_cleanup, preview_cloud_hlink_cleanup
 from .moviepilot import scrape_mp_strm_path
+from .mv3 import cleanup_mv3_cloud_duplicate_videos
 from .reporting import human_size
 from .transfer_plan import DEFAULT_CLOUD_ROOT, DEFAULT_STRM_ROOT
 
@@ -28,9 +29,11 @@ SKIPPED = "skipped"
 @dataclass
 class BatchFinalizeActions:
     verify_strm: Callable[..., Dict[str, object]] = verify_strm_paths
+    cloud_duplicate_cleanup: Callable[..., Dict[str, object]] = cleanup_mv3_cloud_duplicate_videos
     scrape_mp_strm: Callable[..., Dict[str, object]] = scrape_mp_strm_path
     audit_nfo_language: Callable[..., Dict[str, object]] = audit_strm_nfo_language
     emby_media_updated: Callable[..., Dict[str, object]] = notify_and_verify_emby_media_updated
+    emby_delete_stale: Callable[..., Dict[str, object]] = delete_stale_emby_paths
     cleanup_preview: Callable[..., Dict[str, object]] = preview_cloud_hlink_cleanup
     cleanup_execute: Callable[..., Dict[str, object]] = execute_cloud_hlink_cleanup
 
@@ -300,6 +303,8 @@ def run_batch_finalize(
     title_filters: Optional[Sequence[str]] = None,
     continue_on_error: bool = False,
     execute_scrape: bool = False,
+    approve_cloud_duplicate_delete: bool = False,
+    approve_emby_stale_delete: bool = False,
     approve_delete: bool = False,
     min_seed_days: int = 7,
     cloud_media_storage: str = "115-default",
@@ -331,6 +336,8 @@ def run_batch_finalize(
             output_dir=output_path,
             config=config,
             execute_scrape=execute_scrape,
+            approve_cloud_duplicate_delete=approve_cloud_duplicate_delete,
+            approve_emby_stale_delete=approve_emby_stale_delete,
             approve_delete=approve_delete,
             min_seed_days=min_seed_days,
             cloud_media_storage=cloud_media_storage,
@@ -367,6 +374,8 @@ def run_batch_finalize(
             "title_filters": filters,
             "continue_on_error": continue_on_error,
             "execute_scrape": execute_scrape,
+            "approve_cloud_duplicate_delete": approve_cloud_duplicate_delete,
+            "approve_emby_stale_delete": approve_emby_stale_delete,
             "approve_delete": approve_delete,
             "min_seed_days": min_seed_days,
             "cloud_media_storage": cloud_media_storage,
@@ -441,6 +450,8 @@ def _run_finalize_item(
     output_dir: Path,
     config: object,
     execute_scrape: bool,
+    approve_cloud_duplicate_delete: bool,
+    approve_emby_stale_delete: bool,
     approve_delete: bool,
     min_seed_days: int,
     cloud_media_storage: str,
@@ -467,6 +478,9 @@ def _run_finalize_item(
     derived_cloud_title_path = _cloud_title_path_from_strm_root(strm_root)
     required_prefix = derived_required_prefix or planned_required_prefix
     cloud_title_path = derived_cloud_title_path or planned_cloud_title_path
+    cloud_season_path = str(item.get("cloud_media_path") or "").rstrip("/") or required_prefix
+    if cloud_season_path and not _cloud_path_looks_like_season(cloud_season_path):
+        cloud_season_path = f"{cloud_season_path}/Season {season}"
     report_prefix = str((item.get("command_context") or {}).get("report_prefix") if isinstance(item.get("command_context"), dict) else "") or _report_prefix(title, tmdbid, season)
 
     row: Dict[str, object] = {
@@ -479,6 +493,7 @@ def _run_finalize_item(
         "strm_root": strm_root,
         "service_strm_root": service_root,
         "cloud_title_path": cloud_title_path,
+        "cloud_season_path": cloud_season_path,
         "required_target_prefix": required_prefix,
         "planned_cloud_title_path": planned_cloud_title_path,
         "planned_required_target_prefix": planned_required_prefix,
@@ -503,6 +518,94 @@ def _run_finalize_item(
     ):
         row["status"] = "failed_strm_verify"
         return row
+
+    if cloud_season_path and _config_value(config, "mv3_base_url") and _config_value(config, "mv3_token"):
+        duplicate_preview = actions.cloud_duplicate_cleanup(
+            _config_value(config, "mv3_base_url"),
+            _config_value(config, "mv3_token"),
+            season_path=cloud_season_path,
+            strm_root=strm_root,
+            expected_episode_count=expected_count,
+            storage=cloud_media_storage,
+            timeout=timeout,
+            approve_delete=False,
+            expected_delete_count=-1,
+        )
+        if not _append_stage(
+            row,
+            _stage_report_path(output_dir, report_prefix, "02-cloud-duplicate-preview"),
+            "mv3_cloud_duplicate_video_cleanup_preview",
+            duplicate_preview,
+        ):
+            row["status"] = "failed_cloud_duplicate_preview"
+            return row
+        duplicate_count = _duplicate_delete_count(duplicate_preview)
+        row["cloud_duplicate_video_count"] = duplicate_count
+        if duplicate_count > 0:
+            if not approve_cloud_duplicate_delete:
+                row["status"] = "cloud_duplicate_cleanup_waiting_for_approval"
+                row["blockers"] = sorted(set(_string_list(row.get("blockers")) + ["cloud_duplicate_delete_approval_required"]))
+                return row
+            duplicate_execute = actions.cloud_duplicate_cleanup(
+                _config_value(config, "mv3_base_url"),
+                _config_value(config, "mv3_token"),
+                season_path=cloud_season_path,
+                strm_root=strm_root,
+                expected_episode_count=expected_count,
+                storage=cloud_media_storage,
+                timeout=timeout,
+                approve_delete=True,
+                expected_delete_count=duplicate_count,
+            )
+            if not _append_stage(
+                row,
+                _stage_report_path(output_dir, report_prefix, "03-cloud-duplicate-execute"),
+                "mv3_cloud_duplicate_video_cleanup_execute",
+                duplicate_execute,
+            ):
+                row["status"] = "failed_cloud_duplicate_execute"
+                return row
+            duplicate_verify = actions.cloud_duplicate_cleanup(
+                _config_value(config, "mv3_base_url"),
+                _config_value(config, "mv3_token"),
+                season_path=cloud_season_path,
+                strm_root=strm_root,
+                expected_episode_count=expected_count,
+                storage=cloud_media_storage,
+                timeout=timeout,
+                approve_delete=False,
+                expected_delete_count=-1,
+            )
+            if not _append_stage(
+                row,
+                _stage_report_path(output_dir, report_prefix, "04-cloud-duplicate-postcheck"),
+                "mv3_cloud_duplicate_video_cleanup_postcheck",
+                duplicate_verify,
+            ):
+                row["status"] = "failed_cloud_duplicate_postcheck"
+                return row
+            post_duplicate_count = _duplicate_delete_count(duplicate_verify)
+            row["cloud_duplicate_video_count_after_cleanup"] = post_duplicate_count
+            if post_duplicate_count > 0:
+                row["status"] = "failed_cloud_duplicate_postcheck"
+                row["blockers"] = sorted(set(_string_list(row.get("blockers")) + ["cloud_duplicate_videos_remain"]))
+                return row
+            if not _append_stage(
+                row,
+                _stage_report_path(output_dir, report_prefix, "05-strm-verify-after-cloud-duplicate-cleanup"),
+                "strm_verify_after_cloud_duplicate_cleanup",
+                actions.verify_strm(
+                    title=title,
+                    strm_roots=[strm_root],
+                    expected_episode_count=expected_count,
+                    expected_episode_min=expected_min,
+                    expected_episode_max=expected_max,
+                    required_target_prefix=required_prefix,
+                    forbidden_target_prefixes=forbidden_prefixes,
+                ),
+            ):
+                row["status"] = "failed_strm_verify_after_cloud_duplicate_cleanup"
+                return row
 
     if execute_scrape:
         if not _config_value(config, "mp_base_url") or not _config_value(config, "mp_token"):
@@ -567,6 +670,60 @@ def _run_finalize_item(
     ):
         row["status"] = "failed_emby_media_updated"
         return row
+
+    emby_stale_prefixes = _emby_stale_path_prefixes(hlink_root)
+    if approve_emby_stale_delete and emby_stale_prefixes and _config_value(config, "emby_library_db_path"):
+        for stale_prefix in emby_stale_prefixes:
+            stale_delete = actions.emby_delete_stale(
+                _config_value(config, "emby_base_url"),
+                _config_value(config, "emby_key"),
+                title=title,
+                stale_path_prefixes=[stale_prefix],
+                stale_host_prefix=stale_prefix,
+                delete_scope="season" if _cloud_path_looks_like_season(stale_prefix) else "root",
+                allow_season_duplicate_replacement=False,
+                strm_filesystem_roots=[],
+                required_target_prefix="",
+                forbidden_target_prefixes=[],
+                strm_path_prefixes=[_series_service_root(service_root)],
+                expected_episode_count=expected_count,
+                expected_episode_min=expected_min,
+                expected_episode_max=expected_max,
+                library_db_path=_config_value(config, "emby_library_db_path"),
+                timeout=timeout,
+            )
+            if not _append_stage(
+                row,
+                _stage_report_path(output_dir, report_prefix, f"04-emby-delete-stale-{_safe_stage_suffix(stale_prefix)}"),
+                "emby_delete_stale_paths",
+                stale_delete,
+            ):
+                if _string_list(stale_delete.get("blockers")) == ["stale_root_item_not_found"]:
+                    continue
+                row["status"] = "failed_emby_delete_stale"
+                return row
+        if not _append_stage(
+            row,
+            _stage_report_path(output_dir, report_prefix, "04-emby-media-updated-after-stale-delete"),
+            "emby_media_updated_verify_after_stale_delete",
+            actions.emby_media_updated(
+                _config_value(config, "emby_base_url"),
+                _config_value(config, "emby_key"),
+                title=title,
+                updated_paths=[service_root],
+                stale_path_prefixes=_emby_stale_path_prefixes(hlink_root, include_season=False),
+                strm_path_prefixes=[_series_service_root(service_root)],
+                update_type="Created",
+                expected_strm_records=0,
+                expected_episode_count=expected_count,
+                expected_episode_min=expected_min,
+                expected_episode_max=expected_max,
+                library_db_path=_config_value(config, "emby_library_db_path"),
+                timeout=timeout,
+            ),
+        ):
+            row["status"] = "failed_emby_media_updated_after_stale_delete"
+            return row
 
     if not _config_value(config, "qb_base_url"):
         return _finish_missing_credentials(row, "qb_credentials_required", "failed_cleanup_preview")
@@ -658,6 +815,43 @@ def _finish_missing_credentials(row: Dict[str, object], blocker: str, status: st
     row["blockers"] = sorted(set(_string_list(row.get("blockers")) + [blocker]))
     row.setdefault("stages", []).append({"stage": "configuration", "ok": False, "blockers": [blocker]})
     return row
+
+
+def _duplicate_delete_count(report: Dict[str, object]) -> int:
+    delete_plan = report.get("delete_plan") if isinstance(report.get("delete_plan"), dict) else {}
+    return int(delete_plan.get("duplicate_video_count") or 0)
+
+
+def _cloud_path_looks_like_season(path: str) -> bool:
+    return bool(re.search(r"(?i)/(?:Season\s*0?\d+|第\s*\d+\s*季)$", str(path or "").rstrip("/")))
+
+
+def _series_service_root(service_root: str) -> str:
+    path = str(service_root or "").rstrip("/")
+    if _cloud_path_looks_like_season(path):
+        return path.rsplit("/", 1)[0]
+    return path
+
+
+def _emby_stale_path_prefixes(hlink_root: str, *, include_season: bool = True) -> List[str]:
+    service_root = _service_hlink_root(hlink_root)
+    if not service_root:
+        return []
+    if _cloud_path_looks_like_season(service_root):
+        series_root = service_root.rsplit("/", 1)[0]
+        return [service_root, series_root] if include_season else [series_root]
+    return [f"{service_root}/Season 1", service_root] if include_season else [service_root]
+
+
+def _service_hlink_root(hlink_root: str) -> str:
+    path = str(hlink_root or "").rstrip("/")
+    path = re.sub(r"^/volume(\d+)/volume\1/", r"/volume\1/", path)
+    return path
+
+
+def _safe_stage_suffix(value: str) -> str:
+    slug = re.sub(r"[^0-9A-Za-z一-龥]+", "-", value).strip("-")
+    return slug[-80:] or "stale"
 
 
 def _stage_report_path(output_dir: Path, report_prefix: str, stage_name: str) -> Path:
