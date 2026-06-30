@@ -2792,6 +2792,68 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertNotIn("hlink 删除", item["post_cleanup_result"])
         self.assertIn("hlink-empty-root-cleanup", item["post_cleanup_reports"])
 
+    def test_batch_review_report_refreshes_partial_gate_result_after_merging_more_evidence(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [{"bucket": AUTO_CLEANUP, "title": "罚罪2", "tmdbid": 296146, "season": 1}],
+        }
+        empty_hlink = {
+            "mode": "hlink-empty-root-cleanup",
+            "title": "罚罪2 Season 01",
+            "ok": True,
+            "expected": {"tmdbid": 296146},
+            "hlink": {"path": "/example/hlink/TV/罚罪2 (2025) {tmdbid=296146}/Season 01", "exists": True},
+            "delete": {"ok": True},
+            "blockers": [],
+        }
+        strm_verify = {
+            "mode": "strm-verify",
+            "title": "罚罪2",
+            "ok": True,
+            "expected": {
+                "required_target_prefix": "/已整理/series/罚罪2 (2025) {tmdbid=296146}/Season 1",
+                "episode_count": 40,
+            },
+            "strm": {
+                "roots": [{"path": "/example/mv3/strm/series/罚罪2 (2025) {tmdbid=296146}/Season 1"}],
+                "combined": {"episode_count": 40, "missing_in_range": []},
+            },
+            "blockers": [],
+        }
+        nfo_audit = {
+            "mode": "strm-nfo-language-audit",
+            "ok": True,
+            "roots": [{"path": "/example/mv3/strm/series/罚罪2 (2025) {tmdbid=296146}/Season 1"}],
+            "summary": {"nfo_count": 41, "suspect_english_count": 0},
+            "blockers": [],
+        }
+        emby_verify = {
+            "mode": "emby-media-updated",
+            "title": "罚罪2",
+            "ok": True,
+            "verification": {
+                "strm_paths": [{"prefix": "/example/service/strm/series/罚罪2 (2025) {tmdbid=296146}/Season 1"}],
+                "strm": {"episode_count": 40, "missing_in_range": []},
+                "totals": {"stale_records": 0, "strm_records": 40},
+                "blockers": [],
+            },
+            "blockers": [],
+        }
+
+        report = build_batch_review_report(
+            batch_plan,
+            post_cleanup_reports=[empty_hlink, strm_verify, nfo_audit, emby_verify],
+        )
+        item = report["items"][0]
+
+        self.assertEqual(item["post_cleanup_status"], "post_cleanup_gates_partial")
+        self.assertIn("qB 清理", item["post_cleanup_result"])
+        self.assertIn("source 删除", item["post_cleanup_result"])
+        self.assertNotIn("hlink 删除", item["post_cleanup_result"])
+        self.assertNotIn("STRM 完整性", item["post_cleanup_result"])
+        self.assertNotIn("NFO 中文审计", item["post_cleanup_result"])
+        self.assertNotIn("Emby 验证", item["post_cleanup_result"])
+
     def test_batch_review_report_keeps_partial_post_cleanup_gates_unverified(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",

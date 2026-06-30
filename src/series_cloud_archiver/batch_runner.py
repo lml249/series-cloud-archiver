@@ -2651,7 +2651,7 @@ def _merge_post_cleanup_items(left: Dict[str, object], right: Dict[str, object])
     merged["status"] = _merged_post_cleanup_status(merged)
     if merged["status"] == "cleanup_executed_verified":
         merged["result_zh"] = _post_cleanup_verified_result(merged)
-    elif not merged.get("result_zh"):
+    elif str(merged.get("mode") or "") == "post-cleanup-gate-summary":
         merged["result_zh"] = _post_cleanup_partial_result(merged)
     return merged
 
