@@ -3706,12 +3706,12 @@ class MV3ProbeTest(unittest.TestCase):
         seen = {}
         scan_report = {
             "mode": "readonly-mv3-organize-scan-source",
-            "source_path": "/volume3/volume3/TV/Demo.SP1.mkv",
+            "source_path": "/volume-example/source-tv/Demo.SP1.mkv",
             "is_cloud_source": False,
             "items": [
                 {
                     "name": "Demo.S01E11.mkv",
-                    "path": "/volume3/volume3/TV/Demo.S01E11.mkv",
+                    "path": "/volume-example/source-tv/Demo.S01E11.mkv",
                     "episode": 11,
                     "source_file_id": "",
                     "is_cloud_source": False,
@@ -3755,7 +3755,7 @@ class MV3ProbeTest(unittest.TestCase):
 
         self.assertTrue(report["ok"])
         self.assertEqual(seen["url"], "http://mv3.example/api/v1/organize/transfer")
-        self.assertEqual(seen["body"]["files"][0]["source_path"], "/volume3/volume3/TV/Demo.S01E11.mkv")
+        self.assertEqual(seen["body"]["files"][0]["source_path"], "/volume-example/source-tv/Demo.S01E11.mkv")
         self.assertFalse(seen["body"]["files"][0]["is_cloud_source"])
         self.assertNotIn("missing_source_file_id", report["blockers"])
 
@@ -3765,7 +3765,7 @@ class MV3ProbeTest(unittest.TestCase):
             "mode": "confirmed-extra-source-media-map",
             "items": [
                 {
-                    "source_path": "/volume3/volume3/TV/Demo/Demo.SP1.mkv",
+                    "source_path": "/volume-example/source-tv/Demo/Demo.SP1.mkv",
                     "tmdbid": 123,
                     "season": 0,
                     "episode": 5,
@@ -3811,7 +3811,7 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(seen["url"], "http://mv3.example/api/v1/organize/transfer")
         self.assertEqual(seen["body"]["mode"], "copy")
-        self.assertEqual(seen["body"]["files"][0]["source_path"], "/volume3/volume3/TV/Demo/Demo.SP1.mkv")
+        self.assertEqual(seen["body"]["files"][0]["source_path"], "/volume-example/source-tv/Demo/Demo.SP1.mkv")
         self.assertFalse(seen["body"]["files"][0]["is_cloud_source"])
         self.assertEqual(report["episodes"], [5])
         self.assertEqual(report["confirmed_mapping"]["items"][0]["season"], 0)
@@ -3822,7 +3822,7 @@ class MV3ProbeTest(unittest.TestCase):
         mapping = {
             "items": [
                 {
-                    "source_path": "/volume3/volume3/TV/Demo/Demo.SP1.mkv",
+                    "source_path": "/volume-example/source-tv/Demo/Demo.SP1.mkv",
                     "tmdbid": 123,
                     "season": 0,
                     "episode": 5,
@@ -3854,7 +3854,7 @@ class MV3ProbeTest(unittest.TestCase):
         mapping = {
             "items": [
                 {
-                    "source_path": "/volume3/volume3/TV/Demo/Demo.SP1.mkv",
+                    "source_path": "/volume-example/source-tv/Demo/Demo.SP1.mkv",
                     "tmdbid": 999,
                     "season": 0,
                     "episode": 5,
@@ -3885,7 +3885,7 @@ class MV3ProbeTest(unittest.TestCase):
         mapping = {
             "items": [
                 {
-                    "source_path": "/volume3/volume3/TV/Demo/Demo.SP1.mkv",
+                    "source_path": "/volume-example/source-tv/Demo/Demo.SP1.mkv",
                     "tmdbid": 123,
                     "season": 0,
                     "episode": 5,
@@ -6268,9 +6268,9 @@ class MV3ProbeTest(unittest.TestCase):
             scan_report.write_text(
                 json.dumps(
                     {
-                        "source_path": "/volume3/TV/Demo.S01E11.mkv",
+                        "source_path": "/volume-example/source-tv/Demo.S01E11.mkv",
                         "is_cloud_source": False,
-                        "items": [{"name": "Demo.S01E11.mkv", "path": "/volume3/TV/Demo.S01E11.mkv"}],
+                        "items": [{"name": "Demo.S01E11.mkv", "path": "/volume-example/source-tv/Demo.S01E11.mkv"}],
                     }
                 ),
                 encoding="utf-8",
@@ -6313,7 +6313,7 @@ class MV3ProbeTest(unittest.TestCase):
                     {
                         "items": [
                             {
-                                "source_path": "/volume3/volume3/TV/Demo/Demo.SP1.mkv",
+                                "source_path": "/volume-example/source-tv/Demo/Demo.SP1.mkv",
                                 "tmdbid": 123,
                                 "season": 0,
                                 "episode": 5,
@@ -6371,7 +6371,7 @@ class MV3ProbeTest(unittest.TestCase):
                     {
                         "items": [
                             {
-                                "source_path": "/volume3/volume3/TV/Demo/Demo.SP1.mkv",
+                                "source_path": "/volume-example/source-tv/Demo/Demo.SP1.mkv",
                                 "tmdbid": 123,
                                 "season": 0,
                                 "episode": 5,

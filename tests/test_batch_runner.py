@@ -311,9 +311,9 @@ class BatchRunnerTest(unittest.TestCase):
                     "season": 1,
                     "expected_episode_count": 36,
                     "expected_episodes": list(range(1, 37)),
-                    "hlink_root": "/volume3/volume3/hlink/TV/折腰 (2025)/Season 1",
-                    "strm_root": "/volume4/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
-                    "service_strm_root": "/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                    "hlink_root": "/example/local-tv/折腰 (2025)/Season 1",
+                    "strm_root": "/example/host/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                    "service_strm_root": "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
                     "cloud_title_path": "/已整理/series/折腰 (2025) {tmdbid=296753}",
                     "required_target_prefix": "/已整理/series/折腰 (2025) {tmdbid=296753}",
                     "forbidden_target_prefixes": ["/未整理", "/series/series"],
@@ -499,8 +499,8 @@ class BatchRunnerTest(unittest.TestCase):
             "mode": "readonly-batch-state-plan",
             "settings": {
                 "cloud_root": "/已整理/series",
-                "host_strm_root": "/volume4/volume4/mv3/strm",
-                "emby_strm_root": "/volume4/mv3/strm",
+                "host_strm_root": "/example/host/strm",
+                "emby_strm_root": "/example/service/strm",
                 "forbidden_target_prefixes": ["/未整理"],
             },
             "items": [
@@ -510,9 +510,9 @@ class BatchRunnerTest(unittest.TestCase):
                     "tmdbid": 296753,
                     "season": 1,
                     "expected_episode_count": 36,
-                    "source_paths": ["/volume3/volume3/hlink/TV/折腰 (2025)/Season 1"],
+                    "source_paths": ["/example/local-tv/折腰 (2025)/Season 1"],
                     "cloud_media_path": "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1",
-                    "strm_root": "/volume4/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                    "strm_root": "/example/host/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
                 }
             ],
         }
@@ -523,7 +523,7 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(report["finalize_ready_items"], 1)
         item = report["items"][0]
         self.assertEqual(item["status"], "planned_finalize")
-        self.assertEqual(item["service_strm_root"], "/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
+        self.assertEqual(item["service_strm_root"], "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
         self.assertEqual(item["cloud_title_path"], "/已整理/series/折腰 (2025) {tmdbid=296753}")
         stages = [command["stage"] for command in item["commands"]]
         self.assertEqual(
@@ -538,7 +538,7 @@ class BatchRunnerTest(unittest.TestCase):
             ],
         )
         commands = "\n".join(command["command"] for command in item["commands"])
-        self.assertIn("--mp-path '/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1'", commands)
+        self.assertIn("--mp-path '/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1'", commands)
         self.assertIn("--cloud-media-path '/已整理/series/折腰 (2025) {tmdbid=296753}'", commands)
         self.assertIn("# approval required before execution", commands)
         self.assertNotIn("--approve-delete", commands)
@@ -552,8 +552,8 @@ class BatchRunnerTest(unittest.TestCase):
             "mode": "readonly-batch-state-plan",
             "settings": {
                 "cloud_root": "/已整理/series",
-                "host_strm_root": "/volume4/volume4/mv3/strm",
-                "emby_strm_root": "/volume4/mv3/strm",
+                "host_strm_root": "/example/host/strm",
+                "emby_strm_root": "/example/service/strm",
             },
             "items": [
                 {
@@ -562,9 +562,9 @@ class BatchRunnerTest(unittest.TestCase):
                     "tmdbid": 4613,
                     "season": 1,
                     "expected_episode_count": 10,
-                    "source_paths": ["/volume3/volume3/hlink/TV/兄弟连 (2001) {tmdbid=4613}/Season 01"],
+                    "source_paths": ["/example/local-tv/兄弟连 (2001) {tmdbid=4613}/Season 01"],
                     "cloud_media_path": "/已整理/series/兄弟连 {tmdbid=4613}/Season 01",
-                    "strm_root": "/volume4/volume4/mv3/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 1",
+                    "strm_root": "/example/host/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 1",
                 }
             ],
         }
@@ -580,8 +580,8 @@ class BatchRunnerTest(unittest.TestCase):
             "mode": "readonly-batch-state-plan",
             "settings": {
                 "cloud_root": "/已整理/series",
-                "host_strm_root": "/volume4/volume4/mv3/strm",
-                "emby_strm_root": "/volume4/mv3/strm",
+                "host_strm_root": "/example/host/strm",
+                "emby_strm_root": "/example/service/strm",
             },
             "items": [
                 {
@@ -590,9 +590,9 @@ class BatchRunnerTest(unittest.TestCase):
                     "tmdbid": 296753,
                     "season": 1,
                     "expected_episode_count": 36,
-                    "source_paths": ["/volume3/volume3/hlink/TV/折腰 (2025)/Season 1"],
+                    "source_paths": ["/example/local-tv/折腰 (2025)/Season 1"],
                     "cloud_media_path": "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1",
-                    "strm_root": "/volume4/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                    "strm_root": "/example/host/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
                 }
             ],
         }
@@ -616,8 +616,8 @@ class BatchRunnerTest(unittest.TestCase):
                         "mode": "readonly-batch-state-plan",
                         "settings": {
                             "cloud_root": "/已整理/series",
-                            "host_strm_root": "/volume4/volume4/mv3/strm",
-                            "emby_strm_root": "/volume4/mv3/strm",
+                            "host_strm_root": "/example/host/strm",
+                            "emby_strm_root": "/example/service/strm",
                         },
                         "items": [
                             {
@@ -626,9 +626,9 @@ class BatchRunnerTest(unittest.TestCase):
                                 "tmdbid": 296753,
                                 "season": 1,
                                 "expected_episode_count": 36,
-                                "source_paths": ["/volume3/volume3/hlink/TV/折腰 (2025)/Season 1"],
+                                "source_paths": ["/example/local-tv/折腰 (2025)/Season 1"],
                                 "cloud_media_path": "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1",
-                                "strm_root": "/volume4/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                                "strm_root": "/example/host/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
                             }
                         ],
                     }
@@ -722,8 +722,8 @@ class BatchRunnerTest(unittest.TestCase):
         stale_calls = [call for call in actions.calls if call[0] == "emby-delete-stale-paths"]
         self.assertEqual(stale_calls[0][1]["kwargs"]["delete_scope"], "season")
         self.assertEqual(stale_calls[1][1]["kwargs"]["delete_scope"], "root")
-        self.assertEqual(stale_calls[0][1]["kwargs"]["stale_path_prefixes"], ["/volume3/hlink/TV/折腰 (2025)/Season 1"])
-        self.assertEqual(stale_calls[1][1]["kwargs"]["stale_path_prefixes"], ["/volume3/hlink/TV/折腰 (2025)"])
+        self.assertEqual(stale_calls[0][1]["kwargs"]["stale_path_prefixes"], ["/example/local-tv/折腰 (2025)/Season 1"])
+        self.assertEqual(stale_calls[1][1]["kwargs"]["stale_path_prefixes"], ["/example/local-tv/折腰 (2025)"])
 
     def test_batch_finalize_run_gate_failure_stops_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -817,8 +817,8 @@ class BatchRunnerTest(unittest.TestCase):
             )
 
         scrape_call = next(call for call in actions.calls if call[0] == "mp-scrape-strm-result")
-        self.assertEqual(scrape_call[1]["kwargs"]["strm_path"], "/volume4/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
-        self.assertEqual(scrape_call[1]["kwargs"]["mp_path"], "/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
+        self.assertEqual(scrape_call[1]["kwargs"]["strm_path"], "/example/host/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
+        self.assertEqual(scrape_call[1]["kwargs"]["mp_path"], "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
         self.assertNotIn("/已整理", scrape_call[1]["kwargs"]["strm_path"])
         cloud_duplicate_call = next(call for call in actions.calls if call[0] == "mv3-cloud-duplicate-video-cleanup-result")
         self.assertEqual(
@@ -834,8 +834,8 @@ class BatchRunnerTest(unittest.TestCase):
         plan["items"][0]["tmdbid"] = 4613
         plan["items"][0]["expected_episode_count"] = 10
         plan["items"][0]["expected_episodes"] = list(range(1, 11))
-        plan["items"][0]["strm_root"] = "/volume4/volume4/mv3/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 1"
-        plan["items"][0]["service_strm_root"] = "/volume4/mv3/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 1"
+        plan["items"][0]["strm_root"] = "/example/host/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 1"
+        plan["items"][0]["service_strm_root"] = "/example/service/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 1"
         plan["items"][0]["cloud_title_path"] = "/已整理/series/兄弟连 {tmdbid=4613}"
         plan["items"][0]["required_target_prefix"] = "/已整理/series/兄弟连 {tmdbid=4613}/Season 01"
         with tempfile.TemporaryDirectory() as tmp:
@@ -909,13 +909,13 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 1,
                         "size_bytes": 100,
                         "expected_count": 2,
-                        "strm_paths_sample": ["/volume4/volume4/mv3/strm/series/演示剧 (2024) {tmdbid=123}/Season 1/演示剧 - S01E01.strm"],
-                        "source_paths": ["/volume3/volume3/hlink/TV/演示剧 (2024) {tmdbid=123}"],
+                        "strm_paths_sample": ["/example/host/strm/series/演示剧 (2024) {tmdbid=123}/Season 1/演示剧 - S01E01.strm"],
+                        "source_paths": ["/example/local-tv/演示剧 (2024) {tmdbid=123}"],
                     }
                 ],
             },
-            host_strm_root="/volume4/volume4/mv3/strm",
-            emby_strm_root="/volume4/mv3/strm",
+            host_strm_root="/example/host/strm",
+            emby_strm_root="/example/service/strm",
             env_file="/safe/.env",
         )
 
@@ -924,8 +924,8 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(item["bucket"], AUTO_CLEANUP)
         self.assertEqual(item["cloud_media_path"], "/已整理/series/演示剧 (2024) {tmdbid=123}/Season 01")
         commands = "\n".join(action["command"] for action in item["next_actions"])
-        self.assertIn("/volume4/volume4/mv3/strm/series/演示剧 (2024) {tmdbid=123}/Season 1", commands)
-        self.assertIn("/volume4/mv3/strm/series/演示剧 (2024) {tmdbid=123}/Season 1", commands)
+        self.assertIn("/example/host/strm/series/演示剧 (2024) {tmdbid=123}/Season 1", commands)
+        self.assertIn("/example/service/strm/series/演示剧 (2024) {tmdbid=123}/Season 1", commands)
         self.assertNotIn("--approve-delete", commands)
         self.assertNotIn("--approve-mp-cleanup", commands)
         self.assertNotIn("/已整理/series/series", commands)
@@ -942,7 +942,7 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 1,
                         "size_bytes": 1000,
                         "expected_count": 10,
-                        "source_paths": ["/volume3/volume3/hlink/TV/干净剧 (2025) {tmdbid=456}/Season 01"],
+                        "source_paths": ["/example/local-tv/干净剧 (2025) {tmdbid=456}/Season 01"],
                     }
                 ],
             },
@@ -955,7 +955,7 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 1,
                         "size_bytes": 1000,
                         "expected_count": 10,
-                        "source_paths": ["/volume3/volume3/hlink/TV/干净剧 (2025) {tmdbid=456}/Season 01"],
+                        "source_paths": ["/example/local-tv/干净剧 (2025) {tmdbid=456}/Season 01"],
                     }
                 ],
             },
@@ -979,7 +979,7 @@ class BatchRunnerTest(unittest.TestCase):
             },
             cloud_root="/已整理/series",
             mv3_strm_root="/strm",
-            host_strm_root="/volume4/volume4/mv3/strm",
+            host_strm_root="/example/host/strm",
             env_file="/safe/.env",
         )
 
@@ -989,7 +989,7 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(item["cloud_media_path"], "/已整理/series/干净剧 (2025) {tmdbid=456}/Season 01")
         commands = "\n".join(action["command"] for action in item["next_actions"])
         self.assertIn("--selection-index 2", commands)
-        self.assertIn("/volume4/volume4/mv3/strm/series/干净剧 (2025) {tmdbid=456}/Season 01", commands)
+        self.assertIn("/example/host/strm/series/干净剧 (2025) {tmdbid=456}/Season 01", commands)
         self.assertNotIn("--approve-receive", commands)
         self.assertNotIn("--approve-transfer", commands)
 
@@ -1004,7 +1004,7 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 4,
                         "size_bytes": 1000,
                         "expected_count": 9,
-                        "source_paths": ["/volume3/hlink/TV/怪奇物语/Season 04"],
+                        "source_paths": ["/example/local-tv/怪奇物语/Season 04"],
                     }
                 ],
             },
@@ -1016,7 +1016,7 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 4,
                         "size_bytes": 1000,
                         "expected_count": 9,
-                        "source_paths": ["/volume3/hlink/TV/怪奇物语/Season 04"],
+                        "source_paths": ["/example/local-tv/怪奇物语/Season 04"],
                     }
                 ],
             },
@@ -1054,7 +1054,7 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 1,
                         "size_bytes": 43_000_000_000,
                         "expected_count": 8,
-                        "source_paths": ["/volume3/hlink/TV/怪奇物语/Season 01"],
+                        "source_paths": ["/example/local-tv/怪奇物语/Season 01"],
                     }
                 ],
             },
@@ -1066,7 +1066,7 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 1,
                         "size_bytes": 43_000_000_000,
                         "expected_count": 8,
-                        "source_paths": ["/volume3/hlink/TV/怪奇物语/Season 01"],
+                        "source_paths": ["/example/local-tv/怪奇物语/Season 01"],
                     }
                 ],
             },
@@ -1109,8 +1109,8 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 1,
                         "size_bytes": 100,
                         "expected_count": 10,
-                        "strm_paths_sample": ["/volume4/volume4/mv3/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 01/兄弟连 - S01E01.strm"],
-                        "source_paths": ["/volume3/hlink/TV/兄弟连 (2001) {tmdbid=4613}/Season 01"],
+                        "strm_paths_sample": ["/example/host/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 01/兄弟连 - S01E01.strm"],
+                        "source_paths": ["/example/local-tv/兄弟连 (2001) {tmdbid=4613}/Season 01"],
                     }
                 ],
             },
@@ -1144,7 +1144,7 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 1,
                         "size_bytes": 100,
                         "expected_count": 12,
-                        "source_paths": ["/volume3/volume3/hlink/TV/大体积剧 (2023) {tmdbid=789}"],
+                        "source_paths": ["/example/local-tv/大体积剧 (2023) {tmdbid=789}"],
                     }
                 ]
             },
@@ -1156,7 +1156,7 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 1,
                         "size_bytes": 100,
                         "expected_count": 12,
-                        "source_paths": ["/volume3/volume3/hlink/TV/大体积剧 (2023) {tmdbid=789}"],
+                        "source_paths": ["/example/local-tv/大体积剧 (2023) {tmdbid=789}"],
                     }
                 ]
             },
@@ -1193,7 +1193,7 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 1,
                         "size_bytes": 1000,
                         "expected_count": 8,
-                        "source_paths": ["/volume3/hlink/TV/分段剧/Season 01"],
+                        "source_paths": ["/example/local-tv/分段剧/Season 01"],
                     },
                     {
                         "status": "cloud_strm_not_found",
@@ -1202,7 +1202,7 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 1,
                         "size_bytes": 2000,
                         "expected_count": 6,
-                        "source_paths": ["/volume3/hlink/TV/另一部/Season 01"],
+                        "source_paths": ["/example/local-tv/另一部/Season 01"],
                     },
                 ]
             },
@@ -1214,7 +1214,7 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 1,
                         "size_bytes": 1000,
                         "expected_count": 8,
-                        "source_paths": ["/volume3/hlink/TV/分段剧/Season 01"],
+                        "source_paths": ["/example/local-tv/分段剧/Season 01"],
                     },
                     {
                         "title": "另一部 (2024) {tmdbid=222}",
@@ -1222,7 +1222,7 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 1,
                         "size_bytes": 2000,
                         "expected_count": 6,
-                        "source_paths": ["/volume3/hlink/TV/另一部/Season 01"],
+                        "source_paths": ["/example/local-tv/另一部/Season 01"],
                     },
                 ]
             },
@@ -1334,7 +1334,7 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 4,
                         "size_bytes": 1000,
                         "expected_count": 9,
-                        "source_paths": ["/volume3/hlink/TV/怪奇物语/Season 04"],
+                        "source_paths": ["/example/local-tv/怪奇物语/Season 04"],
                     }
                 ]
             },
@@ -1346,7 +1346,7 @@ class BatchRunnerTest(unittest.TestCase):
                         "season": 4,
                         "size_bytes": 1000,
                         "expected_count": 9,
-                        "source_paths": ["/volume3/hlink/TV/怪奇物语/Season 04"],
+                        "source_paths": ["/example/local-tv/怪奇物语/Season 04"],
                     }
                 ]
             },
@@ -1419,8 +1419,8 @@ class BatchRunnerTest(unittest.TestCase):
                     "size_bytes": 48_841_375_069,
                     "expected_episode_count": 10,
                     "expected_episodes": list(range(1, 11)),
-                    "source_paths": ["/volume3/hlink/TV/兄弟连/Season 01"],
-                    "strm_root": "/volume4/mv3/strm/series/兄弟连/Season 1",
+                    "source_paths": ["/example/local-tv/兄弟连/Season 01"],
+                    "strm_root": "/example/service/strm/series/兄弟连/Season 1",
                     "cloud_media_path": "/已整理/series/兄弟连/Season 1",
                 },
                 {

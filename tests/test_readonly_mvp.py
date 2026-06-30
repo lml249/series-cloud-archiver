@@ -1431,7 +1431,7 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
                                 "Id": "153132",
                                 "Name": "9號秘事",
                                 "Type": "Series",
-                                "Path": "/volume4/mv3/strm/series/9号秘事 (2014) {tmdbid=61746}",
+                                "Path": "/example/service/strm/series/9号秘事 (2014) {tmdbid=61746}",
                             }
                         ],
                         "TotalRecordCount": 1,
@@ -1447,7 +1447,7 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
         with patch("urllib.request.urlopen", fake_urlopen):
             item = EmbyClient("http://emby.example", "secret-key", timeout=7).item("153132")
 
-        self.assertEqual(item["Path"], "/volume4/mv3/strm/series/9号秘事 (2014) {tmdbid=61746}")
+        self.assertEqual(item["Path"], "/example/service/strm/series/9号秘事 (2014) {tmdbid=61746}")
         self.assertIn("/emby/Items?", seen["url"])
         self.assertIn("Ids=153132", seen["url"])
         self.assertIn("Fields=Path%2CProviderIds%2CRecursiveItemCount", seen["url"])

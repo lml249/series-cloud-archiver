@@ -140,11 +140,11 @@ PYTHONPATH=src python3 -m series_cloud_archiver plan-cleanup "Some Series" \
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver identity-resolve \
-  --scan-report reports/volume3-tv-manual-completion-full.json \
+  --scan-report reports/local-tv-manual-completion-full.json \
   --output data/identity-overrides.json
 
 PYTHONPATH=src python3 -m series_cloud_archiver cloud-check \
-  --scan-report reports/volume3-tv-manual-completion-full.json \
+  --scan-report reports/local-tv-manual-completion-full.json \
   --strm-root /media/cloud-strm \
   --identity-file data/identity-overrides.json \
   --format markdown
@@ -156,9 +156,9 @@ PYTHONPATH=src python3 -m series_cloud_archiver cloud-check \
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver identity-resolve \
-  --env-file /volume1/docker/series-cloud-archiver/.env \
-  --cloud-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/cloud-check-current.json \
-  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/identity-overrides-current.json
+  --env-file /example/app/series-cloud-archiver/.env \
+  --cloud-report /example/app/series-cloud-archiver/outputs/current-20260629/cloud-check-current.json \
+  --output /example/app/series-cloud-archiver/outputs/current-20260629/identity-overrides-current.json
 ```
 
 ## MV3 转存待办 dry-run
@@ -167,7 +167,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver identity-resolve \
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver plan-mv3-transfer \
-  --cloud-report reports/volume3-tv-cloud-strm-check-with-identity-full.json \
+  --cloud-report reports/local-tv-cloud-strm-check-with-identity-full.json \
   --format markdown \
   --output reports/mv3-transfer-plan.md
 ```
@@ -180,7 +180,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver plan-mv3-transfer \
 PYTHONPATH=src python3 -m series_cloud_archiver mv3-restored-transfer-queue \
   --cloud-report reports/cloud-check-current.json \
   --transfer-plan reports/mv3-transfer-plan.json \
-  --historical-scan reports/volume3-tv-bulk-precleanup-scan.json \
+  --historical-scan reports/local-tv-bulk-precleanup-scan.json \
   --mv3-report reports/mv3-check.json \
   --format markdown \
   --output reports/mv3-restored-transfer-queue.md
@@ -196,38 +196,38 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-restored-transfer-queue \
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
-  --env-file /volume1/docker/series-cloud-archiver/.env \
-  --cloud-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/cloud-check-rescan-identity-062228a-20260630.json \
-  --transfer-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/mv3-transfer-plan-rescan-identity-062228a-20260630.json \
-  --share-search-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/share-search-identity-062228a-rows07-17-20260630.json \
-  --output-dir /volume1/docker/series-cloud-archiver/outputs/current-20260629/pipeline-runs \
+  --env-file /example/app/series-cloud-archiver/.env \
+  --cloud-report /example/app/series-cloud-archiver/outputs/current-20260629/cloud-check-rescan-identity-062228a-20260630.json \
+  --transfer-plan /example/app/series-cloud-archiver/outputs/current-20260629/mv3-transfer-plan-rescan-identity-062228a-20260630.json \
+  --share-search-plan /example/app/series-cloud-archiver/outputs/current-20260629/share-search-identity-062228a-rows07-17-20260630.json \
+  --output-dir /example/app/series-cloud-archiver/outputs/current-20260629/pipeline-runs \
   --run-id dry-run-YYYYMMDD \
   --cloud-root /已整理/series \
   --mv3-strm-root /strm \
-  --host-strm-root /volume4/volume4/mv3/strm \
-  --emby-strm-root /volume4/mv3/strm \
+  --host-strm-root /example/host/strm \
+  --emby-strm-root /example/service/strm \
   --forbidden-target-prefix /series/series \
   --forbidden-target-prefix /已整理/series/series \
   --format json \
-  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/pipeline-runs/dry-run-YYYYMMDD.json
+  --output /example/app/series-cloud-archiver/outputs/current-20260629/pipeline-runs/dry-run-YYYYMMDD.json
 ```
 
 如果没有现成报告，也可以让它从媒体库根开始生成前置报告：
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
-  --env-file /volume1/docker/series-cloud-archiver/.env \
-  --media-root /volume3/hlink/TV \
-  --strm-root /volume4/volume4/mv3/strm \
-  --identity-file /volume1/docker/series-cloud-archiver/outputs/current-20260629/identity-overrides-current.json \
-  --output-dir /volume1/docker/series-cloud-archiver/outputs/current-20260629/pipeline-runs \
+  --env-file /example/app/series-cloud-archiver/.env \
+  --media-root /example/local-tv \
+  --strm-root /example/host/strm \
+  --identity-file /example/app/series-cloud-archiver/outputs/current-20260629/identity-overrides-current.json \
+  --output-dir /example/app/series-cloud-archiver/outputs/current-20260629/pipeline-runs \
   --run-id scan-dry-run-YYYYMMDD \
   --cloud-root /已整理/series \
   --mv3-strm-root /strm \
-  --host-strm-root /volume4/volume4/mv3/strm \
-  --emby-strm-root /volume4/mv3/strm \
+  --host-strm-root /example/host/strm \
+  --emby-strm-root /example/service/strm \
   --format json \
-  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/pipeline-runs/scan-dry-run-YYYYMMDD.json
+  --output /example/app/series-cloud-archiver/outputs/current-20260629/pipeline-runs/scan-dry-run-YYYYMMDD.json
 ```
 
 `batch-pipeline` 的审批闸门是分层的：
@@ -260,8 +260,8 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver extra-source-media-plan \
-  --finalize-run-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/pipeline-runs/RUN_ID/13-finalize-run.json \
-  --env-file /volume1/docker/series-cloud-archiver/.env \
+  --finalize-run-report /example/app/series-cloud-archiver/outputs/current-20260629/pipeline-runs/RUN_ID/13-finalize-run.json \
+  --env-file /example/app/series-cloud-archiver/.env \
   --target-dir /已整理 \
   --strm-dir /strm \
   --format json \
@@ -285,20 +285,20 @@ DSM 上用现有报告生成只读计划：
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver batch-plan \
-  --env-file /volume1/docker/series-cloud-archiver/.env \
-  --scan-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/volume3-hlink-tv-scan-current-20260629.json \
-  --cloud-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/hlink-tv-cloud-check-rescan-noqb-identity-20260627.json \
-  --transfer-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/mv3-transfer-plan-season-split-safe-20260629.json \
-  --share-search-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/share-search-season-safe-rows21-38-20260629.json \
-  --share-search-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/share-search-season-safe-rows39-59-20260629.json \
+  --env-file /example/app/series-cloud-archiver/.env \
+  --scan-report /example/app/series-cloud-archiver/outputs/current-20260629/local-tv-scan-current-20260629.json \
+  --cloud-report /example/app/series-cloud-archiver/outputs/current-20260629/hlink-tv-cloud-check-rescan-noqb-identity-20260627.json \
+  --transfer-plan /example/app/series-cloud-archiver/outputs/current-20260629/mv3-transfer-plan-season-split-safe-20260629.json \
+  --share-search-plan /example/app/series-cloud-archiver/outputs/current-20260629/share-search-season-safe-rows21-38-20260629.json \
+  --share-search-plan /example/app/series-cloud-archiver/outputs/current-20260629/share-search-season-safe-rows39-59-20260629.json \
   --cloud-root /已整理/series \
   --mv3-strm-root /strm \
-  --host-strm-root /volume4/volume4/mv3/strm \
-  --emby-strm-root /volume4/mv3/strm \
+  --host-strm-root /example/host/strm \
+  --emby-strm-root /example/service/strm \
   --forbidden-target-prefix /series/series \
   --forbidden-target-prefix /已整理/series/series \
   --format json \
-  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-plan-YYYYMMDD.json
+  --output /example/app/series-cloud-archiver/outputs/current-20260629/batch-plan-YYYYMMDD.json
 ```
 
 `--share-search-plan` 可以重复传多份，适合把分段搜索出来的 `rows21-38`、`rows39-59` 等报告合并成同一份批量计划。输出里的 `next_actions` 是阶段模板，不会自动带 `--approve-receive`、`--approve-transfer`、`--approve-delete`、`--approve-mp-cleanup` 这类审批参数。真正批量执行阶段必须先从这份只读计划进入，并继续保留每一关的验证报告。
@@ -309,11 +309,11 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-plan \
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver batch-review-report \
-  --batch-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-plan-YYYYMMDD.json \
-  --share-preview-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-share-preview-executed-YYYYMMDD.json \
-  --finalize-run-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-finalize-run-YYYYMMDD.json \
+  --batch-plan /example/app/series-cloud-archiver/outputs/current-20260629/batch-plan-YYYYMMDD.json \
+  --share-preview-report /example/app/series-cloud-archiver/outputs/current-20260629/batch-share-preview-executed-YYYYMMDD.json \
+  --finalize-run-report /example/app/series-cloud-archiver/outputs/current-20260629/batch-finalize-run-YYYYMMDD.json \
   --format csv \
-  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-review-YYYYMMDD.csv
+  --output /example/app/series-cloud-archiver/outputs/current-20260629/batch-review-YYYYMMDD.csv
 ```
 
 常见 `decision` 含义：
@@ -330,11 +330,11 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-review-report \
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver batch-share-preview \
-  --env-file /volume1/docker/series-cloud-archiver/.env \
-  --batch-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-plan-YYYYMMDD.json \
+  --env-file /example/app/series-cloud-archiver/.env \
+  --batch-plan /example/app/series-cloud-archiver/outputs/current-20260629/batch-plan-YYYYMMDD.json \
   --limit 10 \
   --format json \
-  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-share-preview-plan-YYYYMMDD.json
+  --output /example/app/series-cloud-archiver/outputs/current-20260629/batch-share-preview-plan-YYYYMMDD.json
 ```
 
 默认模式不会读取 MV3 API，也不会解析分享；它只输出将要预览的 `mv3-share-preview` 命令。默认只选择“最佳候选分数够高，且唯一阻断是 `episode_coverage_unclear`”的条目；错季、标题不匹配、体积明显不对、疑似中文副标题串剧的候选会继续跳过并写入原因。
@@ -343,13 +343,13 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-share-preview \
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver batch-share-preview \
-  --env-file /volume1/docker/series-cloud-archiver/.env \
-  --batch-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-plan-YYYYMMDD.json \
+  --env-file /example/app/series-cloud-archiver/.env \
+  --batch-plan /example/app/series-cloud-archiver/outputs/current-20260629/batch-plan-YYYYMMDD.json \
   --execute-preview \
-  --preview-output-dir /volume1/docker/series-cloud-archiver/outputs/current-20260629/share-preview-batch \
+  --preview-output-dir /example/app/series-cloud-archiver/outputs/current-20260629/share-preview-batch \
   --limit 10 \
   --format json \
-  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-share-preview-executed-YYYYMMDD.json
+  --output /example/app/series-cloud-archiver/outputs/current-20260629/batch-share-preview-executed-YYYYMMDD.json
 ```
 
 `batch-share-preview --execute-preview` 仍然只调用 MV3 的搜索、分享解析和 browse 预览接口，不会调用 `/api/v1/share-transfer/receive`，不会转存到 115，不会整理、生成 STRM、刮削、刷新 Emby，也不会操作 qB、hlink、source 或本地文件。只有预览报告证明集数完整的条目，才允许进入后续“接收到 `/未整理` -> MV3 整理到 `/已整理` -> 生成 STRM -> STRM 侧刮削/验证”的阶段。
@@ -360,31 +360,31 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-share-preview \
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver batch-share-receive-plan \
-  --env-file /volume1/docker/series-cloud-archiver/.env \
-  --batch-share-preview-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-share-preview-executed-YYYYMMDD.json \
+  --env-file /example/app/series-cloud-archiver/.env \
+  --batch-share-preview-report /example/app/series-cloud-archiver/outputs/current-20260629/batch-share-preview-executed-YYYYMMDD.json \
   --target-path /未整理 \
   --format json \
-  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-share-receive-plan-YYYYMMDD.json
+  --output /example/app/series-cloud-archiver/outputs/current-20260629/batch-share-receive-plan-YYYYMMDD.json
 ```
 
 然后交给批量 runner。默认不接收、不整理，只报告需要审批的项目：
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver batch-transfer-run \
-  --env-file /volume1/docker/series-cloud-archiver/.env \
-  --receive-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-share-receive-plan-YYYYMMDD.json \
-  --output-dir /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-stages \
+  --env-file /example/app/series-cloud-archiver/.env \
+  --receive-plan /example/app/series-cloud-archiver/outputs/current-20260629/batch-share-receive-plan-YYYYMMDD.json \
+  --output-dir /example/app/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-stages \
   --format json \
-  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-YYYYMMDD.json
+  --output /example/app/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-YYYYMMDD.json
 ```
 
 确认计划后，才分阶段显式审批：
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver batch-transfer-run \
-  --env-file /volume1/docker/series-cloud-archiver/.env \
-  --receive-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-share-receive-plan-YYYYMMDD.json \
-  --output-dir /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-stages \
+  --env-file /example/app/series-cloud-archiver/.env \
+  --receive-plan /example/app/series-cloud-archiver/outputs/current-20260629/batch-share-receive-plan-YYYYMMDD.json \
+  --output-dir /example/app/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-stages \
   --title 折腰 \
   --approve-receive \
   --approve-transfer \
@@ -392,7 +392,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-transfer-run \
   --organize-target-dir /已整理 \
   --strm-dir /strm \
   --format json \
-  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-approved-YYYYMMDD.json
+  --output /example/app/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-approved-YYYYMMDD.json
 ```
 
 `batch-transfer-run` 只处理 `batch-share-receive-plan` 中 `approval_required` 的条目。`--approve-receive` 只允许把已验证完整的分享接收到 `/未整理`；`--approve-transfer` 才允许把已收到的云盘目录交给 MV3 整理到 `/已整理` 并生成 STRM。MV3 整理请求返回后，runner 还会再做只读后置核验：确认 `/已整理/series/.../Season N` 里只有期望集数、没有重复集、没有 NFO/JPG/海报等刮削旁挂，并确认 `/未整理` staging 源不再残留视频。如果 MV3 自动把目录命名成 `剧名 (年份) {tmdbid=...}`，runner 会优先按 TMDB ID 在 `/已整理/series` 下解析真实目录。任一门禁失败都会停在 `failed_post_organize_verify`，不能进入后续刮削或清理。
@@ -800,7 +800,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-share-receive-one \
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-scan-source \
   --env-file .env \
-  --source-path "/volume3/volume3/TV/Demo/Demo.SP1.mkv" \
+  --source-path "/volume-example/source-tv/Demo/Demo.SP1.mkv" \
   --local-source \
   --file \
   --format json \
@@ -819,7 +819,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-scan-source \
       "season": 0,
       "episode": 5,
       "episode_title": "We Stand Alone Together",
-      "source_path": "/volume3/volume3/TV/Demo/Demo.SP1.mkv"
+      "source_path": "/volume-example/source-tv/Demo/Demo.SP1.mkv"
     }
   ]
 }
@@ -930,8 +930,8 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-brows
 PYTHONPATH=src python3 -m series_cloud_archiver batch-finalize-plan \
   --env-file .env \
   --batch-plan reports/batch-plan.json \
-  --host-strm-root "/volume4/volume4/mv3/strm" \
-  --service-strm-root "/volume4/mv3/strm" \
+  --host-strm-root "/example/host/strm" \
+  --service-strm-root "/example/service/strm" \
   --forbidden-target-prefix "/未整理" \
   --format json \
   --output reports/batch-finalize-plan.json

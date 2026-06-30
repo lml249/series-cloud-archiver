@@ -19,16 +19,16 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
                     "season": 1,
                     "blockers": ["source_root_check_failed"],
                     "cleanup_unlinked_video_sample": [
-                        "/volume3/volume3/TV/兄弟连/Band.of.Brothers.SP1.We.Stand.Alone.mkv",
-                        "/volume3/volume3/TV/兄弟连/Band.of.Brothers.SP2.The.Making.mkv",
+                        "/volume-example/source-tv/兄弟连/Band.of.Brothers.SP1.We.Stand.Alone.mkv",
+                        "/volume-example/source-tv/兄弟连/Band.of.Brothers.SP2.The.Making.mkv",
                     ],
                     "cleanup_blocked_source_roots": [
                         {
-                            "path": "/volume3/volume3/TV/兄弟连",
+                            "path": "/volume-example/source-tv/兄弟连",
                             "video_count": 12,
                             "linked_hlink_video_count": 10,
                             "unlinked_video_sample": [
-                                "/volume3/volume3/TV/兄弟连/Band.of.Brothers.SP1.We.Stand.Alone.mkv",
+                                "/volume-example/source-tv/兄弟连/Band.of.Brothers.SP1.We.Stand.Alone.mkv",
                             ],
                         }
                     ],

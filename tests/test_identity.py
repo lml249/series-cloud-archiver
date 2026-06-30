@@ -71,7 +71,7 @@ class IdentityResolveTest(unittest.TestCase):
             "candidates": [
                 {
                     "title": "法证先锋 (2006) {tmdbid=286997} Season 02",
-                    "path": "/volume3/hlink/TV/法证先锋 (2006) {tmdbid=286997}/Season 02",
+                    "path": "/example/local-tv/法证先锋 (2006) {tmdbid=286997}/Season 02",
                     "status": "candidate_for_cloud_check",
                     "video_count": 30,
                     "seasons": [2],
@@ -105,7 +105,7 @@ class IdentityResolveTest(unittest.TestCase):
                     "season": 1,
                     "expected_count": 3,
                     "expected_episodes": [1, 2, 3],
-                    "source_paths": ["/volume3/hlink/TV/Foundation/Season 1"],
+                    "source_paths": ["/example/local-tv/Foundation/Season 1"],
                 },
                 {
                     "status": "cloud_strm_not_found",
@@ -128,7 +128,7 @@ class IdentityResolveTest(unittest.TestCase):
 
         self.assertEqual(payload["summary"], {"input_candidates": 1, "attempted": 1, "resolved": 1})
         record = payload["identity_overrides"][0]
-        self.assertEqual(record["match_path"], "/volume3/hlink/TV/Foundation/Season 1")
+        self.assertEqual(record["match_path"], "/example/local-tv/Foundation/Season 1")
         self.assertEqual(record["tmdbid"], 93740)
         self.assertEqual(record["season"], 1)
         self.assertEqual(FakeMoviePilotClient.calls, ["Foundation.S01.2021"])

@@ -25,7 +25,7 @@ class BatchPipelineTest(unittest.TestCase):
                     "season": 1,
                     "size_bytes": 1_000_000_000,
                     "expected_count": 10,
-                    "source_paths": ["/volume3/hlink/TV/干净剧 (2025) {tmdbid=456}/Season 01"],
+                    "source_paths": ["/example/local-tv/干净剧 (2025) {tmdbid=456}/Season 01"],
                 }
             ],
         }
@@ -63,9 +63,9 @@ class BatchPipelineTest(unittest.TestCase):
                     "size_bytes": 1_000_000_000,
                     "expected_count": 10,
                     "expected_episodes": list(range(1, 11)),
-                    "source_paths": ["/volume3/hlink/TV/兄弟连 (2001) {tmdbid=4613}/Season 01"],
+                    "source_paths": ["/example/local-tv/兄弟连 (2001) {tmdbid=4613}/Season 01"],
                     "strm_paths_sample": [
-                        "/volume4/volume4/mv3/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 1/兄弟连 S01E01.strm"
+                        "/example/host/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 1/兄弟连 S01E01.strm"
                     ],
                 }
             ],
@@ -80,8 +80,8 @@ class BatchPipelineTest(unittest.TestCase):
                 env_file="/safe/.env",
                 cloud_report=self._cloud_report(),
                 share_search_plans=[self._share_search_plan()],
-                host_strm_root="/volume4/volume4/mv3/strm",
-                emby_strm_root="/volume4/mv3/strm",
+                host_strm_root="/example/host/strm",
+                emby_strm_root="/example/service/strm",
             )
             run_dir = Path(report["run_dir"])
 
@@ -173,12 +173,12 @@ class BatchPipelineTest(unittest.TestCase):
                 "filesystem": {
                     "source_roots": [
                         {
-                            "path": "/volume3/volume3/TV/兄弟连",
+                            "path": "/volume-example/source-tv/兄弟连",
                             "blocked": True,
                             "video_count": 12,
                             "linked_hlink_video_count": 10,
                             "unlinked_video_sample": [
-                                "/volume3/volume3/TV/兄弟连/Band.of.Brothers.SP1.We.Stand.Alone.mkv",
+                                "/volume-example/source-tv/兄弟连/Band.of.Brothers.SP1.We.Stand.Alone.mkv",
                             ],
                         }
                     ]
@@ -213,8 +213,8 @@ class BatchPipelineTest(unittest.TestCase):
                 ),
                 env_file="/safe/.env",
                 cloud_report=self._cloud_complete_report(),
-                host_strm_root="/volume4/volume4/mv3/strm",
-                emby_strm_root="/volume4/mv3/strm",
+                host_strm_root="/example/host/strm",
+                emby_strm_root="/example/service/strm",
                 run_finalize_stage=True,
                 execute_scrape=True,
                 actions=BatchPipelineActions(finalize_actions=actions),
@@ -253,7 +253,7 @@ class BatchPipelineTest(unittest.TestCase):
                     "--run-id",
                     "cli",
                     "--host-strm-root",
-                    "/volume4/volume4/mv3/strm",
+                    "/example/host/strm",
                     "--format",
                     "json",
                     "--output",

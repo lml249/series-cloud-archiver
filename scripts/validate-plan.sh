@@ -6,20 +6,18 @@ cd "$ROOT"
 
 echo "== Public safety scans =="
 
-if grep -RInE '[0-9]{1,3}(\.[0-9]{1,3}){3}' . \
-  --exclude-dir=.git \
-  --exclude-dir=.agents; then
+if git grep -InE '[0-9]{1,3}(\.[0-9]{1,3}){3}' -- . ':!.agents'; then
   echo "IP address-like value found. Use .local placeholders instead." >&2
   exit 1
 fi
 
-if grep -RInEi '["'\'']?(token|cookie|password|passwd|api[_-]?key|secret|pickcode|authorization)["'\'']?\s*[:=]' . \
-  --exclude-dir=.git \
-  --exclude-dir=.agents \
-  --exclude-dir=src \
-  --exclude-dir=tests \
-  --exclude=.env.example \
-  --exclude=public-safety.yml; then
+if git grep -InEi '["'\'']?(token|cookie|password|passwd|api[_-]?key|secret|pickcode|authorization)["'\'']?\s*[:=]' -- . \
+  ':!.agents' \
+  ':!src' \
+  ':!tests' \
+  ':!.env.example' \
+  ':!.github/workflows/public-safety.yml' \
+  ':!scripts/validate-plan.sh'; then
   echo "Potential secret assignment found. Keep real secrets out of repo." >&2
   exit 1
 fi
@@ -61,18 +59,16 @@ if findings:
     raise SystemExit("Suspicious source literal found.")
 PY
 
-if grep -RInE '/volume[0-9]+/|/Users/[A-Za-z0-9._-]+|/mnt/[A-Za-z0-9._-]+|/downloads/[A-Za-z0-9._-]+' . \
-  --exclude-dir=.git \
-  --exclude-dir=.agents; then
+if git grep -InE '/volume[0-9]+/|/Users/[A-Za-z0-9._-]+|/mnt/[A-Za-z0-9._-]+|/downloads/[A-Za-z0-9._-]+' -- . \
+  ':!.agents' \
+  ':!scripts/validate-plan.sh'; then
   echo "Real-looking local path found. Use placeholders instead." >&2
   exit 1
 fi
 
-if grep -RInE '\[NEEDS CLARIFICATION\]|ACTION REQUIRED|REMOVE IF UNUSED|TODO\(' \
+if git grep -InE '\[NEEDS CLARIFICATION\]|ACTION REQUIRED|REMOVE IF UNUSED|TODO\(' -- \
   README.md AGENTS.md docs specs .specify/memory \
-  --exclude-dir=.git \
-  --exclude-dir=.agents \
-  --exclude='requirements.md'; then
+  ':!specs/**/requirements.md'; then
   echo "Template marker or unresolved clarification found." >&2
   exit 1
 fi
