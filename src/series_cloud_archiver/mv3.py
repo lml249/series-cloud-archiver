@@ -10,6 +10,7 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Set, Tuple
 
+from .cleanup_verify import rewrite_strm_targets
 from .path_safety import looks_like_strm_side_path
 
 
@@ -1880,6 +1881,281 @@ def render_mv3_wrong_root_repair_report(report: Dict[str, object], output_format
                 ok=str(bool(item.get("ok"))),
             )
         )
+    return "\n".join(lines)
+
+
+def repair_mv3_wrong_root_direct_season_pair(
+    base_url: str,
+    token: str,
+    wrong_root: str,
+    correct_root: str,
+    strm_root: str,
+    season: int,
+    storage: str = "115-default",
+    title_filter: str = "",
+    expected_episode_count: int = 0,
+    expected_episode_min: int = 0,
+    expected_episode_max: int = 0,
+    expected_rewrite_count: int = 0,
+    approve_repair: bool = False,
+    limit: int = 1000,
+    timeout: int = 120,
+) -> Dict[str, object]:
+    normalized_wrong_root = _normalize_cloud_path(wrong_root)
+    normalized_correct_root = _normalize_cloud_path(correct_root)
+    normalized_strm_root = str(strm_root or "").rstrip("/")
+    normalized_season = int(season or 0)
+    season_name = f"S{normalized_season:02d}" if normalized_season > 0 else ""
+    wrong_season_path = _cloud_join_path(normalized_wrong_root, season_name) if season_name else ""
+    correct_title = _derive_direct_wrong_root_title(
+        normalized_wrong_root,
+        normalized_correct_root,
+        normalized_strm_root,
+        title_filter,
+    )
+    correct_title_path = _correct_title_path_for_wrong_root_title(normalized_correct_root, correct_title)
+    correct_season_path = _cloud_join_path(correct_title_path, f"Season {normalized_season:02d}") if normalized_season > 0 else ""
+    blockers: List[str] = []
+    warnings: List[str] = []
+    operations: List[Dict[str, object]] = []
+
+    if not normalized_wrong_root:
+        blockers.append("wrong_root_required")
+    if not normalized_correct_root:
+        blockers.append("correct_root_required")
+    if normalized_wrong_root and normalized_correct_root and normalized_wrong_root == normalized_correct_root:
+        blockers.append("wrong_root_must_differ_from_correct_root")
+    if not normalized_strm_root:
+        blockers.append("strm_root_required")
+    if normalized_season <= 0:
+        blockers.append("season_required")
+    if not correct_title:
+        blockers.append("direct_season_wrong_root_title_required")
+
+    client = MV3Client(base_url, token, timeout=timeout)
+    wrong_season: Dict[str, object] = {}
+    correct_title_summary: Dict[str, object] = {}
+    correct_season: Dict[str, object] = {}
+    strm_before: Dict[str, object] = {}
+    rewrite_preview: Dict[str, object] = {"skipped": True}
+    ensure_report: Dict[str, object] = {"skipped": True}
+    move_report: Dict[str, object] = {"skipped": True}
+    rewrite_report: Dict[str, object] = {"skipped": True}
+
+    if wrong_season_path:
+        wrong_season = _cloud_folder_summary_by_path(client, wrong_season_path, storage, limit)
+    if correct_title_path:
+        correct_title_summary = _cloud_folder_summary_by_path(client, correct_title_path, storage, limit)
+    if correct_season_path:
+        correct_season = _cloud_folder_summary_by_path(client, correct_season_path, storage, limit)
+    if normalized_strm_root and normalized_season > 0 and correct_title:
+        strm_before = _strm_title_summary(
+            normalized_strm_root,
+            correct_title,
+            normalized_wrong_root,
+            normalized_correct_root,
+            season_number=normalized_season,
+        )
+
+    wrong_media_count = int(wrong_season.get("media_count") or 0)
+    wrong_file_ids = [
+        str(item.get("file_id") or "")
+        for item in wrong_season.get("media_items", [])
+        if isinstance(item, dict) and str(item.get("file_id") or "")
+    ]
+    wrong_episodes = list(wrong_season.get("episodes", [])) if isinstance(wrong_season.get("episodes"), list) else []
+    correct_media_count = int(correct_season.get("media_count") or 0)
+    correct_episodes = list(correct_season.get("episodes", [])) if isinstance(correct_season.get("episodes"), list) else []
+    strm_total = int(strm_before.get("total_strm") or 0)
+    strm_wrong_targets = int(strm_before.get("wrong_target_count") or 0)
+    strm_correct_targets = int(strm_before.get("correct_target_count") or 0)
+    expected_count = expected_episode_count or max(wrong_media_count, strm_total)
+    expected_rewrites = expected_rewrite_count or strm_wrong_targets
+
+    if wrong_season_path and not wrong_season.get("exists"):
+        blockers.append("wrong_season_not_found")
+    if wrong_media_count <= 0:
+        blockers.append("wrong_season_has_no_media")
+    if wrong_media_count > 0 and len(wrong_file_ids) != wrong_media_count:
+        blockers.append("wrong_media_file_ids_incomplete")
+    if int(correct_season.get("media_count") or 0) > 0:
+        blockers.append("correct_season_already_has_media")
+    if correct_episodes:
+        blockers.append("correct_season_already_has_episodes")
+    if strm_total <= 0:
+        blockers.append("strm_files_not_found_for_title_season")
+    if strm_wrong_targets <= 0:
+        blockers.append("strm_does_not_point_to_wrong_root")
+    if strm_correct_targets > 0:
+        blockers.append("strm_already_points_to_correct_root")
+    if expected_episode_count and wrong_media_count != expected_episode_count:
+        blockers.append("wrong_media_count_mismatch")
+    if expected_episode_count and strm_total != expected_episode_count:
+        blockers.append("strm_episode_count_mismatch")
+    if expected_episode_min and wrong_episodes and min(wrong_episodes) != expected_episode_min:
+        blockers.append("wrong_episode_min_mismatch")
+    if expected_episode_max and wrong_episodes and max(wrong_episodes) != expected_episode_max:
+        blockers.append("wrong_episode_max_mismatch")
+    if expected_episode_min and strm_before.get("episodes") and min(strm_before.get("episodes", [])) != expected_episode_min:
+        blockers.append("strm_episode_min_mismatch")
+    if expected_episode_max and strm_before.get("episodes") and max(strm_before.get("episodes", [])) != expected_episode_max:
+        blockers.append("strm_episode_max_mismatch")
+    if expected_rewrite_count and strm_wrong_targets != expected_rewrite_count:
+        blockers.append("rewrite_count_mismatch")
+
+    if normalized_strm_root and wrong_season_path and correct_season_path:
+        rewrite_preview = rewrite_strm_targets(
+            correct_title or title_filter or "unknown",
+            _strm_season_scan_root(normalized_strm_root, normalized_season),
+            old_target_prefix=wrong_season_path,
+            new_target_prefix=correct_season_path,
+            expected_episode_count=expected_episode_count,
+            expected_episode_min=expected_episode_min,
+            expected_episode_max=expected_episode_max,
+            expected_rewrite_count=expected_rewrites,
+            approve_write=False,
+        )
+        if not rewrite_preview.get("ok"):
+            blockers.append("strm_rewrite_preview_failed")
+
+    if not blockers and approve_repair:
+        ensure_report = ensure_mv3_115_path(base_url, token, correct_season_path, storage=storage, timeout=timeout)
+        operations.append({"step": "ensure_correct_season_path", "ok": bool(ensure_report.get("ok")), "report": ensure_report})
+        if not ensure_report.get("ok"):
+            blockers.append("correct_season_path_create_failed")
+        correct_target_id = str(ensure_report.get("final_folder_id") or "")
+        if not correct_target_id:
+            blockers.append("correct_season_folder_id_not_found")
+        if not blockers:
+            move_report = _mv3_move_115(client, wrong_file_ids, correct_target_id, storage)
+            operations.append({"step": "move_wrong_media_to_correct_season", "ok": bool(move_report.get("ok")), "report": move_report})
+            if not move_report.get("ok"):
+                blockers.append("wrong_media_move_failed")
+        if not blockers:
+            rewrite_report = rewrite_strm_targets(
+                correct_title or title_filter or "unknown",
+                _strm_season_scan_root(normalized_strm_root, normalized_season),
+                old_target_prefix=wrong_season_path,
+                new_target_prefix=correct_season_path,
+                expected_episode_count=expected_episode_count,
+                expected_episode_min=expected_episode_min,
+                expected_episode_max=expected_episode_max,
+                expected_rewrite_count=expected_rewrites,
+                approve_write=True,
+            )
+            operations.append({"step": "rewrite_strm_targets", "ok": bool(rewrite_report.get("ok")), "report": rewrite_report})
+            if not rewrite_report.get("ok"):
+                blockers.append("strm_rewrite_failed")
+    elif not blockers:
+        warnings.append("dry_run_only_no_cloud_move_or_strm_write_performed")
+
+    post_wrong = _cloud_folder_summary_by_path(client, wrong_season_path, storage, limit) if approve_repair and wrong_season_path else wrong_season
+    post_correct = _cloud_folder_summary_by_path(client, correct_season_path, storage, limit) if approve_repair and correct_season_path else correct_season
+    post_strm = _strm_title_summary(
+        normalized_strm_root,
+        correct_title,
+        normalized_wrong_root,
+        normalized_correct_root,
+        season_number=normalized_season,
+    ) if normalized_strm_root and correct_title and normalized_season > 0 else strm_before
+    if approve_repair and not blockers:
+        if int(post_wrong.get("media_count") or 0) != 0:
+            blockers.append("post_move_wrong_season_still_has_media")
+        if expected_count and int(post_correct.get("media_count") or 0) < expected_count:
+            blockers.append("post_move_correct_media_count_mismatch")
+        if int(post_strm.get("wrong_target_count") or 0) != 0:
+            blockers.append("post_rewrite_strm_still_points_to_wrong_root")
+        if expected_count and int(post_strm.get("correct_target_count") or 0) < expected_count:
+            blockers.append("post_rewrite_strm_correct_target_count_mismatch")
+
+    write_executed = bool(approve_repair and any(operation.get("step") == "move_wrong_media_to_correct_season" for operation in operations))
+    return {
+        "mode": "mv3-wrong-root-direct-season-pair-repair",
+        "ok": not blockers and (not approve_repair or write_executed),
+        "dry_run": not approve_repair,
+        "write_executed": write_executed,
+        "wrong_root": normalized_wrong_root,
+        "wrong_season_path": wrong_season_path,
+        "correct_root": normalized_correct_root,
+        "correct_title": correct_title,
+        "correct_title_path": correct_title_path,
+        "correct_season_path": correct_season_path,
+        "strm_root": normalized_strm_root,
+        "strm_scan_root": _strm_season_scan_root(normalized_strm_root, normalized_season),
+        "season": normalized_season,
+        "storage": storage,
+        "expected": {
+            "episode_count": expected_episode_count,
+            "episode_min": expected_episode_min,
+            "episode_max": expected_episode_max,
+            "rewrite_count": expected_rewrite_count,
+        },
+        "precheck": {
+            "wrong": _public_cloud_folder_summary(wrong_season),
+            "correct_title": _public_cloud_folder_summary(correct_title_summary),
+            "correct": _public_cloud_folder_summary(correct_season),
+            "strm": strm_before,
+            "rewrite_preview": rewrite_preview,
+        },
+        "ensure_path": ensure_report,
+        "move": move_report,
+        "rewrite": rewrite_report,
+        "operations": operations,
+        "post_verify": {
+            "wrong": _public_cloud_folder_summary(post_wrong),
+            "correct": _public_cloud_folder_summary(post_correct),
+            "strm": post_strm,
+        },
+        "warnings": sorted(set(warnings)),
+        "blockers": sorted(set(blockers)),
+        "safety": (
+            "default dry-run; with approval this creates the explicit correct 115 season path, moves only the media files "
+            "from one explicit wrong season folder, then rewrites only local STRM targets from the old cloud prefix to the "
+            "new organized prefix. It does not scrape cloud media, call MoviePilot cleanup, refresh Emby, touch qBittorrent, "
+            "or delete hlink/source files."
+        ),
+    }
+
+
+def render_mv3_wrong_root_direct_season_pair_repair_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    precheck = report.get("precheck") if isinstance(report.get("precheck"), dict) else {}
+    wrong = precheck.get("wrong") if isinstance(precheck.get("wrong"), dict) else {}
+    correct = precheck.get("correct") if isinstance(precheck.get("correct"), dict) else {}
+    strm = precheck.get("strm") if isinstance(precheck.get("strm"), dict) else {}
+    rewrite_preview = precheck.get("rewrite_preview") if isinstance(precheck.get("rewrite_preview"), dict) else {}
+    rewrite_summary = rewrite_preview.get("summary") if isinstance(rewrite_preview.get("summary"), dict) else {}
+    lines = [
+        "# MV3 Wrong Root Direct Season Pair Repair",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Dry run: `{bool(report.get('dry_run'))}`",
+        f"- Write executed: `{bool(report.get('write_executed'))}`",
+        f"- Season: `{report.get('season', '')}`",
+        f"- Wrong season: `{report.get('wrong_season_path', '')}`",
+        f"- Correct season: `{report.get('correct_season_path', '')}`",
+        f"- STRM scan root: `{report.get('strm_scan_root', '')}`",
+        f"- Wrong media: `{wrong.get('media_count', 0)}`",
+        f"- Correct media: `{correct.get('media_count', 0)}`",
+        f"- STRM wrong/correct targets: `{strm.get('wrong_target_count', 0)}` / `{strm.get('correct_target_count', 0)}`",
+        f"- STRM rewritable: `{rewrite_summary.get('rewritable_count', 0)}`",
+        "- Safety: cloud move and STRM rewrite are planned as one approved repair.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    operations = report.get("operations")
+    if isinstance(operations, list) and operations:
+        lines.extend(["", "## Operations", "", "| Step | OK |", "| --- | --- |"])
+        for operation in operations:
+            if isinstance(operation, dict):
+                lines.append(f"| {_escape(str(operation.get('step') or ''))} | `{bool(operation.get('ok'))}` |")
     return "\n".join(lines)
 
 
@@ -4632,6 +4908,22 @@ def _strm_title_summary(
         "plain_series_root_count": plain_series_root_count,
         "samples": samples,
     }
+
+
+def _strm_season_scan_root(strm_root: str, season_number: int) -> str:
+    root = Path(strm_root) if strm_root else Path("__missing__")
+    if season_number > 0 and root.exists() and root.is_dir():
+        if _looks_like_season_folder(root.name):
+            return str(root)
+        for child in (
+            root / f"Season {season_number:02d}",
+            root / f"Season {season_number}",
+            root / f"S{season_number:02d}",
+            root / f"S{season_number}",
+        ):
+            if child.exists():
+                return str(child)
+    return str(root)
 
 
 def _mv3_move_115(client: MV3Client, file_ids: List[str], target_cid: str, storage: str) -> Dict[str, object]:

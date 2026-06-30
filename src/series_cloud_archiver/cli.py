@@ -133,9 +133,11 @@ from .mv3 import (
     render_mv3_strm_records_redirect_report,
     render_mv3_strm_records_report,
     render_mv3_strm_records_regenerate_report,
+    render_mv3_wrong_root_direct_season_pair_repair_report,
     render_mv3_wrong_root_repair_report,
     preview_mv3_share,
     receive_mv3_share,
+    repair_mv3_wrong_root_direct_season_pair,
     repair_mv3_wrong_root,
     scan_mv3_organize_source,
     search_mv3_cloud_files_for_transfer_plan,
@@ -1242,6 +1244,27 @@ def build_parser() -> argparse.ArgumentParser:
     wrong_root_parser.add_argument("--approve-delete-empty", action="store_true", help="Allow deleting empty wrong-root folders after checks pass")
     wrong_root_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     wrong_root_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    wrong_root_pair_parser = subcommands.add_parser(
+        "mv3-repair-wrong-root-direct-season-pair",
+        help="Dry-run or repair one direct wrong-root season by pairing cloud media move with local STRM target rewrite",
+    )
+    wrong_root_pair_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    wrong_root_pair_parser.add_argument("--wrong-root", required=True, help="Wrong cloud root containing direct Sxx/Season xx folders")
+    wrong_root_pair_parser.add_argument("--correct-root", required=True, help="Correct organized cloud title root")
+    wrong_root_pair_parser.add_argument("--strm-root", required=True, help="Local/DSM STRM title or season root")
+    wrong_root_pair_parser.add_argument("--season", type=int, required=True, help="Season number to repair")
+    wrong_root_pair_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    wrong_root_pair_parser.add_argument("--title-filter", default="", help="Optional title fallback when it cannot be derived from roots")
+    wrong_root_pair_parser.add_argument("--expected-episode-count", type=int, default=0, help="Expected media/STRM episode count")
+    wrong_root_pair_parser.add_argument("--expected-episode-min", type=int, default=0, help="Expected first episode number")
+    wrong_root_pair_parser.add_argument("--expected-episode-max", type=int, default=0, help="Expected last episode number")
+    wrong_root_pair_parser.add_argument("--expected-rewrite-count", type=int, default=0, help="Safety check: expected STRM files to rewrite")
+    wrong_root_pair_parser.add_argument("--approve-repair", action="store_true", help="Required: create target path, move cloud media, and rewrite STRM targets")
+    wrong_root_pair_parser.add_argument("--limit", type=int, default=1000, help="Maximum cloud folder items to request")
+    wrong_root_pair_parser.add_argument("--timeout", type=int, default=120, help="Per-request timeout in seconds")
+    wrong_root_pair_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    wrong_root_pair_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mv3_parser = subcommands.add_parser("mv3-check", help="Readonly MV3 connectivity and capability probe")
     mv3_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -3564,6 +3587,34 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_mv3_wrong_root_repair_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "mv3-repair-wrong-root-direct-season-pair":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-repair-wrong-root-direct-season-pair requires MV3_BASE_URL and MV3_API_TOKEN")
+        report = repair_mv3_wrong_root_direct_season_pair(
+            config.mv3_base_url,
+            config.mv3_token,
+            wrong_root=args.wrong_root,
+            correct_root=args.correct_root,
+            strm_root=args.strm_root,
+            season=args.season,
+            storage=args.storage,
+            title_filter=args.title_filter,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            expected_rewrite_count=args.expected_rewrite_count,
+            approve_repair=args.approve_repair,
+            limit=args.limit,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_wrong_root_direct_season_pair_repair_report(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:
