@@ -92,8 +92,17 @@ class FinalizeFakeActions:
 
 
 class TransferFakeActions:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        duplicate_after_organize: bool = False,
+        staging_remains: bool = False,
+        organized_title_with_year: bool = False,
+    ) -> None:
         self.calls: list[tuple[str, dict]] = []
+        self.duplicate_after_organize = duplicate_after_organize
+        self.staging_remains = staging_remains
+        self.organized_title_with_year = organized_title_with_year
+        self.organized = False
 
     def receive_share(self, *args: object, **kwargs: object) -> dict:
         self.calls.append(("receive", {"args": list(args), "kwargs": kwargs}))
@@ -107,10 +116,102 @@ class TransferFakeActions:
 
     def browse_cloud(self, *args: object, **kwargs: object) -> dict:
         self.calls.append(("browse", {"args": list(args), "kwargs": kwargs}))
+        path = str(kwargs.get("path") or "")
+        if path == "/已整理/series":
+            return {
+                "mode": "readonly-mv3-cloud-browse",
+                "ok": True,
+                "path": path,
+                "summary": {
+                    "video_file_count": 0,
+                    "metadata_sidecar_file_count": 0,
+                },
+                "items": [
+                    {
+                        "kind": "folder",
+                        "media_kind": "unknown",
+                        "name": "折腰 (2025) {tmdbid=296753}",
+                        "file_id": "title-folder",
+                    }
+                ],
+                "warnings": [],
+            }
+        if self.organized_title_with_year and path == "/已整理/series/折腰 {tmdbid=296753}/Season 1":
+            return {
+                "mode": "readonly-mv3-cloud-browse",
+                "ok": False,
+                "path": path,
+                "summary": {
+                    "video_file_count": 0,
+                    "metadata_sidecar_file_count": 0,
+                },
+                "items": [],
+                "warnings": ["path_info_not_found"],
+            }
+        if path.startswith("/已整理/"):
+            episodes = list(range(1, 37))
+            if self.duplicate_after_organize:
+                episodes = sorted(episodes + [33])
+            return {
+                "mode": "readonly-mv3-cloud-browse",
+                "ok": True,
+                "path": path,
+                "summary": {
+                    "video_file_count": len(episodes),
+                    "metadata_sidecar_file_count": 0,
+                },
+                "items": [
+                    {
+                        "kind": "file",
+                        "media_kind": "video",
+                        "name": f"折腰 - S01E{episode:02d}.mkv",
+                        "episode": episode,
+                        "file_id": f"organized-{index}",
+                    }
+                    for index, episode in enumerate(episodes, start=1)
+                ],
+                "warnings": [],
+            }
+        if path.startswith("/未整理/") and self.organized and not self.staging_remains:
+            return {
+                "mode": "readonly-mv3-cloud-browse",
+                "ok": False,
+                "path": path,
+                "summary": {
+                    "video_file_count": 0,
+                    "metadata_sidecar_file_count": 0,
+                },
+                "items": [],
+                "warnings": ["path_info_not_found"],
+            }
+        if path.startswith("/未整理/") and self.organized and self.staging_remains:
+            return {
+                "mode": "readonly-mv3-cloud-browse",
+                "ok": True,
+                "path": path,
+                "summary": {
+                    "video_file_count": 1,
+                    "metadata_sidecar_file_count": 0,
+                },
+                "items": [
+                    {
+                        "kind": "file",
+                        "media_kind": "video",
+                        "name": "折腰 - S01E33.mkv",
+                        "episode": 33,
+                        "file_id": "staging-leftover",
+                    }
+                ],
+                "warnings": [],
+            }
         return {
             "mode": "readonly-mv3-cloud-browse",
             "ok": True,
-            "path": kwargs.get("path"),
+            "path": path,
+            "summary": {
+                "video_file_count": 36,
+                "metadata_sidecar_file_count": 0,
+            },
             "items": [
                 {
                     "kind": "file",
@@ -125,6 +226,7 @@ class TransferFakeActions:
 
     def organize_transfer(self, *args: object, **kwargs: object) -> dict:
         self.calls.append(("organize", {"args": list(args), "kwargs": kwargs}))
+        self.organized = True
         return {
             "mode": "mv3-organize-transfer-result",
             "ok": True,
@@ -235,13 +337,70 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(report["received_items"], 1)
         self.assertEqual(report["organized_items"], 1)
-        self.assertEqual([call[0] for call in actions.calls], ["receive", "browse", "organize"])
+        self.assertEqual([call[0] for call in actions.calls], ["receive", "browse", "organize", "browse", "browse"])
         self.assertEqual(actions.calls[0][1]["kwargs"]["target_path"], "/未整理")
         self.assertEqual(actions.calls[1][1]["kwargs"]["path"], "/未整理/折腰")
         self.assertEqual(actions.calls[2][1]["kwargs"]["target_dir"], "/已整理")
         self.assertEqual(actions.calls[2][1]["kwargs"]["strm_dir"], "/strm")
+        self.assertEqual(actions.calls[3][1]["kwargs"]["path"], "/已整理/series/折腰 {tmdbid=296753}/Season 1")
+        self.assertEqual(actions.calls[4][1]["kwargs"]["path"], "/未整理/折腰")
         self.assertEqual(report["items"][0]["status"], "organized_requires_finalize")
-        self.assertEqual(len(stage_files), 3)
+        self.assertEqual(len(stage_files), 5)
+
+    def test_batch_transfer_run_resolves_organized_folder_by_tmdbid_when_year_is_added(self) -> None:
+        actions = TransferFakeActions(organized_title_with_year=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            preview = Path(tmp) / "preview.json"
+            preview.write_text(
+                json.dumps({"ok": True, "episodes": list(range(1, 37)), "video_file_count": 36}),
+                encoding="utf-8",
+            )
+            report = run_batch_transfer(
+                self._receive_plan(str(preview)),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(),
+                approve_receive=True,
+                approve_transfer=True,
+                actions=BatchTransferActions(
+                    receive_share=actions.receive_share,
+                    browse_cloud=actions.browse_cloud,
+                    organize_transfer=actions.organize_transfer,
+                ),
+            )
+
+        browse_paths = [call[1]["kwargs"]["path"] for call in actions.calls if call[0] == "browse"]
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["items"][0]["organized_verify_path"], "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1")
+        self.assertIn("/已整理/series", browse_paths)
+        self.assertIn("/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1", browse_paths)
+
+    def test_batch_transfer_run_blocks_duplicate_organized_files_and_staging_leftovers(self) -> None:
+        actions = TransferFakeActions(duplicate_after_organize=True, staging_remains=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            preview = Path(tmp) / "preview.json"
+            preview.write_text(
+                json.dumps({"ok": True, "episodes": list(range(1, 37)), "video_file_count": 36}),
+                encoding="utf-8",
+            )
+            report = run_batch_transfer(
+                self._receive_plan(str(preview)),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(),
+                approve_receive=True,
+                approve_transfer=True,
+                actions=BatchTransferActions(
+                    receive_share=actions.receive_share,
+                    browse_cloud=actions.browse_cloud,
+                    organize_transfer=actions.organize_transfer,
+                ),
+            )
+
+        item = report["items"][0]
+        self.assertFalse(report["ok"])
+        self.assertEqual(item["status"], "failed_post_organize_verify")
+        self.assertIn("organized_duplicate_episodes_present", item["blockers"])
+        self.assertIn("organized_video_file_count_mismatch", item["blockers"])
+        self.assertIn("staging_video_files_remain", item["blockers"])
 
     def test_batch_finalize_plan_builds_ordered_post_transfer_gates(self) -> None:
         batch_plan = {
@@ -1126,6 +1285,9 @@ class BatchSharePreviewTest(unittest.TestCase):
                     "season": 1,
                     "expected_episode_count": 36,
                     "expected_episodes": list(range(1, 37)),
+                    "cloud_media_path": "/已整理/series/折腰 (2025) {tmdbid=246}/Season 1",
+                    "cloud_title_path": "/已整理/series/折腰 (2025) {tmdbid=246}",
+                    "required_target_prefix": "/已整理/series/折腰 (2025) {tmdbid=246}",
                     "candidate_diagnostics": {
                         "best_candidate": {
                             "search_index": 4,
@@ -1162,6 +1324,9 @@ class BatchSharePreviewTest(unittest.TestCase):
         ready = report["items"][0]
         blocked = report["items"][1]
         self.assertEqual(ready["status"], "planned_preview")
+        self.assertEqual(ready["cloud_media_path"], "/已整理/series/折腰 (2025) {tmdbid=246}/Season 1")
+        self.assertEqual(ready["cloud_title_path"], "/已整理/series/折腰 (2025) {tmdbid=246}")
+        self.assertEqual(ready["required_target_prefix"], "/已整理/series/折腰 (2025) {tmdbid=246}")
         self.assertIn("mv3-share-preview", ready["command"])
         self.assertIn("--expected-episode 1,2,3", ready["command"])
         self.assertEqual(blocked["status"], "skipped_preview")
@@ -1345,6 +1510,9 @@ class BatchSharePreviewTest(unittest.TestCase):
                     "expected_episode_min": 1,
                     "expected_episode_max": 36,
                     "expected_title_contains": "折腰",
+                    "cloud_media_path": "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                    "cloud_title_path": "/已整理/series/折腰 (2025) {tmdbid=296753}",
+                    "required_target_prefix": "/已整理/series/折腰 (2025) {tmdbid=296753}",
                     "preview_report_path": "/reports/share-preview-zheyao.json",
                     "nested_previews": [
                         {"depth": 1, "cid": "series-folder", "index": "1", "folder_name": "折腰 (2025)", "ok": False},
@@ -1372,6 +1540,9 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertEqual(plan["approval_required_items"], 1)
         self.assertEqual(ready["status"], "approval_required")
         self.assertEqual(ready["receive_mode"], "receive_selected_folder")
+        self.assertEqual(ready["cloud_media_path"], "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1")
+        self.assertEqual(ready["cloud_title_path"], "/已整理/series/折腰 (2025) {tmdbid=296753}")
+        self.assertEqual(ready["required_target_prefix"], "/已整理/series/折腰 (2025) {tmdbid=296753}")
         self.assertEqual(ready["browse_cid"], "series-folder")
         self.assertEqual(ready["browse_index"], 1)
         self.assertEqual(ready["verified_folder_browse_report"], "/reports/share-preview-zheyao.json")

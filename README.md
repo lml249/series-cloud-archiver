@@ -283,7 +283,9 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-transfer-run \
   --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-approved-YYYYMMDD.json
 ```
 
-`batch-transfer-run` 只处理 `batch-share-receive-plan` 中 `approval_required` 的条目。`--approve-receive` 只允许把已验证完整的分享接收到 `/未整理`；`--approve-transfer` 才允许把已收到的云盘目录交给 MV3 整理到 `/已整理` 并生成 STRM。它不会刮削云盘实体目录，不会刷新 Emby，不会操作 qB，也不会删除 hlink/source。本地清理必须等后续 `batch-finalize-run` 的 STRM、中文 NFO、Emby、qB/MP/hlink/source 门禁全部通过后再单独审批。
+`batch-transfer-run` 只处理 `batch-share-receive-plan` 中 `approval_required` 的条目。`--approve-receive` 只允许把已验证完整的分享接收到 `/未整理`；`--approve-transfer` 才允许把已收到的云盘目录交给 MV3 整理到 `/已整理` 并生成 STRM。MV3 整理请求返回后，runner 还会再做只读后置核验：确认 `/已整理/series/.../Season N` 里只有期望集数、没有重复集、没有 NFO/JPG/海报等刮削旁挂，并确认 `/未整理` staging 源不再残留视频。如果 MV3 自动把目录命名成 `剧名 (年份) {tmdbid=...}`，runner 会优先按 TMDB ID 在 `/已整理/series` 下解析真实目录。任一门禁失败都会停在 `failed_post_organize_verify`，不能进入后续刮削或清理。
+
+它不会刮削云盘实体目录，不会刷新 Emby，不会操作 qB，也不会删除 hlink/source。本地清理必须等后续 `batch-finalize-run` 的 STRM、中文 NFO、Emby、qB/MP/hlink/source 门禁全部通过后再单独审批。
 
 ## MV3 预览 manifest dry-run
 

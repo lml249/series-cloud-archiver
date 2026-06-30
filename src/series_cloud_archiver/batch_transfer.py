@@ -175,6 +175,7 @@ def _run_transfer_item(
         "receive_ok": False,
         "browse_ok": False,
         "organize_ok": False,
+        "post_verify_ok": False,
         "blockers": [],
         "stage_reports": {},
     }
@@ -262,6 +263,52 @@ def _run_transfer_item(
         row["blockers"] = _report_blockers(organize_report) or ["organize_transfer_failed"]
         return row
 
+    organized_browse, organized_resolution_reports = _browse_organized_season(
+        actions,
+        config,
+        item,
+        organize_target_dir=organize_target_dir,
+        title=title,
+        tmdbid=tmdbid,
+        season=season,
+        storage=storage,
+        timeout=timeout,
+    )
+    for index, resolution_report in enumerate(organized_resolution_reports, start=1):
+        resolution_path = _stage_report_path(output_dir, prefix, f"organized-path-resolve-{index:02d}")
+        _write_json(resolution_path, resolution_report)
+        row["stage_reports"][f"organized_path_resolve_{index:02d}"] = str(resolution_path)
+
+    organized_verify_path = _stage_report_path(output_dir, prefix, "organized-browse-verify")
+    _write_json(organized_verify_path, organized_browse)
+    row["stage_reports"]["organized_browse_verify"] = str(organized_verify_path)
+    row["organized_verify_path"] = str(organized_browse.get("path") or "")
+
+    staging_browse = actions.browse_cloud(
+        _config_value(config, "mv3_base_url"),
+        _config_value(config, "mv3_token"),
+        path=str(browse_report.get("path") or _received_browse_path(target_path, title, receive_report)),
+        storage=storage,
+        limit=1150,
+        timeout=timeout,
+    )
+    staging_verify_path = _stage_report_path(output_dir, prefix, "staging-browse-verify")
+    _write_json(staging_verify_path, staging_browse)
+    row["stage_reports"]["staging_browse_verify"] = str(staging_verify_path)
+
+    verify_blockers = _post_organize_verify_blockers(
+        organized_browse,
+        staging_browse,
+        expected_count=expected_count,
+        expected_min=expected_min,
+        expected_max=expected_max,
+    )
+    row["post_verify_ok"] = not verify_blockers
+    if verify_blockers:
+        row["status"] = "failed_post_organize_verify"
+        row["blockers"] = verify_blockers
+        return row
+
     row["status"] = "organized_requires_finalize"
     row["ok"] = True
     row["required_followup"] = [
@@ -298,6 +345,175 @@ def _received_browse_path(target_path: str, title: str, receive_report: Dict[str
     clean_title = str(selection.get("name") or "").strip() if isinstance(selection, dict) else ""
     clean_title = clean_title or _title_contains(title)
     return f"{target_path.rstrip('/')}/{clean_title}"
+
+
+def _browse_organized_season(
+    actions: BatchTransferActions,
+    config: object,
+    item: Dict[str, object],
+    *,
+    organize_target_dir: str,
+    title: str,
+    tmdbid: int,
+    season: int,
+    storage: str,
+    timeout: int,
+) -> tuple[Dict[str, object], List[Dict[str, object]]]:
+    reports: List[Dict[str, object]] = []
+    seen: set[str] = set()
+    for path in _organized_season_path_candidates(item, organize_target_dir, title, tmdbid, season):
+        if path in seen:
+            continue
+        seen.add(path)
+        report = actions.browse_cloud(
+            _config_value(config, "mv3_base_url"),
+            _config_value(config, "mv3_token"),
+            path=path,
+            storage=storage,
+            limit=1150,
+            timeout=timeout,
+        )
+        if report.get("ok"):
+            return report, reports
+        reports.append(report)
+
+    root_path = f"{organize_target_dir.rstrip('/')}/series"
+    root_report = actions.browse_cloud(
+        _config_value(config, "mv3_base_url"),
+        _config_value(config, "mv3_token"),
+        path=root_path,
+        storage=storage,
+        limit=1150,
+        timeout=timeout,
+    )
+    reports.append(root_report)
+    title_path = _organized_title_path_from_root(root_report, root_path, tmdbid, title)
+    if title_path:
+        report = actions.browse_cloud(
+            _config_value(config, "mv3_base_url"),
+            _config_value(config, "mv3_token"),
+            path=f"{title_path}/Season {season}",
+            storage=storage,
+            limit=1150,
+            timeout=timeout,
+        )
+        return report, reports
+
+    return {
+        "mode": "readonly-mv3-cloud-browse",
+        "ok": False,
+        "path": "",
+        "summary": {},
+        "items": [],
+        "warnings": ["organized_season_path_not_resolved"],
+    }, reports
+
+
+def _organized_season_path_candidates(
+    item: Dict[str, object],
+    organize_target_dir: str,
+    title: str,
+    tmdbid: int,
+    season: int,
+) -> List[str]:
+    paths: List[str] = []
+    for key in ("organized_season_path", "cloud_media_path", "target_season_path"):
+        path = str(item.get(key) or "").strip()
+        if path:
+            paths.append(path)
+    for key in ("organized_title_path", "cloud_title_path", "required_target_prefix"):
+        path = str(item.get(key) or "").strip()
+        if path:
+            paths.append(f"{path.rstrip('/')}/Season {season}")
+    paths.append(_organized_season_path(organize_target_dir, title, tmdbid, season))
+    candidate_title = str(item.get("candidate_title") or "").strip()
+    if candidate_title:
+        paths.append(_organized_season_path(organize_target_dir, candidate_title, tmdbid, season))
+    return paths
+
+
+def _organized_season_path(organize_target_dir: str, title: str, tmdbid: int, season: int) -> str:
+    root = organize_target_dir.rstrip("/")
+    clean_title = _title_contains(title)
+    suffix = f" {{tmdbid={tmdbid}}}" if tmdbid else ""
+    return f"{root}/series/{clean_title}{suffix}/Season {season}"
+
+
+def _organized_title_path_from_root(root_report: Dict[str, object], root_path: str, tmdbid: int, title: str) -> str:
+    folders = [
+        item
+        for item in root_report.get("items", [])
+        if isinstance(item, dict) and str(item.get("kind") or "") == "folder"
+    ]
+    tmdb_token = f"{{tmdbid={tmdbid}}}" if tmdbid else ""
+    if tmdb_token:
+        matches = [item for item in folders if tmdb_token in str(item.get("name") or "")]
+        if len(matches) == 1:
+            return f"{root_path.rstrip('/')}/{str(matches[0].get('name') or '').strip()}"
+    clean_title = _title_contains(title)
+    title_matches = [
+        item
+        for item in folders
+        if clean_title and clean_title == _title_contains(str(item.get("name") or ""))
+    ]
+    if len(title_matches) == 1:
+        return f"{root_path.rstrip('/')}/{str(title_matches[0].get('name') or '').strip()}"
+    return ""
+
+
+def _post_organize_verify_blockers(
+    organized_browse: Dict[str, object],
+    staging_browse: Dict[str, object],
+    *,
+    expected_count: int,
+    expected_min: int,
+    expected_max: int,
+) -> List[str]:
+    blockers: List[str] = []
+    organized_summary = organized_browse.get("summary") if isinstance(organized_browse.get("summary"), dict) else {}
+    staging_summary = staging_browse.get("summary") if isinstance(staging_browse.get("summary"), dict) else {}
+    organized_episodes = _video_episodes(organized_browse)
+    distinct_episodes = sorted(set(organized_episodes))
+    duplicate_episodes = sorted(episode for episode in set(organized_episodes) if organized_episodes.count(episode) > 1)
+    expected_episodes = set(range(expected_min, expected_max + 1)) if expected_min and expected_max else set()
+    missing = sorted(expected_episodes - set(distinct_episodes))
+    unexpected = sorted(set(distinct_episodes) - expected_episodes) if expected_episodes else []
+
+    if not organized_browse.get("ok"):
+        blockers.append("organized_browse_failed")
+    if expected_count and len(distinct_episodes) != expected_count:
+        blockers.append("organized_episode_count_mismatch")
+    if expected_count and int(organized_summary.get("video_file_count") or 0) != expected_count:
+        blockers.append("organized_video_file_count_mismatch")
+    if missing:
+        blockers.append("organized_episode_range_incomplete")
+    if unexpected:
+        blockers.append("organized_unexpected_episodes_present")
+    if duplicate_episodes:
+        blockers.append("organized_duplicate_episodes_present")
+    if int(organized_summary.get("metadata_sidecar_file_count") or 0) > 0:
+        blockers.append("organized_metadata_sidecars_present")
+    if int(staging_summary.get("video_file_count") or 0) > 0:
+        blockers.append("staging_video_files_remain")
+    if not staging_browse.get("ok") and not _staging_path_absent(staging_browse):
+        blockers.append("staging_browse_failed")
+    return sorted(set(blockers))
+
+
+def _staging_path_absent(report: Dict[str, object]) -> bool:
+    warnings = _string_list(report.get("warnings"))
+    return "path_info_not_found" in warnings or "no_cloud_items_found" in warnings
+
+
+def _video_episodes(report: Dict[str, object]) -> List[int]:
+    episodes: List[int] = []
+    for item in report.get("items", []):
+        if not isinstance(item, dict) or str(item.get("media_kind") or "") != "video":
+            continue
+        episode = item.get("episode")
+        if isinstance(episode, int) and episode > 0:
+            episodes.append(episode)
+    return episodes
 
 
 def _title_contains(title: str) -> str:

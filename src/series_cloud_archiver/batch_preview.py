@@ -365,6 +365,9 @@ def _preview_row(
         "candidate_score": int(best.get("score") or 0) if best else 0,
         "candidate_size_delta_ratio": best.get("size_delta_ratio") if best else None,
         "candidate_blockers": sorted(blockers),
+        "cloud_media_path": str(item.get("cloud_media_path") or ""),
+        "cloud_title_path": str(item.get("cloud_title_path") or ""),
+        "required_target_prefix": str(item.get("required_target_prefix") or ""),
         "command": "",
     }
     if status == "planned_preview":
@@ -489,6 +492,9 @@ def _receive_plan_row(
         "expected_episode_min": expected_min,
         "expected_episode_max": expected_max,
         "expected_title_contains": str(item.get("expected_title_contains") or ""),
+        "cloud_media_path": str(item.get("cloud_media_path") or ""),
+        "cloud_title_path": str(item.get("cloud_title_path") or ""),
+        "required_target_prefix": str(item.get("required_target_prefix") or ""),
         "approval_flag_required": "--approve-receive",
         "command": "",
     }
