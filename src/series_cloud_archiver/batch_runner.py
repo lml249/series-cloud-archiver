@@ -1970,12 +1970,6 @@ def _review_decision(
     if finalize_status:
         return "blocked_after_finalize_gates"
 
-    preview_status = str(preview_item.get("status") or "")
-    if preview_status == "preview_ready_for_receive":
-        return "ready_for_receive_plan"
-    if preview_status == "preview_blocked":
-        return "manual_review_preview_blocked"
-
     transfer_status = str(transfer_item.get("status") or "")
     if transfer_status == "organized_requires_finalize":
         return "ready_for_finalize_gates"
@@ -1985,6 +1979,12 @@ def _review_decision(
         return "manual_review_transfer_failed"
     if transfer_status:
         return "blocked_after_transfer_run"
+
+    preview_status = str(preview_item.get("status") or "")
+    if preview_status == "preview_ready_for_receive":
+        return "ready_for_receive_plan"
+    if preview_status == "preview_blocked":
+        return "manual_review_preview_blocked"
 
     bucket = str(item.get("bucket") or "")
     if bucket == AUTO_CLEANUP:

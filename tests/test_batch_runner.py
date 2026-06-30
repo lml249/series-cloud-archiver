@@ -1555,13 +1555,31 @@ class BatchRunnerTest(unittest.TestCase):
                 }
             ],
         }
+        preview_report = {
+            "mode": "readonly-batch-mv3-share-preview",
+            "items": [
+                {
+                    "status": "preview_ready_for_receive",
+                    "title": "亦舞之城",
+                    "tmdbid": 263218,
+                    "season": 1,
+                    "preview_episode_count": 28,
+                }
+            ],
+        }
 
-        report = build_batch_review_report(batch_plan, transfer_run_reports=[transfer_report])
+        report = build_batch_review_report(
+            batch_plan,
+            share_preview_reports=[preview_report],
+            transfer_run_reports=[transfer_report],
+        )
 
+        self.assertEqual(report["input_report_counts"]["share_preview"], 1)
         self.assertEqual(report["input_report_counts"]["transfer_run"], 1)
         self.assertEqual(report["decision_counts"]["manual_review_transfer_failed"], 1)
         item = report["items"][0]
         self.assertEqual(item["decision"], "manual_review_transfer_failed")
+        self.assertEqual(item["preview_status"], "preview_ready_for_receive")
         self.assertEqual(item["transfer_status"], "failed_receive")
         self.assertEqual(item["transfer_last_stage"], "share_receive")
         self.assertIn("receive_failed", item["reason_summary"])
