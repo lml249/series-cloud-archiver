@@ -265,6 +265,82 @@ def render_batch_review_report(report: Dict[str, object], output_format: str) ->
     return _render_review_markdown(report)
 
 
+def filter_batch_plan_by_review(
+    batch_plan: Dict[str, object],
+    review_report: Dict[str, object],
+    *,
+    decisions: Optional[Sequence[str]] = None,
+    limit: int = 0,
+) -> Dict[str, object]:
+    """Build a readonly subset batch plan from review decisions."""
+
+    wanted = {str(decision) for decision in (decisions or ["ready_for_finalize_gates"]) if str(decision)}
+    review_by_key = _review_report_by_identity(review_report)
+    source_items = [item for item in batch_plan.get("items", []) if isinstance(item, dict)]
+    rows: List[Dict[str, object]] = []
+    skipped: List[Dict[str, object]] = []
+
+    for item in source_items:
+        key = _review_identity_key(item)
+        review_item = review_by_key.get(key, {})
+        decision = str(review_item.get("decision") or "")
+        enriched = dict(item)
+        enriched["review_decision"] = decision
+        if review_item.get("next_action"):
+            enriched["review_next_action"] = review_item.get("next_action")
+        if review_item.get("reason_summary"):
+            enriched["review_reason_summary"] = review_item.get("reason_summary")
+        if decision in wanted:
+            rows.append(enriched)
+        else:
+            skipped_row = dict(enriched)
+            skipped_row["filter_skip_reason"] = "decision_not_selected" if decision else "review_decision_missing"
+            skipped.append(skipped_row)
+
+    total_selected = len(rows)
+    if limit > 0:
+        skipped.extend(
+            dict(item, filter_skip_reason="limit_exceeded")
+            for item in rows[limit:]
+        )
+        rows = rows[:limit]
+
+    counts = Counter(str(row.get("bucket") or "") for row in rows)
+    decision_counts = Counter(str(row.get("review_decision") or "") for row in rows)
+    source_counts = Counter(str(item.get("bucket") or "") for item in source_items)
+    return {
+        "mode": "readonly-batch-state-plan",
+        "source_mode": "readonly-batch-plan-filter",
+        "source_batch_mode": batch_plan.get("mode", ""),
+        "source_review_mode": review_report.get("mode", ""),
+        "source_total_items": len(source_items),
+        "total_items_before_limit": total_selected,
+        "planned_items": len(rows),
+        "bucket_counts": dict(sorted(counts.items())),
+        "selected_decision_counts": dict(sorted(decision_counts.items())),
+        "source_bucket_counts": dict(sorted(source_counts.items())),
+        "settings": dict(batch_plan.get("settings") if isinstance(batch_plan.get("settings"), dict) else {}),
+        "source_modes": dict(batch_plan.get("source_modes") if isinstance(batch_plan.get("source_modes"), dict) else {}),
+        "filter": {
+            "decisions": sorted(wanted),
+            "limit": limit,
+            "skipped_items": len(skipped),
+        },
+        "items": rows,
+        "auto_transfer_items": [row for row in rows if row.get("bucket") == AUTO_TRANSFER],
+        "auto_validation_cleanup_items": [row for row in rows if row.get("bucket") == AUTO_CLEANUP],
+        "manual_review_items": [row for row in rows if row.get("bucket") == MANUAL_REVIEW],
+        "skipped_items": [row for row in rows if row.get("bucket") == SKIPPED],
+        "filter_skipped_items": skipped,
+        "warnings": _string_list(batch_plan.get("warnings")),
+        "safety": (
+            "readonly batch plan filter only; no scan, MV3 receive, organize transfer, STRM generation, "
+            "MoviePilot scrape, Emby refresh, qBittorrent action, hlink deletion, source deletion, "
+            "cloud media write, or filesystem deletion is performed"
+        ),
+    }
+
+
 def build_batch_finalize_plan(
     batch_plan: Dict[str, object],
     *,
@@ -2406,6 +2482,18 @@ def _review_post_cleanup_by_identity(reports: Sequence[Dict[str, object]]) -> Di
             if existing and _review_post_cleanup_rank(existing) > _review_post_cleanup_rank(merged):
                 merged = existing
             result[key] = merged
+    return result
+
+
+def _review_report_by_identity(report: Dict[str, object]) -> Dict[Tuple[int, int], Dict[str, object]]:
+    result: Dict[Tuple[int, int], Dict[str, object]] = {}
+    for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        key = _review_identity_key(item)
+        if key == (0, 0):
+            continue
+        result[key] = item
     return result
 
 

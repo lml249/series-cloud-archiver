@@ -16,6 +16,7 @@ from .batch_runner import (
     build_batch_review_report,
     build_batch_finalize_plan,
     build_batch_plan,
+    filter_batch_plan_by_review,
     render_batch_review_report,
     render_batch_finalize_plan,
     render_batch_finalize_run,
@@ -753,6 +754,14 @@ def build_parser() -> argparse.ArgumentParser:
     batch_review_parser.add_argument("--post-cleanup-report", action="append", default=[], help="Optional JSON report from post-cleanup summary or verification; can be repeated")
     batch_review_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     batch_review_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    batch_plan_filter_parser = subcommands.add_parser("batch-plan-filter", help="Filter a batch plan by decisions from a readonly batch-review-report")
+    batch_plan_filter_parser.add_argument("--batch-plan", required=True, help="JSON report from batch-plan")
+    batch_plan_filter_parser.add_argument("--review-report", required=True, help="JSON report from batch-review-report")
+    batch_plan_filter_parser.add_argument("--decision", action="append", default=[], help="Review decision to keep; can be repeated. Defaults to ready_for_finalize_gates")
+    batch_plan_filter_parser.add_argument("--limit", type=int, default=0, help="Maximum kept rows; 0 means all")
+    batch_plan_filter_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
+    batch_plan_filter_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     finalize_remediation_parser = subcommands.add_parser("finalize-remediation-plan", help="Build readonly follow-up commands for rows blocked by finalize gates")
     finalize_remediation_parser.add_argument("--review-report", required=True, help="JSON report from batch-review-report")
@@ -2849,6 +2858,26 @@ def main(argv: Optional[List[str]] = None) -> int:
             post_cleanup_reports=post_cleanup_reports,
         )
         rendered = render_batch_review_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "batch-plan-filter":
+        batch_plan = load_optional_json_report(args.batch_plan)
+        if not isinstance(batch_plan, dict):
+            parser.error("batch-plan-filter requires a valid --batch-plan JSON report")
+        review_report = load_optional_json_report(args.review_report)
+        if not isinstance(review_report, dict):
+            parser.error("batch-plan-filter requires a valid --review-report JSON report")
+        report = filter_batch_plan_by_review(
+            batch_plan,
+            review_report,
+            decisions=args.decision,
+            limit=args.limit,
+        )
+        rendered = render_batch_plan(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

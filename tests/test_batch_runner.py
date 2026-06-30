@@ -14,6 +14,7 @@ from series_cloud_archiver.batch_runner import (
     build_batch_finalize_plan,
     build_batch_plan,
     build_batch_review_report,
+    filter_batch_plan_by_review,
     merge_share_search_plans,
     render_batch_finalize_plan,
     render_batch_finalize_run,
@@ -2888,6 +2889,36 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertNotEqual(item["post_cleanup_status"], "cleanup_executed_verified")
         self.assertIn("NFO", item["post_cleanup_result"])
 
+    def test_filter_batch_plan_by_review_keeps_selected_decision_only(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "settings": {"cloud_root": "/已整理/series"},
+            "items": [
+                {"bucket": AUTO_CLEANUP, "title": "西部世界", "tmdbid": 63247, "season": 1},
+                {"bucket": AUTO_CLEANUP, "title": "主角", "tmdbid": 284110, "season": 1},
+                {"bucket": MANUAL_REVIEW, "title": "基地", "tmdbid": 93740, "season": 1},
+            ],
+        }
+        review_report = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {"decision": "ready_for_finalize_gates", "title": "西部世界", "tmdbid": 63247, "season": 1},
+                {"decision": "done_cleanup_verified", "title": "主角", "tmdbid": 284110, "season": 1},
+                {"decision": "manual_review_required", "title": "基地", "tmdbid": 93740, "season": 1},
+            ],
+        }
+
+        filtered = filter_batch_plan_by_review(batch_plan, review_report)
+
+        self.assertEqual(filtered["mode"], "readonly-batch-state-plan")
+        self.assertEqual(filtered["source_mode"], "readonly-batch-plan-filter")
+        self.assertEqual(filtered["planned_items"], 1)
+        self.assertEqual(filtered["bucket_counts"], {AUTO_CLEANUP: 1})
+        self.assertEqual(filtered["selected_decision_counts"], {"ready_for_finalize_gates": 1})
+        self.assertEqual(filtered["items"][0]["title"], "西部世界")
+        self.assertEqual(filtered["items"][0]["review_decision"], "ready_for_finalize_gates")
+        self.assertEqual(len(filtered["filter_skipped_items"]), 2)
+
     def test_cli_writes_batch_review_report_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -2994,6 +3025,56 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("blocked_after_finalize_gates", rendered)
         self.assertIn("source_root_check_failed", rendered)
         self.assertIn("manual_review_required", rendered)
+
+    def test_cli_writes_batch_plan_filter_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            batch = tmp_path / "batch.json"
+            review = tmp_path / "review.json"
+            output = tmp_path / "filtered.json"
+            batch.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-batch-state-plan",
+                        "items": [
+                            {"bucket": AUTO_CLEANUP, "title": "西部世界", "tmdbid": 63247, "season": 1},
+                            {"bucket": AUTO_CLEANUP, "title": "主角", "tmdbid": 284110, "season": 1},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            review.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-batch-human-review-report",
+                        "items": [
+                            {"decision": "ready_for_finalize_gates", "title": "西部世界", "tmdbid": 63247, "season": 1},
+                            {"decision": "done_cleanup_verified", "title": "主角", "tmdbid": 284110, "season": 1},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code = main(
+                [
+                    "batch-plan-filter",
+                    "--batch-plan",
+                    str(batch),
+                    "--review-report",
+                    str(review),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+            data = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(data["planned_items"], 1)
+        self.assertEqual(data["items"][0]["tmdbid"], 63247)
 
     def test_cli_writes_batch_plan_from_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
