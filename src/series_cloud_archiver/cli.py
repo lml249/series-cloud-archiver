@@ -82,9 +82,11 @@ from .extra_source_media import (
     build_extra_source_media_local_path_summary,
     build_extra_source_media_summary,
     build_extra_source_media_plan,
+    build_extra_source_owner_season_plan,
     render_extra_source_media_plan,
     render_extra_source_media_run,
     render_extra_source_media_summary,
+    render_extra_source_owner_season_plan,
     run_extra_source_media_plan,
 )
 from .finalize_remediation import (
@@ -876,6 +878,15 @@ def build_parser() -> argparse.ArgumentParser:
     extra_source_summary_parser.add_argument("--check-local-paths", action="store_true", help="Check source_path existence on this host; readonly filesystem stat only")
     extra_source_summary_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     extra_source_summary_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    extra_source_owner_parser = subcommands.add_parser(
+        "extra-source-owner-season-plan",
+        help="Group extra-source diagnostics by the season that owns the local files",
+    )
+    extra_source_owner_parser.add_argument("--summary-report", required=True, help="JSON report from extra-source-media-summary")
+    extra_source_owner_parser.add_argument("--check-local-paths", action="store_true", help="Check source_path existence on this host; readonly filesystem stat only")
+    extra_source_owner_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
+    extra_source_owner_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     batch_share_preview_parser = subcommands.add_parser("batch-share-preview", help="Build or execute readonly MV3 share previews from a batch-plan report")
     batch_share_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -3087,6 +3098,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             else build_extra_source_media_summary(run_reports)
         )
         rendered = render_extra_source_media_summary(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "extra-source-owner-season-plan":
+        summary_report = load_optional_json_report(args.summary_report)
+        if not isinstance(summary_report, dict):
+            parser.error("extra-source-owner-season-plan requires a valid --summary-report JSON report")
+        report = build_extra_source_owner_season_plan(summary_report, check_local_paths=args.check_local_paths)
+        rendered = render_extra_source_owner_season_plan(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

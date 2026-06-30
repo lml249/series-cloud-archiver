@@ -367,6 +367,129 @@ def render_extra_source_media_summary(report: JsonDict, output_format: str) -> s
     return "\n".join(lines)
 
 
+def build_extra_source_owner_season_plan(
+    summary_report: JsonDict,
+    *,
+    check_local_paths: bool = False,
+) -> JsonDict:
+    """Group extra-source evidence by the season that appears to own the files.
+
+    The extra-source summary is keyed by the cleanup item that was blocked. A
+    single real source season can therefore appear many times when several
+    other seasons share the same source root. This readonly planner deduplicates
+    those repeated references and promotes them into follow-up season work.
+    """
+
+    grouped: Dict[Tuple[str, int, int], JsonDict] = {}
+    internal: Dict[Tuple[str, int, int], Dict[str, object]] = {}
+    details = _items(summary_report.get("details"))
+    for detail in details:
+        title = str(detail.get("title") or "").strip()
+        tmdbid = _safe_int(detail.get("tmdbid"))
+        owner_season = _safe_int(detail.get("suggested_season"))
+        key = (title, tmdbid, owner_season)
+        if key not in grouped:
+            grouped[key] = {
+                "title": title,
+                "tmdbid": tmdbid,
+                "owner_season": owner_season,
+            }
+            internal[key] = {
+                "source_paths": {},
+                "source_references": [],
+                "main_seasons": set(),
+                "episodes": set(),
+                "media_kinds": set(),
+                "warnings": set(),
+                "blockers": set(),
+                "report_indexes": set(),
+                "scan_total_by_path": {},
+                "candidate_by_path": {},
+                "in_library_by_path": {},
+            }
+        _add_owner_detail(internal[key], detail)
+
+    rows = [_owner_plan_row(grouped[key], internal[key], check_local_paths=check_local_paths) for key in grouped]
+
+    detail_report_indexes = {_safe_int(detail.get("report_index")) for detail in details if _safe_int(detail.get("report_index"))}
+    for item in _items(summary_report.get("items")):
+        report_index = _safe_int(item.get("report_index"))
+        if report_index and report_index in detail_report_indexes:
+            continue
+        if str(item.get("status") or "") in {
+            "empty_run_report",
+            "no_readonly_diagnostics",
+            "diagnostic_failed",
+            "source_not_visible_to_mv3_or_empty",
+        }:
+            rows.append(_owner_empty_review_row(item))
+
+    rows.sort(
+        key=lambda item: (
+            int(item.get("priority") or 999999),
+            str(item.get("title") or ""),
+            int(item.get("tmdbid") or 0),
+            int(item.get("owner_season") or 0),
+            int(item.get("report_index") or 0),
+        )
+    )
+    status_counts = Counter(str(row.get("status") or "") for row in rows)
+    action_counts = Counter(str(row.get("action_group") or "") for row in rows)
+    return {
+        "mode": "readonly-extra-source-owner-season-plan",
+        "source_mode": str(summary_report.get("mode") or ""),
+        "ok": True,
+        "grouped_items": len(rows),
+        "source_reference_count": sum(int(row.get("source_reference_count") or 0) for row in rows),
+        "unique_source_path_count": sum(int(row.get("unique_source_path_count") or 0) for row in rows),
+        "duplicate_reference_count": sum(int(row.get("duplicate_reference_count") or 0) for row in rows),
+        "status_counts": dict(sorted(status_counts.items())),
+        "action_group_counts": dict(sorted(action_counts.items())),
+        "check_local_paths": check_local_paths,
+        "items": rows,
+        "safety": (
+            "readonly owner-season plan only; it groups existing summary evidence and optionally checks Path.exists. "
+            "It does not call MV3/MoviePilot/Emby/qBittorrent, transfer cloud media, write STRM/NFO/JPG, "
+            "or delete hlink/source files."
+        ),
+    }
+
+
+def render_extra_source_owner_season_plan(report: JsonDict, output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    if output_format == "csv":
+        return _render_owner_plan_csv(report)
+    lines = [
+        "# Extra Source Owner Season Plan",
+        "",
+        f"- Grouped items: `{report.get('grouped_items', 0)}`",
+        f"- Unique source paths: `{report.get('unique_source_path_count', 0)}`",
+        f"- Duplicate references removed: `{report.get('duplicate_reference_count', 0)}`",
+        f"- Status counts: `{report.get('status_counts', {})}`",
+        "- Safety: readonly grouping plan only; no transfer, scraping, Emby refresh, qB action, or deletion is performed.",
+        "",
+        "| Status | TMDB | Owner S | Episodes | Main S refs | Paths | Title | Next action |",
+        "| --- | ---: | ---: | --- | --- | ---: | --- | --- |",
+    ]
+    for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {status} | {tmdbid} | {owner_season} | {episodes} | {main_seasons} | {paths} | {title} | {next_action} |".format(
+                status=_escape_cell(str(item.get("status") or "")),
+                tmdbid=item.get("tmdbid") or "",
+                owner_season=item.get("owner_season") if item.get("owner_season") != "" else "",
+                episodes=_escape_cell(str(item.get("episodes") or "")),
+                main_seasons=_escape_cell(str(item.get("referenced_main_seasons") or "")),
+                paths=item.get("unique_source_path_count") or 0,
+                title=_escape_cell(str(item.get("title") or "")),
+                next_action=_escape_cell(str(item.get("next_action") or "")),
+            )
+        )
+    return "\n".join(lines)
+
+
 def _media_row(
     *,
     title: str,
@@ -956,6 +1079,187 @@ def _summary_detail_rows(report: JsonDict, report_index: int) -> List[JsonDict]:
     return rows
 
 
+def _add_owner_detail(bucket: Dict[str, object], detail: JsonDict) -> None:
+    source_path = str(detail.get("source_path") or "")
+    if source_path:
+        source_paths = bucket["source_paths"] if isinstance(bucket.get("source_paths"), dict) else {}
+        source_paths[source_path] = str(detail.get("file_name") or PurePosixPath(source_path).name)
+        bucket["source_paths"] = source_paths
+        source_references = bucket["source_references"] if isinstance(bucket.get("source_references"), list) else []
+        source_references.append((_safe_int(detail.get("report_index")), source_path))
+        bucket["source_references"] = source_references
+    for set_key, detail_key in (
+        ("main_seasons", "main_season"),
+        ("episodes", "episode"),
+        ("report_indexes", "report_index"),
+    ):
+        target = bucket[set_key] if isinstance(bucket.get(set_key), set) else set()
+        value = _safe_int(detail.get(detail_key))
+        if value or detail_key == "episode":
+            if value > 0:
+                target.add(value)
+        bucket[set_key] = target
+    media_kinds = bucket["media_kinds"] if isinstance(bucket.get("media_kinds"), set) else set()
+    if str(detail.get("media_kind") or ""):
+        media_kinds.add(str(detail.get("media_kind") or ""))
+    bucket["media_kinds"] = media_kinds
+    warnings = bucket["warnings"] if isinstance(bucket.get("warnings"), set) else set()
+    warnings.update(_strings(detail.get("warnings")))
+    bucket["warnings"] = warnings
+    blockers = bucket["blockers"] if isinstance(bucket.get("blockers"), set) else set()
+    blockers.update(_strings(detail.get("blockers")))
+    bucket["blockers"] = blockers
+    for total_key, detail_key in (
+        ("scan_total_by_path", "scan_total"),
+        ("candidate_by_path", "candidate"),
+        ("in_library_by_path", "in_library"),
+    ):
+        values = bucket[total_key] if isinstance(bucket.get(total_key), dict) else {}
+        if source_path:
+            values[source_path] = max(_safe_int(values.get(source_path)), _safe_int(detail.get(detail_key)))
+        bucket[total_key] = values
+
+
+def _owner_plan_row(base: JsonDict, bucket: Dict[str, object], *, check_local_paths: bool) -> JsonDict:
+    source_paths = bucket.get("source_paths") if isinstance(bucket.get("source_paths"), dict) else {}
+    paths = sorted(str(path) for path in source_paths if str(path))
+    main_seasons = sorted(int(value) for value in bucket.get("main_seasons", set()) if isinstance(value, int))
+    episodes = sorted(int(value) for value in bucket.get("episodes", set()) if isinstance(value, int) and value > 0)
+    report_indexes = sorted(int(value) for value in bucket.get("report_indexes", set()) if isinstance(value, int) and value > 0)
+    media_kinds = sorted(str(value) for value in bucket.get("media_kinds", set()) if str(value))
+    warnings = sorted(str(value) for value in bucket.get("warnings", set()) if str(value))
+    blockers = sorted(str(value) for value in bucket.get("blockers", set()) if str(value))
+    scan_total = sum(_safe_int(value) for value in (bucket.get("scan_total_by_path") if isinstance(bucket.get("scan_total_by_path"), dict) else {}).values())
+    candidate = sum(_safe_int(value) for value in (bucket.get("candidate_by_path") if isinstance(bucket.get("candidate_by_path"), dict) else {}).values())
+    in_library = sum(_safe_int(value) for value in (bucket.get("in_library_by_path") if isinstance(bucket.get("in_library_by_path"), dict) else {}).values())
+    local_existing = 0
+    local_missing = 0
+    if check_local_paths:
+        for path in paths:
+            if Path(path).exists():
+                local_existing += 1
+            else:
+                local_missing += 1
+
+    title = str(base.get("title") or "")
+    tmdbid = _safe_int(base.get("tmdbid"))
+    owner_season = _safe_int(base.get("owner_season"))
+    reference_count = len(_detail_reference_fingerprint(bucket))
+    duplicate_reference_count = max(0, reference_count - len(paths))
+
+    status = "owner_season_cloud_strm_check_required"
+    action_group = "candidate_local_mapping_review"
+    priority = 30
+    next_action = "按这个真实归属 season 复核云端/STRM 是否已完整；未完整时进入批量迁移计划"
+    if not title or tmdbid <= 0:
+        status = "identity_review_required"
+        action_group = "candidate_identity_review"
+        priority = 20
+        next_action = "先补齐标题/TMDB ID，再判断这个额外源文件属于哪一季"
+    elif owner_season < 0:
+        status = "owner_season_review_required"
+        action_group = "candidate_identity_review"
+        priority = 20
+        next_action = "先确认 season 编号，再进入云端/STRM 复核"
+    elif owner_season == 0 or "special" in media_kinds:
+        status = "special_mapping_required"
+        action_group = "special_mapping_required"
+        priority = 25
+        next_action = "先确认 TMDB Season 00 集号映射，再转云盘并只在 STRM 侧刮削"
+    elif candidate > 0 and in_library >= candidate:
+        status = "owner_season_already_in_mv3_library"
+        action_group = "rerun_finalize_after_cloud_check"
+        priority = 40
+        next_action = "MV3 已显示在库；继续复核 STRM/Emby/NFO 后再回到 cleanup gate"
+    elif candidate > 0:
+        status = "owner_season_transfer_review_required"
+        action_group = "candidate_transfer_review"
+        priority = 30
+        next_action = "MV3 scan-source 找到未入库候选；需要按归属 season 生成转存/STRM 计划"
+    elif check_local_paths and paths and local_missing == len(paths):
+        status = "owner_source_paths_missing_review"
+        action_group = "empty_upstream_review"
+        priority = 50
+        next_action = "本地源路径已不存在；回到 cleanup preview/no-hash absent 验证，不能凭旧报告删除"
+
+    if check_local_paths and paths and local_existing and local_missing:
+        status = "owner_source_paths_partial_review"
+        action_group = "candidate_local_mapping_review"
+        priority = min(priority, 20)
+        next_action = "本地源路径一部分存在一部分缺失；先重新扫描源根再规划迁移或清理"
+
+    return {
+        "status": status,
+        "action_group": action_group,
+        "priority": priority,
+        "title": title,
+        "tmdbid": tmdbid,
+        "owner_season": owner_season,
+        "episodes": _range_text(episodes),
+        "episode_count": len(episodes),
+        "referenced_main_seasons": _range_text(main_seasons),
+        "referenced_main_season_count": len(main_seasons),
+        "source_reference_count": reference_count,
+        "unique_source_path_count": len(paths),
+        "duplicate_reference_count": duplicate_reference_count,
+        "source_paths": paths,
+        "source_file_names": [str(source_paths.get(path) or PurePosixPath(path).name) for path in paths],
+        "media_kinds": media_kinds,
+        "report_indexes": report_indexes,
+        "scan_total_count": scan_total,
+        "candidate_count": candidate,
+        "in_library_count": in_library,
+        "local_path_check": check_local_paths,
+        "local_path_existing_count": local_existing,
+        "local_path_missing_count": local_missing,
+        "warnings": warnings,
+        "blockers": blockers,
+        "next_action": next_action,
+    }
+
+
+def _detail_reference_fingerprint(bucket: Dict[str, object]) -> List[Tuple[int, str]]:
+    references = bucket.get("source_references") if isinstance(bucket.get("source_references"), list) else []
+    clean: List[Tuple[int, str]] = []
+    for item in references:
+        if isinstance(item, tuple) and len(item) == 2:
+            clean.append((_safe_int(item[0]), str(item[1])))
+    return clean
+
+
+def _owner_empty_review_row(item: JsonDict) -> JsonDict:
+    return {
+        "status": "empty_upstream_review_required",
+        "action_group": "empty_upstream_review",
+        "priority": 60,
+        "title": str(item.get("title") or ""),
+        "tmdbid": item.get("tmdbid") or "",
+        "owner_season": "",
+        "episodes": "",
+        "episode_count": 0,
+        "referenced_main_seasons": str(item.get("main_seasons") or ""),
+        "referenced_main_season_count": 0,
+        "source_reference_count": 0,
+        "unique_source_path_count": 0,
+        "duplicate_reference_count": 0,
+        "source_paths": [],
+        "source_file_names": [],
+        "media_kinds": [],
+        "report_indexes": [_safe_int(item.get("report_index"))] if _safe_int(item.get("report_index")) else [],
+        "scan_total_count": 0,
+        "candidate_count": 0,
+        "in_library_count": 0,
+        "local_path_check": bool(item.get("local_path_check")),
+        "local_path_existing_count": 0,
+        "local_path_missing_count": 0,
+        "warnings": _strings(item.get("warnings")),
+        "blockers": _strings(item.get("blockers")),
+        "next_action": "上游报告没有可执行明细；回到 finalize/cleanup 源报告重新生成 extra-source plan",
+        "source_status": str(item.get("status") or ""),
+        "source_output_dir": str(item.get("source_output_dir") or ""),
+    }
+
+
 def _render_summary_csv(report: JsonDict) -> str:
     fieldnames = [
         "status",
@@ -1022,8 +1326,79 @@ def _render_summary_csv(report: JsonDict) -> str:
     return output.getvalue().rstrip("\r\n")
 
 
+def _render_owner_plan_csv(report: JsonDict) -> str:
+    fieldnames = [
+        "status",
+        "action_group",
+        "title",
+        "tmdbid",
+        "owner_season",
+        "episodes",
+        "episode_count",
+        "referenced_main_seasons",
+        "referenced_main_season_count",
+        "source_reference_count",
+        "unique_source_path_count",
+        "duplicate_reference_count",
+        "scan_total_count",
+        "candidate_count",
+        "in_library_count",
+        "local_path_check",
+        "local_path_existing_count",
+        "local_path_missing_count",
+        "media_kinds",
+        "report_indexes",
+        "warnings",
+        "blockers",
+        "next_action",
+        "source_paths",
+    ]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        writer.writerow(
+            {
+                "status": item.get("status", ""),
+                "action_group": item.get("action_group", ""),
+                "title": item.get("title", ""),
+                "tmdbid": item.get("tmdbid", ""),
+                "owner_season": item.get("owner_season", ""),
+                "episodes": item.get("episodes", ""),
+                "episode_count": item.get("episode_count", ""),
+                "referenced_main_seasons": item.get("referenced_main_seasons", ""),
+                "referenced_main_season_count": item.get("referenced_main_season_count", ""),
+                "source_reference_count": item.get("source_reference_count", ""),
+                "unique_source_path_count": item.get("unique_source_path_count", ""),
+                "duplicate_reference_count": item.get("duplicate_reference_count", ""),
+                "scan_total_count": item.get("scan_total_count", ""),
+                "candidate_count": item.get("candidate_count", ""),
+                "in_library_count": item.get("in_library_count", ""),
+                "local_path_check": item.get("local_path_check", ""),
+                "local_path_existing_count": item.get("local_path_existing_count", ""),
+                "local_path_missing_count": item.get("local_path_missing_count", ""),
+                "media_kinds": "; ".join(_strings(item.get("media_kinds"))),
+                "report_indexes": "; ".join(str(value) for value in item.get("report_indexes", []) if str(value)) if isinstance(item.get("report_indexes"), list) else "",
+                "warnings": "; ".join(_strings(item.get("warnings"))),
+                "blockers": "; ".join(_strings(item.get("blockers"))),
+                "next_action": item.get("next_action", ""),
+                "source_paths": "; ".join(_strings(item.get("source_paths"))),
+            }
+        )
+    return output.getvalue().rstrip("\r\n")
+
+
 def _items(value: object) -> List[JsonDict]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _safe_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _int_from_summary(item: JsonDict, key: str) -> int:

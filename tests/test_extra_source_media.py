@@ -9,9 +9,11 @@ from series_cloud_archiver.extra_source_media import (
     build_extra_source_media_local_path_summary,
     build_extra_source_media_summary,
     build_extra_source_media_plan,
+    build_extra_source_owner_season_plan,
     render_extra_source_media_plan,
     render_extra_source_media_run,
     render_extra_source_media_summary,
+    render_extra_source_owner_season_plan,
     run_extra_source_media_plan,
 )
 
@@ -457,6 +459,137 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
         self.assertEqual(payload["items"][0]["status"], "extra_source_belongs_to_other_season")
         self.assertEqual(payload["items"][0]["suggested_seasons"], "2")
         self.assertEqual(payload["items"][0]["episodes"], "3")
+
+    def test_owner_season_plan_deduplicates_repeated_cross_season_references(self) -> None:
+        details = []
+        for report_index, main_season in enumerate([1, 2, 4], start=1):
+            for episode in [1, 2]:
+                details.append(
+                    {
+                        "report_index": report_index,
+                        "title": "9号秘事",
+                        "tmdbid": 61746,
+                        "main_season": main_season,
+                        "suggested_season": 3,
+                        "episode": episode,
+                        "media_kind": "episode",
+                        "file_name": f"Inside.No.9.S03E{episode:02d}.mkv",
+                        "source_path": f"/volume-example/source-tv/Inside.No.9.S03/Inside.No.9.S03E{episode:02d}.mkv",
+                        "scan_total": 0,
+                        "candidate": 0,
+                        "in_library": 0,
+                        "warnings": ["no_scan_items_found"],
+                        "blockers": [],
+                    }
+                )
+        summary = {
+            "mode": "readonly-extra-source-media-local-path-summary",
+            "items": [
+                {
+                    "status": "extra_source_belongs_to_other_season",
+                    "report_index": 1,
+                },
+                {
+                    "status": "empty_run_report",
+                    "report_index": 99,
+                    "source_output_dir": "/example/output/empty",
+                },
+            ],
+            "details": details,
+        }
+
+        plan = build_extra_source_owner_season_plan(summary)
+
+        self.assertEqual(plan["mode"], "readonly-extra-source-owner-season-plan")
+        self.assertEqual(plan["grouped_items"], 2)
+        owner = next(item for item in plan["items"] if item["title"] == "9号秘事")
+        self.assertEqual(owner["status"], "owner_season_cloud_strm_check_required")
+        self.assertEqual(owner["owner_season"], 3)
+        self.assertEqual(owner["episodes"], "1-2")
+        self.assertEqual(owner["referenced_main_seasons"], "1,2,4")
+        self.assertEqual(owner["source_reference_count"], 6)
+        self.assertEqual(owner["unique_source_path_count"], 2)
+        self.assertEqual(owner["duplicate_reference_count"], 4)
+        self.assertEqual(owner["source_paths"], sorted(set(row["source_path"] for row in details)))
+        empty = next(item for item in plan["items"] if item["status"] == "empty_upstream_review_required")
+        self.assertEqual(empty["action_group"], "empty_upstream_review")
+        rendered = render_extra_source_owner_season_plan(plan, "markdown")
+        self.assertIn("Duplicate references removed", rendered)
+        self.assertIn("9号秘事", render_extra_source_owner_season_plan(plan, "csv"))
+
+    def test_owner_season_plan_marks_special_mapping_required(self) -> None:
+        summary = {
+            "mode": "readonly-extra-source-media-local-path-summary",
+            "details": [
+                {
+                    "report_index": 1,
+                    "title": "兄弟连",
+                    "tmdbid": 4613,
+                    "main_season": 1,
+                    "suggested_season": 0,
+                    "episode": 1,
+                    "media_kind": "special",
+                    "file_name": "Band.of.Brothers.SP1.We.Stand.Alone.mkv",
+                    "source_path": "/volume-example/source-tv/Band.of.Brothers.SP1.We.Stand.Alone.mkv",
+                    "warnings": ["no_scan_items_found"],
+                }
+            ],
+        }
+
+        plan = build_extra_source_owner_season_plan(summary)
+
+        self.assertEqual(plan["grouped_items"], 1)
+        self.assertEqual(plan["items"][0]["status"], "special_mapping_required")
+        self.assertEqual(plan["items"][0]["action_group"], "special_mapping_required")
+
+    def test_cli_writes_extra_source_owner_season_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            summary = tmp_path / "summary.json"
+            output = tmp_path / "owner.json"
+            source = tmp_path / "Demo.S02E01.mkv"
+            source.write_text("video", encoding="utf-8")
+            summary.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-extra-source-media-local-path-summary",
+                        "details": [
+                            {
+                                "report_index": 1,
+                                "title": "示例剧",
+                                "tmdbid": 123,
+                                "main_season": 1,
+                                "suggested_season": 2,
+                                "episode": 1,
+                                "media_kind": "episode",
+                                "file_name": source.name,
+                                "source_path": str(source),
+                                "warnings": ["no_scan_items_found"],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code = main(
+                [
+                    "extra-source-owner-season-plan",
+                    "--summary-report",
+                    str(summary),
+                    "--check-local-paths",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["items"][0]["local_path_existing_count"], 1)
+        self.assertEqual(payload["items"][0]["owner_season"], 2)
 
 
 if __name__ == "__main__":
