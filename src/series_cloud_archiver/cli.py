@@ -78,7 +78,12 @@ from .identity import (
     resolve_identity_overrides_from_cloud_report,
     resolve_identity_overrides_from_scan_report,
 )
-from .extra_source_media import build_extra_source_media_plan, render_extra_source_media_plan
+from .extra_source_media import (
+    build_extra_source_media_plan,
+    render_extra_source_media_plan,
+    render_extra_source_media_run,
+    run_extra_source_media_plan,
+)
 from .finalize_remediation import (
     build_finalize_cleanup_remediation_plan,
     build_finalize_expected_update_plan,
@@ -844,6 +849,20 @@ def build_parser() -> argparse.ArgumentParser:
     extra_source_parser.add_argument("--season", type=int, default=0, help="Optional season filter")
     extra_source_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     extra_source_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    extra_source_run_parser = subcommands.add_parser(
+        "extra-source-media-run",
+        help="Run readonly MV3 scan-source diagnostics from an extra-source-media-plan report",
+    )
+    extra_source_run_parser.add_argument("--plan", required=True, help="JSON report from extra-source-media-plan")
+    extra_source_run_parser.add_argument("--output-dir", required=True, help="Directory for per-command scan-source reports")
+    extra_source_run_parser.add_argument("--title", action="append", default=[], help="Limit to titles containing this text; can be repeated")
+    extra_source_run_parser.add_argument("--limit", type=int, default=0, help="Maximum selected ready_for_mv3_scan items; 0 means all")
+    extra_source_run_parser.add_argument("--execute-readonly", action="store_true", help="Actually run allowlisted readonly scan-source commands")
+    extra_source_run_parser.add_argument("--cwd", default="", help="Working directory for executed diagnostics; defaults to current directory")
+    extra_source_run_parser.add_argument("--process-timeout", type=int, default=300, help="Per-command process timeout in seconds")
+    extra_source_run_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
+    extra_source_run_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     batch_share_preview_parser = subcommands.add_parser("batch-share-preview", help="Build or execute readonly MV3 share previews from a batch-plan report")
     batch_share_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -3017,6 +3036,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(rendered)
         return 0
+
+    if args.command == "extra-source-media-run":
+        plan_report = load_optional_json_report(args.plan)
+        if not isinstance(plan_report, dict):
+            parser.error("extra-source-media-run requires a valid --plan JSON report")
+        report = run_extra_source_media_plan(
+            plan_report,
+            output_dir=args.output_dir,
+            titles=args.title,
+            limit=args.limit,
+            execute_readonly=args.execute_readonly,
+            cwd=args.cwd,
+            process_timeout=args.process_timeout,
+        )
+        rendered = render_extra_source_media_run(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
 
     if args.command == "batch-share-preview":
         batch_plan = load_optional_json_report(args.batch_plan)
