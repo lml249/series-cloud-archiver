@@ -175,15 +175,77 @@ class CloudCompleteCleanupTest(unittest.TestCase):
             item = cloud_complete_item(root)
             item["source_paths"] = ["/volume-example/volume-example/TV/Silent.Honor.S01"]
             preview = ready_preview()
+            preview["source_roots"] = ["/volume-example/TV/Silent.Honor.S01"]
+            preview["source_check_paths"] = [
+                "/volume-example/TV/Silent.Honor.S01/Silent.Honor.S01E01.mkv",
+                "/volume-example/TV/Silent.Honor.S01/Silent.Honor.S01E02.mkv",
+            ]
             preview["destination_roots"] = ["/volume-example/hlink/TV/Silent.Honor.S01"]
             report = {"items": [item]}
 
             with patch("series_cloud_archiver.cloud_cleanup.mp_cleanup_preview_from_transfer_history", return_value=preview):
-                plan = plan_cloud_complete_cleanup(report, "http://mp.example", "token")
+                plan = plan_cloud_complete_cleanup(
+                    report,
+                    "http://mp.example",
+                    "token",
+                    path_aliases={"/volume-example/volume-example": "/volume-example"},
+                )
 
         self.assertEqual(plan["ready_items"], 1)
         self.assertTrue(plan["items"][0]["ready_for_execute"])
         self.assertNotIn("mp_destination_root_not_in_cloud_source_paths", plan["items"][0]["execution_blockers"])
+
+    def test_plan_accepts_organized_hlink_destination_when_source_root_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm" / "series" / "沉默的荣耀 (2025) {tmdbid=281538}" / "Season 1"
+            touch_strm(root / "沉默的荣耀 S01E01.strm")
+            touch_strm(root / "沉默的荣耀 S01E02.strm")
+            item = cloud_complete_item(root)
+            item["source_paths"] = ["/volume-example/volume-example/TV/Silent.Honor.S01"]
+            preview = ready_preview()
+            preview["source_roots"] = ["/volume-example/TV/Silent.Honor.S01"]
+            preview["source_check_paths"] = [
+                "/volume-example/TV/Silent.Honor.S01/Silent.Honor.S01E01.mkv",
+                "/volume-example/TV/Silent.Honor.S01/Silent.Honor.S01E02.mkv",
+            ]
+            preview["destination_roots"] = ["/volume-example/hlink/TV/沉默的荣耀 (2025) {tmdbid=281538}/Season 01"]
+            report = {"items": [item]}
+
+            with patch("series_cloud_archiver.cloud_cleanup.mp_cleanup_preview_from_transfer_history", return_value=preview):
+                plan = plan_cloud_complete_cleanup(
+                    report,
+                    "http://mp.example",
+                    "token",
+                    path_aliases={"/volume-example/volume-example": "/volume-example"},
+                )
+
+        self.assertEqual(plan["ready_items"], 1)
+        self.assertTrue(plan["items"][0]["ready_for_execute"])
+        self.assertNotIn("mp_destination_root_not_in_cloud_source_paths", plan["items"][0]["execution_blockers"])
+        self.assertNotIn("mp_source_root_not_in_cloud_source_paths", plan["items"][0]["execution_blockers"])
+
+    def test_plan_blocks_organized_hlink_destination_when_source_root_is_unrelated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm" / "series" / "沉默的荣耀 (2025) {tmdbid=281538}" / "Season 1"
+            touch_strm(root / "沉默的荣耀 S01E01.strm")
+            touch_strm(root / "沉默的荣耀 S01E02.strm")
+            item = cloud_complete_item(root)
+            item["source_paths"] = ["/volume-example/volume-example/TV/Silent.Honor.S01"]
+            preview = ready_preview()
+            preview["source_roots"] = ["/volume-example/TV/Other.Show.S01"]
+            preview["destination_roots"] = ["/volume-example/hlink/TV/沉默的荣耀 (2025) {tmdbid=281538}/Season 01"]
+            report = {"items": [item]}
+
+            with patch("series_cloud_archiver.cloud_cleanup.mp_cleanup_preview_from_transfer_history", return_value=preview):
+                plan = plan_cloud_complete_cleanup(
+                    report,
+                    "http://mp.example",
+                    "token",
+                    path_aliases={"/volume-example/volume-example": "/volume-example"},
+                )
+
+        self.assertEqual(plan["ready_items"], 0)
+        self.assertIn("mp_source_root_not_in_cloud_source_paths", plan["items"][0]["execution_blockers"])
 
     def test_plan_blocks_unrelated_hlink_destination(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

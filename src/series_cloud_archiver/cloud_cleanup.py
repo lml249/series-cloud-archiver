@@ -282,7 +282,15 @@ def _plan_cleanup_item(
     destination_roots_host = [_service_to_host_path(path, path_aliases) for path in destination_roots_service]
     cloud_source_paths = _string_list(item.get("source_paths"))
     allowed_destination_roots = _cleanup_destination_source_variants(cloud_source_paths, path_aliases)
-    if cloud_source_paths and destination_roots_host and not set(_normalize_paths(destination_roots_host)).intersection(allowed_destination_roots):
+    destination_matches_cloud_source = bool(set(_normalize_paths(destination_roots_host)).intersection(allowed_destination_roots))
+    destination_matches_expected_hlink = bool(destination_roots_host) and all(
+        _destination_root_matches_expected_hlink(path, title=title, tmdbid=tmdbid, season=season)
+        for path in destination_roots_host
+    )
+    if cloud_source_paths and source_roots_host and not _cloud_sources_are_hlink_paths(cloud_source_paths):
+        if not _source_roots_match_cloud_sources(source_roots_host, cloud_source_paths, path_aliases):
+            blockers.append("mp_source_root_not_in_cloud_source_paths")
+    if cloud_source_paths and destination_roots_host and not (destination_matches_cloud_source or destination_matches_expected_hlink):
         blockers.append("mp_destination_root_not_in_cloud_source_paths")
 
     qb_targets = [target for target in preview.get("qb_targets", []) if isinstance(target, dict)]
@@ -443,13 +451,46 @@ def _service_to_host_path(path: str, path_aliases: Dict[str, str]) -> str:
 def _cleanup_destination_source_variants(source_paths: Sequence[str], path_aliases: Dict[str, str]) -> Set[str]:
     variants: List[str] = []
     for path in source_paths:
-        for candidate in (str(path or "").rstrip("/"), _service_to_host_path(str(path or ""), path_aliases)):
+        for candidate in _path_alias_variants(str(path or "").rstrip("/"), path_aliases):
             if candidate and candidate not in variants:
                 variants.append(candidate)
             hlink_variant = _source_path_to_hlink_variant(candidate)
-            if hlink_variant and hlink_variant not in variants:
-                variants.append(hlink_variant)
+            for hlink_candidate in _path_alias_variants(hlink_variant, path_aliases):
+                if hlink_candidate and hlink_candidate not in variants:
+                    variants.append(hlink_candidate)
     return _normalize_paths(variants)
+
+
+def _source_roots_match_cloud_sources(source_roots: Sequence[str], source_paths: Sequence[str], path_aliases: Dict[str, str]) -> bool:
+    source_variants = _normalize_paths(
+        [
+            variant
+            for path in source_paths
+            for variant in _path_alias_variants(str(path or "").rstrip("/"), path_aliases)
+        ]
+    )
+    roots = _normalize_paths(source_roots)
+    if not source_variants or not roots:
+        return True
+    return all(any(_path_contains_or_equals(source, root) or _path_contains_or_equals(root, source) for source in source_variants) for root in roots)
+
+
+def _destination_root_matches_expected_hlink(path: str, title: str, tmdbid: int, season: int) -> bool:
+    normalized = str(path or "").replace("\\", "/").rstrip("/")
+    if not normalized or "/hlink/" not in normalized:
+        return False
+    if tmdbid > 0:
+        if f"{{tmdbid={tmdbid}}}".casefold() not in normalized.casefold():
+            return False
+    elif title and _normalize_title_token(title) not in _normalize_title_token(normalized):
+        return False
+    seasons = _season_numbers_from_path(normalized)
+    return not seasons or season <= 0 or season in seasons
+
+
+def _cloud_sources_are_hlink_paths(source_paths: Sequence[str]) -> bool:
+    paths = [str(path or "").replace("\\", "/") for path in source_paths if str(path or "")]
+    return bool(paths) and all("/hlink/" in path for path in paths)
 
 
 def _source_path_to_hlink_variant(path: str) -> str:
@@ -459,6 +500,39 @@ def _source_path_to_hlink_variant(path: str) -> str:
     if match:
         return f"{match.group(1)}/hlink/TV/{match.group(2)}"
     return ""
+
+
+def _path_alias_variants(path: str, path_aliases: Dict[str, str]) -> List[str]:
+    clean = str(path or "").rstrip("/")
+    if not clean:
+        return []
+    variants = [clean]
+    for host_prefix, service_prefix in path_aliases.items():
+        for source, target in ((host_prefix, service_prefix), (service_prefix, host_prefix)):
+            if clean == source or clean.startswith(source + "/"):
+                mapped = target + clean[len(source) :]
+                if mapped not in variants:
+                    variants.append(mapped)
+    return variants
+
+
+def _path_contains_or_equals(parent: str, child: str) -> bool:
+    clean_parent = str(parent or "").rstrip("/")
+    clean_child = str(child or "").rstrip("/")
+    return bool(clean_parent and clean_child) and (clean_child == clean_parent or clean_child.startswith(clean_parent + "/"))
+
+
+def _season_numbers_from_path(path: str) -> List[int]:
+    numbers: List[int] = []
+    for match in re.finditer(r"(?i)(?:^|/|[\s._-])Season[\s._-]*(\d{1,2})(?:$|/|[\s._-])", path):
+        number = int(match.group(1))
+        if number not in numbers:
+            numbers.append(number)
+    return numbers
+
+
+def _normalize_title_token(value: str) -> str:
+    return re.sub(r"[\W_]+", "", value or "", flags=re.UNICODE).casefold()
 
 
 def _normalize_paths(paths: Sequence[str]) -> Set[str]:
