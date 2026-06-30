@@ -126,6 +126,9 @@ class FinalizeFakeActions:
     def cleanup_execute(self, *args: object, **kwargs: object) -> dict:
         return self._ok("cloud-hlink-cleanup-execute", args=list(args), kwargs=kwargs)
 
+    def empty_hlink_root_cleanup(self, **kwargs: object) -> dict:
+        return self._ok("hlink-empty-root-cleanup", kwargs=kwargs)
+
 
 class TransferFakeActions:
     def __init__(
@@ -296,6 +299,7 @@ def _batch_finalize_actions(actions: FinalizeFakeActions) -> BatchFinalizeAction
         emby_delete_stale=actions.emby_delete_stale,
         cleanup_preview=actions.cleanup_preview,
         cleanup_execute=actions.cleanup_execute,
+        empty_hlink_root_cleanup=actions.empty_hlink_root_cleanup,
     )
 
 
@@ -757,7 +761,12 @@ class BatchRunnerTest(unittest.TestCase):
 
         self.assertTrue(report["ok"])
         self.assertEqual(report["items"][0]["status"], "cleanup_executed")
-        self.assertIn("cloud-hlink-cleanup-execute", [call[0] for call in actions.calls])
+        call_names = [call[0] for call in actions.calls]
+        self.assertIn("cloud-hlink-cleanup-execute", call_names)
+        self.assertIn("hlink-empty-root-cleanup", call_names)
+        empty_root_call = next(call for call in actions.calls if call[0] == "hlink-empty-root-cleanup")
+        self.assertEqual(empty_root_call[1]["kwargs"]["hlink_root"], "/example/local-tv/折腰 (2025)")
+        self.assertTrue(empty_root_call[1]["kwargs"]["approve_delete"])
 
     def test_batch_finalize_run_carries_cleanup_unlinked_video_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

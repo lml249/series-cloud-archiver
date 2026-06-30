@@ -13,7 +13,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .cleanup_verify import audit_strm_nfo_language, verify_strm_paths
 from .emby import delete_stale_emby_paths, notify_and_verify_emby_media_updated
-from .hlink_cleanup import execute_cloud_hlink_cleanup, preview_cloud_hlink_cleanup
+from .hlink_cleanup import cleanup_empty_hlink_root, execute_cloud_hlink_cleanup, preview_cloud_hlink_cleanup
 from .moviepilot import scrape_mp_strm_path
 from .mv3 import cleanup_mv3_cloud_duplicate_videos
 from .reporting import human_size
@@ -36,6 +36,7 @@ class BatchFinalizeActions:
     emby_delete_stale: Callable[..., Dict[str, object]] = delete_stale_emby_paths
     cleanup_preview: Callable[..., Dict[str, object]] = preview_cloud_hlink_cleanup
     cleanup_execute: Callable[..., Dict[str, object]] = execute_cloud_hlink_cleanup
+    empty_hlink_root_cleanup: Callable[..., Dict[str, object]] = cleanup_empty_hlink_root
 
 
 def build_batch_plan(
@@ -834,6 +835,21 @@ def _run_finalize_item(
     ):
         row["status"] = "failed_cleanup_execute"
         return row
+    parent_hlink_root = str(PurePosixPath(hlink_root).parent) if hlink_root else ""
+    if parent_hlink_root and parent_hlink_root != hlink_root:
+        if not _append_stage(
+            row,
+            _stage_report_path(output_dir, report_prefix, "07-hlink-empty-root-cleanup"),
+            "hlink_empty_root_cleanup",
+            actions.empty_hlink_root_cleanup(
+                title=title,
+                hlink_root=parent_hlink_root,
+                expected_tmdbid=tmdbid,
+                approve_delete=True,
+            ),
+        ):
+            row["status"] = "failed_empty_hlink_root_cleanup"
+            return row
     row["status"] = "cleanup_executed"
     return row
 
