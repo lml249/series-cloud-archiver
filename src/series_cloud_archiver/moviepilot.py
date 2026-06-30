@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -127,6 +128,14 @@ class MoviePilotClient:
                 "ok": False,
                 "request": safe_body,
                 "response": _parse_json_object(text),
+            }
+        except (TimeoutError, socket.timeout, urllib.error.URLError, OSError) as exc:
+            return {
+                "http_status": 0,
+                "ok": False,
+                "request": safe_body,
+                "error_type": _network_error_type(exc),
+                "response": {"message": redact_sensitive_text(str(exc))},
             }
 
     def current_subscriptions(self) -> List[MPSubscriptionRecord]:
@@ -752,6 +761,10 @@ def _parse_json_object(text: str) -> Dict[str, object]:
     except json.JSONDecodeError:
         return {"raw": redact_sensitive_text(text)}
     return parsed if isinstance(parsed, dict) else {"data": parsed}
+
+
+def _network_error_type(exc: BaseException) -> str:
+    return "TimeoutError" if isinstance(exc, (TimeoutError, socket.timeout)) else type(exc).__name__
 
 
 def _mp_cleanup_execution_blockers(

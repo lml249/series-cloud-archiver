@@ -1,4 +1,5 @@
 import json
+import socket
 import sqlite3
 import tempfile
 import unittest
@@ -2419,6 +2420,49 @@ class MoviePilotEvidenceTest(unittest.TestCase):
         )
         self.assertEqual(result["request"]["path"], "/example/container/mv3/strm/series/Demo Series (2026) {tmdbid=1}")
         self.assertEqual(result["response"], {"success": True, "message": "queued"})
+
+    def test_moviepilot_client_scrape_media_reports_timeout_without_raising(self) -> None:
+        def fake_urlopen(_request, timeout):
+            raise socket.timeout("timed out")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            result = MoviePilotClient("http://moviepilot.example", "local-token", timeout=1).scrape_media(
+                "/example/container/mv3/strm/series/Demo Series (2026) {tmdbid=1}",
+                storage="local",
+                item_type="dir",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["http_status"], 0)
+        self.assertEqual(result["error_type"], "TimeoutError")
+        self.assertEqual(result["response"]["message"], "timed out")
+
+    def test_mp_scrape_strm_reports_timeout_as_gate_failure(self) -> None:
+        class FakeClient:
+            def __init__(self, base_url, token, timeout=120):
+                self.timeout = timeout
+
+            def scrape_media(self, path, storage="local", item_type="dir"):
+                return {
+                    "http_status": 0,
+                    "ok": False,
+                    "request": {"path": path, "storage": storage, "type": item_type},
+                    "error_type": "TimeoutError",
+                    "response": {"message": "timed out"},
+                }
+
+        with patch("series_cloud_archiver.moviepilot.MoviePilotClient", FakeClient):
+            report = scrape_mp_strm_path(
+                "http://moviepilot.example",
+                "token",
+                strm_path="/example/host/mv3/strm/series/Demo Series (2026) {tmdbid=1}",
+                mp_path="/example/container/mv3/strm/series/Demo Series (2026) {tmdbid=1}",
+                timeout=1,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("mp_scrape_request_failed", report["blockers"])
+        self.assertEqual(report["scrape"]["error_type"], "TimeoutError")
 
     def test_mp_scrape_strm_blocks_cloud_media_path(self) -> None:
         calls = []
