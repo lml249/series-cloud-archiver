@@ -703,7 +703,12 @@ def build_parser() -> argparse.ArgumentParser:
     batch_share_preview_parser = subcommands.add_parser("batch-share-preview", help="Build or execute readonly MV3 share previews from a batch-plan report")
     batch_share_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
     batch_share_preview_parser.add_argument("--batch-plan", required=True, help="JSON report from batch-plan")
-    batch_share_preview_parser.add_argument("--bucket", action="append", default=[], help="Batch bucket to consider; defaults to manual_review")
+    batch_share_preview_parser.add_argument(
+        "--bucket",
+        action="append",
+        default=[],
+        help="Batch bucket to consider; defaults to auto_ready_for_transfer_preview and manual_review",
+    )
     batch_share_preview_parser.add_argument("--min-candidate-score", type=int, default=55, help="Minimum best-candidate score to preview")
     batch_share_preview_parser.add_argument("--allowed-best-blocker", action="append", default=[], help="Best-candidate blocker allowed for readonly preview; defaults to episode_coverage_unclear")
     batch_share_preview_parser.add_argument("--limit", type=int, default=10, help="Maximum planned/executed preview rows")

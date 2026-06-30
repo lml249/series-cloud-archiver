@@ -1726,6 +1726,51 @@ class BatchRunnerTest(unittest.TestCase):
 
 
 class BatchSharePreviewTest(unittest.TestCase):
+    def test_default_preview_buckets_include_auto_transfer_and_manual_review(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_TRANSFER,
+                    "title": "夫妻的世界",
+                    "tmdbid": 96164,
+                    "season": 1,
+                    "expected_episode_count": 16,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 1,
+                            "search_keyword": "夫妻的世界",
+                            "title": "夫妻的世界 全16集",
+                            "score": 80,
+                            "blockers": [],
+                        }
+                    },
+                },
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "鱿鱼游戏",
+                    "tmdbid": 93405,
+                    "season": 1,
+                    "expected_episode_count": 9,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 11,
+                            "search_keyword": "鱿鱼游戏 Season 01",
+                            "title": "鱿鱼游戏 第一季",
+                            "score": 55,
+                            "blockers": ["episode_coverage_unclear"],
+                        }
+                    },
+                },
+            ],
+        }
+
+        report = build_batch_share_preview_plan(batch_plan, env_file="/safe/.env", limit=10)
+
+        self.assertEqual(report["settings"]["buckets"], [AUTO_TRANSFER, MANUAL_REVIEW])
+        self.assertEqual(report["executable_preview_items"], 2)
+        self.assertEqual([item["status"] for item in report["items"]], ["planned_preview", "planned_preview"])
+
     def test_builds_dry_run_preview_plan_for_episode_unclear_candidate(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",

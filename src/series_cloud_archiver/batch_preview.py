@@ -7,7 +7,9 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 
 DEFAULT_ALLOWED_BEST_BLOCKERS = ["episode_coverage_unclear"]
+AUTO_TRANSFER = "auto_ready_for_transfer_preview"
 MANUAL_REVIEW = "manual_review"
+DEFAULT_PREVIEW_BUCKETS = [AUTO_TRANSFER, MANUAL_REVIEW]
 
 
 PreviewFunc = Callable[..., Dict[str, object]]
@@ -33,7 +35,7 @@ def build_batch_share_preview_plan(
 ) -> Dict[str, object]:
     """Build or execute readonly MV3 share previews for batch-plan candidates."""
 
-    wanted_buckets = set(str(item) for item in (buckets or [MANUAL_REVIEW]) if str(item))
+    wanted_buckets = set(str(item) for item in (buckets or DEFAULT_PREVIEW_BUCKETS) if str(item))
     allowed_blockers = set(str(item) for item in (allowed_best_blockers or DEFAULT_ALLOWED_BEST_BLOCKERS) if str(item))
     rows: List[Dict[str, object]] = []
     executed = 0

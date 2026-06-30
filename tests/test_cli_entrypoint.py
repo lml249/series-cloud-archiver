@@ -213,7 +213,23 @@ class CliEntrypointTest(unittest.TestCase):
                                         "blockers": ["episode_coverage_unclear"],
                                     }
                                 },
-                            }
+                            },
+                            {
+                                "bucket": "auto_ready_for_transfer_preview",
+                                "title": "夫妻的世界",
+                                "tmdbid": 96164,
+                                "season": 1,
+                                "expected_episode_count": 16,
+                                "candidate_diagnostics": {
+                                    "best_candidate": {
+                                        "search_index": 1,
+                                        "search_keyword": "夫妻的世界",
+                                        "title": "夫妻的世界 全16集",
+                                        "score": 80,
+                                        "blockers": [],
+                                    }
+                                },
+                            },
                         ],
                     },
                     ensure_ascii=False,
@@ -248,7 +264,8 @@ class CliEntrypointTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["mode"], "readonly-batch-mv3-share-preview")
-            self.assertEqual(payload["executable_preview_items"], 1)
+            self.assertEqual(payload["settings"]["buckets"], ["auto_ready_for_transfer_preview", "manual_review"])
+            self.assertEqual(payload["executable_preview_items"], 2)
             self.assertIn("mv3-share-preview", payload["items"][0]["command"])
 
     def test_batch_share_receive_plan_writes_approval_gated_commands(self) -> None:
