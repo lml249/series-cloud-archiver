@@ -55,6 +55,7 @@ class FinalizeFakeActions:
         self.calls: list[tuple[str, dict]] = []
         self.cloud_duplicate_count = 0
         self.mp_scrape_timeout = False
+        self.cleanup_already_absent = False
 
     def _ok(self, stage: str, **extra: object) -> dict:
         self.calls.append((stage, dict(extra)))
@@ -134,6 +135,22 @@ class FinalizeFakeActions:
         )
 
     def cleanup_preview(self, **kwargs: object) -> dict:
+        if self.cleanup_already_absent:
+            self.calls.append(("cloud-hlink-cleanup-preview", {"expected": {"tmdbid": kwargs.get("expected_tmdbid")}, "hlink": {"path": kwargs.get("hlink_root")}}))
+            return {
+                "mode": "cloud-hlink-cleanup-preview",
+                "ok": False,
+                "ready_for_execute": False,
+                "blockers": [
+                    "hlink_episode_signal_missing",
+                    "hlink_expected_episodes_missing",
+                    "hlink_root_missing",
+                    "qb_match_required",
+                ],
+                "warnings": [],
+                "hlink": {"path": kwargs.get("hlink_root"), "exists": False, "video_count": 0},
+                "filesystem": {"source_roots": [], "hlink_coverage": {"complete": False}},
+            }
         return self._ok(
             "cloud-hlink-cleanup-preview",
             expected={
@@ -142,6 +159,47 @@ class FinalizeFakeActions:
             },
             hlink={"path": kwargs.get("hlink_root")},
             qbittorrent={"hashes": ["abcdef123456"], "matched_count": 1},
+        )
+
+    def qb_orphan_preview(self, **kwargs: object) -> dict:
+        if self.cleanup_already_absent:
+            hashes = kwargs.get("expected_hashes", [])
+            source_roots = kwargs.get("source_roots", [])
+            hlink_roots = kwargs.get("hlink_roots", [])
+            self.calls.append(("qb-orphan-torrent-cleanup-preview", {"kwargs": kwargs}))
+            return {
+                "mode": "qb-orphan-torrent-cleanup-preview",
+                "ok": False,
+                "ready_for_execute": False,
+                "expected": {
+                    "qb_hashes": hashes,
+                    "source_roots": source_roots,
+                    "hlink_roots": hlink_roots,
+                },
+                "qbittorrent": {"missing_hashes": hashes, "matched_count": 0, "matches": []},
+                "filesystem": {
+                    "source_roots": [{"path": path, "exists": False, "video_count": 0} for path in source_roots],
+                    "hlink_roots": [{"path": path, "exists": False, "video_count": 0} for path in hlink_roots],
+                },
+                "strm": {"ok": True},
+                "cloud_media": {"ok": True},
+                "blockers": ["qb_torrent_not_found"],
+                "warnings": [],
+            }
+        return self._ok(
+            "qb-orphan-torrent-cleanup-preview",
+            expected={
+                "qb_hashes": kwargs.get("expected_hashes"),
+                "source_roots": kwargs.get("source_roots"),
+                "hlink_roots": kwargs.get("hlink_roots"),
+            },
+            qbittorrent={"missing_hashes": kwargs.get("expected_hashes"), "matched_count": 0},
+            filesystem={
+                "source_roots": [{"path": path, "exists": False, "video_count": 0} for path in kwargs.get("source_roots", [])],
+                "hlink_roots": [{"path": path, "exists": False, "video_count": 0} for path in kwargs.get("hlink_roots", [])],
+            },
+            strm={"ok": True},
+            cloud_media={"ok": True},
         )
 
     def cleanup_execute(self, *args: object, **kwargs: object) -> dict:
@@ -428,6 +486,7 @@ def _batch_finalize_actions(actions: FinalizeFakeActions) -> BatchFinalizeAction
         cleanup_preview=actions.cleanup_preview,
         cleanup_execute=actions.cleanup_execute,
         empty_hlink_root_cleanup=actions.empty_hlink_root_cleanup,
+        qb_orphan_preview=actions.qb_orphan_preview,
     )
 
 
@@ -714,6 +773,7 @@ class BatchRunnerTest(unittest.TestCase):
                     "season": 1,
                     "expected_episode_count": 36,
                     "source_paths": ["/example/local-tv/折腰 (2025)/Season 1"],
+                    "source_qb_hashes": ["abcdef123456abcdef123456abcdef123456abcd"],
                     "cloud_media_path": "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1",
                     "strm_root": "/example/host/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
                 }
@@ -726,6 +786,7 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(report["finalize_ready_items"], 1)
         item = report["items"][0]
         self.assertEqual(item["status"], "planned_finalize")
+        self.assertEqual(item["source_qb_hashes"], ["abcdef123456abcdef123456abcdef123456abcd"])
         self.assertEqual(item["service_strm_root"], "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
         self.assertEqual(item["mp_strm_root"], "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
         self.assertEqual(item["cloud_title_path"], "/已整理/series/折腰 (2025) {tmdbid=296753}")
@@ -882,6 +943,7 @@ class BatchRunnerTest(unittest.TestCase):
                     "strm_paths_sample": ["/strm/series/西部世界 (2016) {tmdbid=63247}/Season 02/Westworld S02E01.strm"],
                     "strm_target_prefix": "/organized-root/Westworld (2016)/Season 2",
                     "source_paths": ["/example/local-tv/Westworld.S02"],
+                    "source_qb_hashes": ["5156eaba092143c5424c77af945a7ac4bd509074"],
                 }
             ],
         }
@@ -896,6 +958,7 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(item["bucket"], AUTO_CLEANUP)
         self.assertEqual(item["cloud_media_path"], "/organized-root/Westworld (2016)/Season 2")
         self.assertEqual(item["strm_target_prefix"], "/organized-root/Westworld (2016)/Season 2")
+        self.assertEqual(item["source_qb_hashes"], ["5156eaba092143c5424c77af945a7ac4bd509074"])
         command_text = "\n".join(command["command"] for command in item["next_actions"])
         self.assertIn('--required-target-prefix "/organized-root/Westworld (2016)/Season 2"', command_text)
 
@@ -1141,6 +1204,35 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("strm-nfo-language-audit", call_names)
         self.assertIn("emby-media-updated", call_names)
         self.assertIn("cloud-hlink-cleanup-preview", call_names)
+
+    def test_batch_finalize_run_marks_already_absent_local_cleanup_as_noop(self) -> None:
+        plan = self._finalize_plan()
+        plan["items"][0]["source_paths"] = ["/example/source/TV/Westworld.S02"]
+        plan["items"][0]["hlink_root"] = "/example/source/TV/Westworld.S02"
+        plan["items"][0]["source_qb_hashes"] = ["5156eaba092143c5424c77af945a7ac4bd509074"]
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            actions.cleanup_already_absent = True
+            report = run_batch_finalize(
+                plan,
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={"/example/source": "/example/media"}),
+                execute_scrape=True,
+                approve_delete=False,
+                actions=_batch_finalize_actions(actions),
+            )
+
+        item = report["items"][0]
+        self.assertTrue(report["ok"])
+        self.assertEqual(item["status"], "already_cleaned_noop")
+        self.assertEqual(item["blockers"], [])
+        self.assertIn("local_cleanup_already_absent_noop", item["warnings"])
+        call_names = [call[0] for call in actions.calls]
+        self.assertIn("qb-orphan-torrent-cleanup-preview", call_names)
+        self.assertNotIn("cloud-hlink-cleanup-execute", call_names)
+        noop_call = next(call for call in actions.calls if call[0] == "qb-orphan-torrent-cleanup-preview")
+        self.assertIn("/example/media/TV/Westworld.S02", noop_call[1]["kwargs"]["source_roots"])
+        self.assertIn("/example/source/TV/Westworld.S02", noop_call[1]["kwargs"]["hlink_roots"])
 
     def test_batch_finalize_run_moviepilot_timeout_still_stops_on_nfo_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

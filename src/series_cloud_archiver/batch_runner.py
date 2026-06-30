@@ -16,6 +16,7 @@ from .emby import delete_stale_emby_paths, notify_and_verify_emby_media_updated
 from .hlink_cleanup import cleanup_empty_hlink_root, execute_cloud_hlink_cleanup, preview_cloud_hlink_cleanup
 from .moviepilot import scrape_mp_strm_path
 from .mv3 import cleanup_mv3_cloud_duplicate_videos
+from .qb_orphan_cleanup import preview_qb_orphan_torrent_cleanup
 from .reporting import human_size
 from .transfer_plan import DEFAULT_CLOUD_ROOT, DEFAULT_STRM_ROOT
 
@@ -37,6 +38,7 @@ class BatchFinalizeActions:
     cleanup_preview: Callable[..., Dict[str, object]] = preview_cloud_hlink_cleanup
     cleanup_execute: Callable[..., Dict[str, object]] = execute_cloud_hlink_cleanup
     empty_hlink_root_cleanup: Callable[..., Dict[str, object]] = cleanup_empty_hlink_root
+    qb_orphan_preview: Callable[..., Dict[str, object]] = preview_qb_orphan_torrent_cleanup
 
 
 def build_batch_plan(
@@ -414,7 +416,7 @@ def run_batch_finalize(
             actions=actions,
         )
         rows.append(row)
-        if row.get("status") not in {"cleanup_executed", "cleanup_waiting_for_approval"} and not continue_on_error:
+        if row.get("status") not in {"cleanup_executed", "cleanup_waiting_for_approval", "already_cleaned_noop"} and not continue_on_error:
             halted = True
             break
 
@@ -428,7 +430,7 @@ def run_batch_finalize(
     return {
         "mode": "batch-finalize-run",
         "source_mode": finalize_plan.get("mode", ""),
-        "ok": all(row.get("status") in {"cleanup_executed", "cleanup_waiting_for_approval"} for row in rows) and not halted,
+        "ok": all(row.get("status") in {"cleanup_executed", "cleanup_waiting_for_approval", "already_cleaned_noop"} for row in rows) and not halted,
         "halted": halted,
         "planned_items": len(candidates),
         "processed_items": len(rows),
@@ -535,6 +537,8 @@ def _run_finalize_item(
     expected_min = min(expected_episodes) if expected_episodes else 1
     expected_max = max(expected_episodes) if expected_episodes else expected_count
     hlink_root = str(item.get("hlink_root") or "").rstrip("/")
+    source_paths = _string_list(item.get("source_paths"))
+    source_qb_hashes = _string_list(item.get("source_qb_hashes"))
     strm_root = str(item.get("strm_root") or "").rstrip("/")
     mp_root = str(item.get("mp_strm_root") or item.get("service_strm_root") or strm_root).rstrip("/")
     service_root = str(item.get("service_strm_root") or strm_root).rstrip("/")
@@ -557,6 +561,8 @@ def _run_finalize_item(
         "tmdbid": tmdbid,
         "season": season,
         "expected_episode_count": expected_count,
+        "source_paths": source_paths,
+        "source_qb_hashes": source_qb_hashes,
         "hlink_root": hlink_root,
         "strm_root": strm_root,
         "mp_strm_root": mp_root,
@@ -774,6 +780,39 @@ def _run_finalize_item(
         cleanup_preview,
         ok_key="ready_for_execute",
     ):
+        noop_report = _already_cleaned_noop_report(
+            row,
+            cleanup_preview,
+            actions=actions,
+            config=config,
+            title=title,
+            tmdbid=tmdbid,
+            source_paths=source_paths,
+            source_qb_hashes=source_qb_hashes,
+            hlink_root=hlink_root,
+            strm_root=strm_root,
+            expected_count=expected_count,
+            expected_min=expected_min,
+            expected_max=expected_max,
+            required_prefix=required_prefix,
+            forbidden_prefixes=forbidden_prefixes,
+            cloud_title_path=cloud_title_path,
+            cloud_media_storage=cloud_media_storage,
+            min_seed_days=min_seed_days,
+            timeout=timeout,
+        )
+        if noop_report:
+            if _append_stage(
+                row,
+                _stage_report_path(output_dir, report_prefix, "05-qb-orphan-noop-preview"),
+                "qb_orphan_noop_preview",
+                noop_report,
+            ):
+                _remove_row_blockers(row, _string_list(cleanup_preview.get("blockers")))
+                _remove_row_blockers(row, _string_list(cleanup_preview.get("execution_blockers")))
+                row["warnings"] = sorted(set(_string_list(row.get("warnings")) + ["local_cleanup_already_absent_noop"]))
+                row["status"] = "already_cleaned_noop"
+                return row
         row["status"] = "failed_cleanup_preview"
         return row
 
@@ -942,6 +981,159 @@ def _append_cleanup_preview_diagnostics(row: Dict[str, object], report: Dict[str
         row["cleanup_blocked_source_roots"] = blocked_roots
 
 
+_ALREADY_CLEANED_CLEANUP_BLOCKERS = {
+    "hlink_root_missing",
+    "hlink_episode_signal_missing",
+    "hlink_expected_episodes_missing",
+    "qb_match_required",
+}
+
+
+def _already_cleaned_noop_report(
+    row: Dict[str, object],
+    cleanup_preview: Dict[str, object],
+    *,
+    actions: BatchFinalizeActions,
+    config: object,
+    title: str,
+    tmdbid: int,
+    source_paths: Sequence[str],
+    source_qb_hashes: Sequence[str],
+    hlink_root: str,
+    strm_root: str,
+    expected_count: int,
+    expected_min: int,
+    expected_max: int,
+    required_prefix: str,
+    forbidden_prefixes: Sequence[str],
+    cloud_title_path: str,
+    cloud_media_storage: str,
+    min_seed_days: int,
+    timeout: int,
+) -> Dict[str, object]:
+    cleanup_blockers = set(_string_list(cleanup_preview.get("blockers")) + _string_list(cleanup_preview.get("execution_blockers")))
+    if not cleanup_blockers or not cleanup_blockers.issubset(_ALREADY_CLEANED_CLEANUP_BLOCKERS):
+        return {}
+    hashes = _valid_full_hashes(source_qb_hashes)
+    if not hashes:
+        return {}
+    source_roots = _cleanup_source_root_variants(source_paths, getattr(config, "path_aliases", {}) or {})
+    hlink_roots = _cleanup_hlink_root_variants(hlink_root, source_paths)
+    if not source_roots or not hlink_roots:
+        return {}
+    report = actions.qb_orphan_preview(
+        title=title,
+        expected_hashes=hashes,
+        source_roots=source_roots,
+        hlink_roots=hlink_roots,
+        strm_roots=[strm_root],
+        expected_tmdbid=tmdbid,
+        expected_episode_count=expected_count,
+        expected_episode_min=expected_min,
+        expected_episode_max=expected_max,
+        qb_base_url=_config_value(config, "qb_base_url"),
+        qb_user=_config_value(config, "qb_user"),
+        qb_pass=_config_value(config, "qb_pass"),
+        mp_base_url=_config_value(config, "mp_base_url"),
+        mp_token=_config_value(config, "mp_token"),
+        path_aliases=getattr(config, "path_aliases", {}) or {},
+        expected_title_contains=title.split(" (", 1)[0].strip() or title,
+        min_seed_days=min_seed_days,
+        required_target_prefix=required_prefix,
+        forbidden_target_prefixes=forbidden_prefixes,
+        mv3_base_url=_config_value(config, "mv3_base_url"),
+        mv3_token=_config_value(config, "mv3_token"),
+        cloud_media_path=cloud_title_path,
+        cloud_media_storage=cloud_media_storage,
+        timeout=timeout,
+    )
+    blockers = set(_string_list(report.get("blockers")))
+    qb = report.get("qbittorrent") if isinstance(report.get("qbittorrent"), dict) else {}
+    fs = report.get("filesystem") if isinstance(report.get("filesystem"), dict) else {}
+    source_checks = fs.get("source_roots") if isinstance(fs.get("source_roots"), list) else []
+    hlink_checks = fs.get("hlink_roots") if isinstance(fs.get("hlink_roots"), list) else []
+    strm = report.get("strm") if isinstance(report.get("strm"), dict) else {}
+    cloud_media = report.get("cloud_media") if isinstance(report.get("cloud_media"), dict) else {}
+    safe_absent = (
+        blockers == {"qb_torrent_not_found"}
+        and sorted(_string_list(qb.get("missing_hashes"))) == sorted(hashes)
+        and not _roots_contain_videos(source_checks)
+        and not _roots_contain_videos(hlink_checks)
+        and bool(strm.get("ok"))
+        and bool(cloud_media.get("ok", True))
+    )
+    if not safe_absent:
+        return report
+    enriched = dict(report)
+    enriched["ok"] = True
+    enriched["ready_for_execute"] = False
+    enriched["noop"] = True
+    enriched["blockers"] = []
+    enriched["original_blockers"] = sorted(blockers)
+    enriched["warnings"] = sorted(set(_string_list(report.get("warnings")) + ["qb_task_source_hlink_already_absent"]))
+    enriched["safety"] = (
+        "readonly no-op cleanup verification; expected qB hashes are already absent, source/hlink roots contain no videos, "
+        "and STRM/cloud gates remain valid. No qBittorrent action or filesystem deletion is performed"
+    )
+    return enriched
+
+
+def _roots_contain_videos(rows: Sequence[object]) -> bool:
+    return any(isinstance(row, dict) and int(row.get("video_count") or 0) > 0 for row in rows)
+
+
+def _valid_full_hashes(values: Sequence[str]) -> List[str]:
+    hashes: List[str] = []
+    for value in values:
+        token = str(value or "").strip().lower()
+        if re.match(r"^[a-f0-9]{32,64}$", token) and token not in hashes:
+            hashes.append(token)
+    return hashes
+
+
+def _cleanup_source_root_variants(source_paths: Sequence[str], aliases: Dict[str, str]) -> List[str]:
+    variants: List[str] = []
+    for path in source_paths:
+        for value in _path_alias_variants(str(path or "").rstrip("/"), aliases):
+            if value and value not in variants:
+                variants.append(value)
+    return variants
+
+
+def _cleanup_hlink_root_variants(hlink_root: str, source_paths: Sequence[str]) -> List[str]:
+    variants: List[str] = []
+    for value in [hlink_root] + [_source_path_to_hlink_variant(path) for path in source_paths]:
+        clean = str(value or "").rstrip("/")
+        if clean and clean not in variants:
+            variants.append(clean)
+    return variants
+
+
+def _source_path_to_hlink_variant(path: str) -> str:
+    normalized = str(path or "").rstrip("/")
+    match = re.match(r"^(/volume\d+)/(?:volume\d+/)?TV/(.+)$", normalized)
+    if match:
+        return f"{match.group(1)}/hlink/TV/{match.group(2)}"
+    return ""
+
+
+def _path_alias_variants(path: str, aliases: Dict[str, str]) -> List[str]:
+    if not path:
+        return []
+    variants = [path]
+    for left, right in aliases.items():
+        left = str(left or "").rstrip("/")
+        right = str(right or "").rstrip("/")
+        if not left or not right:
+            continue
+        for source, target in ((left, right), (right, left)):
+            if path == source or path.startswith(source + "/"):
+                mapped = target + path[len(source) :]
+                if mapped not in variants:
+                    variants.append(mapped)
+    return variants
+
+
 def _finish_missing_credentials(row: Dict[str, object], blocker: str, status: str) -> Dict[str, object]:
     row["status"] = status
     row["blockers"] = sorted(set(_string_list(row.get("blockers")) + [blocker]))
@@ -1022,6 +1214,7 @@ def _batch_item(
     expected_count = int(cloud_item.get("expected_count") or transfer_item.get("expected_count") or 0)
     size_bytes = int(cloud_item.get("size_bytes") or transfer_item.get("size_bytes") or 0)
     source_paths = _string_list(transfer_item.get("source_paths")) or _string_list(cloud_item.get("source_paths"))
+    source_qb_hashes = _string_list(transfer_item.get("source_qb_hashes")) or _string_list(cloud_item.get("source_qb_hashes"))
     status = str(cloud_item.get("status") or transfer_item.get("source_status") or "")
     recommended = share_item.get("recommended_candidate") if isinstance(share_item.get("recommended_candidate"), dict) else {}
     share_candidates = share_item.get("candidates") if isinstance(share_item.get("candidates"), list) else []
@@ -1121,6 +1314,7 @@ def _batch_item(
         "expected_episode_count": expected_count,
         "expected_episodes": _int_list(cloud_item.get("expected_episodes")),
         "source_paths": source_paths,
+        "source_qb_hashes": source_qb_hashes,
         "source_titles": _string_list(transfer_item.get("titles")) or _string_list(cloud_item.get("titles")),
         "scan_candidate_count": len(scan_candidates),
         "recommended_candidate": recommended,
@@ -1289,7 +1483,9 @@ def _finalize_plan_row(
     season = int(item.get("season") or 0)
     expected_count = int(item.get("expected_episode_count") or item.get("expected_count") or 0)
     expected_episodes = _int_list(item.get("expected_episodes"))
-    hlink_root = _first_hlink_path(_string_list(item.get("source_paths")))
+    source_paths = _string_list(item.get("source_paths"))
+    source_qb_hashes = _string_list(item.get("source_qb_hashes"))
+    hlink_root = _first_hlink_path(source_paths)
     cloud_season_path = str(item.get("cloud_media_path") or "")
     planned_cloud_title_path = _cloud_title_path_from_item(item, cloud_root)
     strm_root = str(item.get("strm_root") or "") or _host_strm_path_from_cloud_title(planned_cloud_title_path, host_strm_root)
@@ -1361,6 +1557,8 @@ def _finalize_plan_row(
         "season": season,
         "expected_episode_count": expected_count,
         "expected_episodes": expected_episodes,
+        "source_paths": source_paths,
+        "source_qb_hashes": source_qb_hashes,
         "hlink_root": hlink_root,
         "strm_root": strm_root,
         "mp_strm_root": mp_root,

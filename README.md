@@ -272,6 +272,8 @@ PYTHONPATH=src python3 -m series_cloud_archiver extra-source-media-plan \
 
 这个计划仍然只读：它只把额外视频整理成 `mv3-organize-scan-source --local-source --file` 命令。像 `SP1/SP2` 这种特辑不会自动假设成 `Season 00` 的第几集，必须先确认 TMDB Season 00 的映射，再进入转存、生成 STRM、STRM 侧刮削和 Emby 验证。
 
+如果 `13-finalize-run.json` 里某一季是 `already_cleaned_noop`，表示 STRM、NFO、Emby 和云盘侧检查已经通过，同时扫描报告里的完整 qB hash 已确认不在 qB，source/hlink 根也没有视频可删。这个状态不会执行 qB 删除或文件删除，只是把“本地早已清完”的季节从失败项中摘出来，避免后续批量复跑时反复卡在已经不存在的本地目录。
+
 下面保留的散命令仍然可用，主要用于调试单个阶段、修复异常项，或者在 pipeline 缺少某个能力时作为构件使用。
 
 ## 批量状态计划 dry-run

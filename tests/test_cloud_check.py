@@ -92,6 +92,18 @@ class CloudCheckTest(unittest.TestCase):
             self.assertEqual(item.strm_target_prefix, "/organized-root/Westworld (2016)/Season 2")
             self.assertEqual(item.strm_target_prefixes, ["/organized-root/Westworld (2016)/Season 2"])
 
+    def test_carries_source_qb_hashes_from_scan_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm"
+            touch(root / "series" / "Demo Show (2026) {tmdbid=123}" / "Season 01" / "Demo Show S01E01.strm")
+            row = candidate("Demo Show", 123, 1, [1])
+            row["qb"] = {"hash": "ABCDEF123456ABCDEF123456ABCDEF123456ABCD"}
+            report = {"candidates": [row]}
+
+            result = cloud_check_from_scan_report(report, [str(root)])
+
+            self.assertEqual(result.items[0].source_qb_hashes, ["abcdef123456abcdef123456abcdef123456abcd"])
+
     def test_can_use_title_season_match_when_candidate_lacks_tmdb(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "strm"

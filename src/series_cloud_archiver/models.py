@@ -134,6 +134,7 @@ class CloudCheckItem:
     blockers: List[str]
     titles: List[str]
     source_paths: List[str]
+    source_qb_hashes: List[str]
     search_keywords: List[str]
     strm_paths_sample: List[str]
     strm_target_prefixes: List[str] = field(default_factory=list)

@@ -164,6 +164,7 @@ def _candidate_groups(
                 "size_bytes": 0,
                 "titles": set(),
                 "source_paths": set(),
+                "source_qb_hashes": set(),
                 "search_keywords": [],
                 "expected_episodes": set(),
                 "expected_count": 0,
@@ -176,6 +177,9 @@ def _candidate_groups(
         path_value = str(candidate.get("path") or "")
         if path_value:
             group["source_paths"].add(path_value)
+        qb_hash = str((candidate.get("qb") or {}).get("hash") or "") if isinstance(candidate.get("qb"), dict) else ""
+        if qb_hash:
+            group["source_qb_hashes"].add(qb_hash.lower())
         group["search_keywords"] = _merge_keywords(
             group.get("search_keywords", []),
             _candidate_search_keywords(candidate, identity),
@@ -261,6 +265,7 @@ def _check_group(
         blockers=blockers,
         titles=sorted(title for title in group["titles"] if title),
         source_paths=sorted(path for path in group["source_paths"] if path),
+        source_qb_hashes=sorted(hash_value for hash_value in group["source_qb_hashes"] if hash_value),
         search_keywords=_merge_keywords([str(group.get("title") or "")], group.get("search_keywords", [])),
         strm_paths_sample=strm_paths_sample,
         strm_target_prefixes=strm_target_prefixes,
