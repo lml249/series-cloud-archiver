@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from .batch_preview import (
     build_batch_share_preview_plan,
@@ -1388,6 +1388,7 @@ def _combined_mv3_search_report(
     keywords: Sequence[str],
     channels: Optional[List[str]] = None,
     timeout: int = 60,
+    progress: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, object]:
     keyword_reports: List[Dict[str, object]] = []
     merged_items: List[Dict[str, object]] = []
@@ -1396,7 +1397,11 @@ def _combined_mv3_search_report(
         keyword = str(keyword or "").strip()
         if not keyword:
             continue
+        if progress:
+            progress(f"searching keyword: {keyword}")
         report = search_mv3_resources(mv3_base_url, mv3_token, keyword, channels=channels or [], timeout=timeout)
+        if progress:
+            progress(f"searched keyword: {keyword} ok={bool(report.get('ok'))} results={int(report.get('result_count') or 0)}")
         keyword_reports.append(
             {
                 "keyword": keyword,
@@ -3018,12 +3023,34 @@ def main(argv: Optional[List[str]] = None) -> int:
             title = str(item.get("title") or "")
             if not title:
                 continue
+            print(f"[{item_index}/{len(selected_items)}] searching MV3 shares: {title}", flush=True)
+            if checkpoint_path and args.checkpoint_each:
+                partial_plan = plan_mv3_share_search_from_transfer_plan(
+                    transfer_plan,
+                    search_reports,
+                    limit=max(item_index - 1, 0),
+                    max_candidates=args.max_candidates,
+                    offset=args.offset,
+                )
+                partial_plan["checkpoint"] = {
+                    "enabled": True,
+                    "completed_items": max(item_index - 1, 0),
+                    "planned_items": len(selected_items),
+                    "current_title": title,
+                    "status": "in_progress",
+                    "complete": False,
+                }
+                _write_text_output(
+                    checkpoint_path,
+                    render_mv3_share_search_plan(partial_plan, args.format),
+                )
             search_reports[title] = _combined_mv3_search_report(
                 config.mv3_base_url,
                 config.mv3_token,
                 _share_search_keywords(item),
                 channels=args.channel,
                 timeout=args.timeout,
+                progress=lambda message, item_title=title: print(f"[{item_title}] {message}", flush=True),
             )
             if checkpoint_path and args.checkpoint_each:
                 partial_plan = plan_mv3_share_search_from_transfer_plan(
@@ -3038,6 +3065,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "completed_items": item_index,
                     "planned_items": len(selected_items),
                     "current_title": title,
+                    "status": "completed",
                     "complete": item_index == len(selected_items),
                 }
                 _write_text_output(

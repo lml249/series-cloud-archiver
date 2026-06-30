@@ -156,9 +156,12 @@ class CliEntrypointTest(unittest.TestCase):
                 encoding="utf-8",
             )
             writes = []
+            in_progress_payloads = []
 
             def fake_search(_base_url, _token, keyword, channels=None, timeout=60):
                 writes.append(checkpoint.exists())
+                if checkpoint.exists():
+                    in_progress_payloads.append(json.loads(checkpoint.read_text(encoding="utf-8")))
                 return {
                     "ok": True,
                     "result_count": 1,
@@ -199,10 +202,13 @@ class CliEntrypointTest(unittest.TestCase):
                 )
 
             self.assertEqual(code, 0)
-            self.assertEqual(writes, [False, True])
+            self.assertEqual(writes, [True, True])
+            self.assertEqual(in_progress_payloads[0]["checkpoint"]["status"], "in_progress")
+            self.assertEqual(in_progress_payloads[0]["checkpoint"]["completed_items"], 0)
             checkpoint_payload = json.loads(checkpoint.read_text(encoding="utf-8"))
             output_payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(checkpoint_payload["checkpoint"]["completed_items"], 2)
+            self.assertEqual(checkpoint_payload["checkpoint"]["status"], "completed")
             self.assertTrue(checkpoint_payload["checkpoint"]["complete"])
             self.assertEqual(output_payload["planned_items"], 2)
             self.assertEqual(output_payload["ready_items"], 2)
