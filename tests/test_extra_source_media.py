@@ -331,6 +331,51 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
         self.assertEqual(summary["items"][0]["cross_season_item_count"], 1)
         self.assertIn("其它 season", summary["items"][0]["next_action"])
 
+    def test_local_path_summary_detects_mixed_current_and_other_seasons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            current = Path(tmp) / "Demo.S01E01.mkv"
+            other = Path(tmp) / "Demo.S00E01.mkv"
+            current.write_text("video", encoding="utf-8")
+            other.write_text("video", encoding="utf-8")
+            run = {
+                "mode": "readonly-extra-source-media-run",
+                "selected_items": 2,
+                "executed_commands": 2,
+                "items": [
+                    {
+                        "status": "executed",
+                        "executed": True,
+                        "title": "示例剧",
+                        "tmdbid": 123,
+                        "main_season": 1,
+                        "suggested_season": 1,
+                        "episode": 1,
+                        "source_path": str(current),
+                        "diagnostic_summary": {"total": 0, "candidate": 0, "in_library": 0},
+                        "diagnostic_warnings": ["no_scan_items_found"],
+                    },
+                    {
+                        "status": "executed",
+                        "executed": True,
+                        "title": "示例剧",
+                        "tmdbid": 123,
+                        "main_season": 1,
+                        "suggested_season": 0,
+                        "episode": 1,
+                        "source_path": str(other),
+                        "diagnostic_summary": {"total": 0, "candidate": 0, "in_library": 0},
+                        "diagnostic_warnings": ["no_scan_items_found"],
+                    },
+                ],
+            }
+
+            summary = build_extra_source_media_local_path_summary([run])
+
+        self.assertEqual(summary["items"][0]["status"], "extra_source_mixed_current_and_other_seasons")
+        self.assertEqual(summary["items"][0]["cross_season_item_count"], 1)
+        self.assertEqual(summary["items"][0]["same_season_item_count"], 1)
+        self.assertIn("同时含当前 season", summary["items"][0]["next_action"])
+
     def test_summary_clears_when_all_scan_candidates_are_in_library(self) -> None:
         run = {
             "mode": "readonly-extra-source-media-run",

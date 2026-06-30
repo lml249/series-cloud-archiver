@@ -833,6 +833,7 @@ def _summary_row(report: JsonDict, report_index: int, *, check_local_paths: bool
         for item in executed
         if int(item.get("suggested_season") or 0) != int(item.get("main_season") or 0)
     )
+    same_season_count = len(executed) - cross_season_count
     local_path_count = len(source_paths)
     local_path_existing_count = 0
     local_path_missing_count = 0
@@ -871,9 +872,14 @@ def _summary_row(report: JsonDict, report_index: int, *, check_local_paths: bool
     elif no_scan_count == len(executed):
         if check_local_paths and local_path_count and local_path_existing_count == local_path_count:
             if cross_season_count:
-                status = "extra_source_belongs_to_other_season"
-                reason_codes.append("local_source_exists_and_belongs_to_other_season")
-                next_action = "这些本地视频属于其它 season；需要把对应 season 纳入同一源根迁移/清理计划，不能只清理当前 season"
+                if same_season_count:
+                    status = "extra_source_mixed_current_and_other_seasons"
+                    reason_codes.append("local_source_exists_with_current_and_other_season_items")
+                    next_action = "本地源根同时含当前 season 和其它 season/特辑；需要按 season 分流或同源根整体迁移后再清理"
+                else:
+                    status = "extra_source_belongs_to_other_season"
+                    reason_codes.append("local_source_exists_and_belongs_to_other_season")
+                    next_action = "这些本地视频属于其它 season；需要把对应 season 纳入同一源根迁移/清理计划，不能只清理当前 season"
             else:
                 status = "local_source_exists_but_mv3_scan_empty"
                 reason_codes.append("local_source_exists_but_scan_source_returned_no_items")
@@ -912,6 +918,7 @@ def _summary_row(report: JsonDict, report_index: int, *, check_local_paths: bool
         "local_path_existing_count": local_path_existing_count,
         "local_path_missing_count": local_path_missing_count,
         "cross_season_item_count": cross_season_count,
+        "same_season_item_count": same_season_count,
         "warnings": warnings,
         "blockers": blockers,
         "reason_codes": reason_codes,
@@ -970,6 +977,7 @@ def _render_summary_csv(report: JsonDict) -> str:
         "local_path_existing_count",
         "local_path_missing_count",
         "cross_season_item_count",
+        "same_season_item_count",
         "reason_codes",
         "warnings",
         "blockers",
@@ -1003,6 +1011,7 @@ def _render_summary_csv(report: JsonDict) -> str:
                 "local_path_existing_count": item.get("local_path_existing_count", ""),
                 "local_path_missing_count": item.get("local_path_missing_count", ""),
                 "cross_season_item_count": item.get("cross_season_item_count", ""),
+                "same_season_item_count": item.get("same_season_item_count", ""),
                 "reason_codes": "; ".join(_strings(item.get("reason_codes"))),
                 "warnings": "; ".join(_strings(item.get("warnings"))),
                 "blockers": "; ".join(_strings(item.get("blockers"))),
