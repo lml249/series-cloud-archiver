@@ -265,6 +265,7 @@ def build_batch_finalize_plan(
     env_file: str = "",
     cloud_root: str = "",
     host_strm_root: str = "",
+    mp_strm_root: str = "",
     service_strm_root: str = "",
     required_target_prefix: str = "",
     forbidden_target_prefixes: Optional[Sequence[str]] = None,
@@ -288,6 +289,7 @@ def build_batch_finalize_plan(
             env_file=env_file,
             cloud_root=effective_cloud_root,
             host_strm_root=effective_host_strm_root,
+            mp_strm_root=mp_strm_root,
             service_strm_root=effective_service_strm_root,
             required_target_prefix=required_target_prefix,
             forbidden_target_prefixes=forbidden,
@@ -306,6 +308,7 @@ def build_batch_finalize_plan(
             "env_file": env_file,
             "cloud_root": effective_cloud_root,
             "host_strm_root": effective_host_strm_root,
+            "mp_strm_root": mp_strm_root,
             "service_strm_root": effective_service_strm_root,
             "required_target_prefix": required_target_prefix,
             "forbidden_target_prefixes": forbidden,
@@ -529,6 +532,7 @@ def _run_finalize_item(
     expected_max = max(expected_episodes) if expected_episodes else expected_count
     hlink_root = str(item.get("hlink_root") or "").rstrip("/")
     strm_root = str(item.get("strm_root") or "").rstrip("/")
+    mp_root = str(item.get("mp_strm_root") or item.get("service_strm_root") or strm_root).rstrip("/")
     service_root = str(item.get("service_strm_root") or strm_root).rstrip("/")
     planned_required_prefix = str(item.get("required_target_prefix") or "")
     forbidden_prefixes = _string_list(item.get("forbidden_target_prefixes"))
@@ -550,6 +554,7 @@ def _run_finalize_item(
         "expected_episode_count": expected_count,
         "hlink_root": hlink_root,
         "strm_root": strm_root,
+        "mp_strm_root": mp_root,
         "service_strm_root": service_root,
         "cloud_title_path": cloud_title_path,
         "cloud_season_path": cloud_season_path,
@@ -673,7 +678,7 @@ def _run_finalize_item(
             _config_value(config, "mp_base_url"),
             _config_value(config, "mp_token"),
             strm_path=strm_root,
-            mp_path=service_root,
+            mp_path=mp_root,
             storage="local",
             item_type="dir",
             timeout=scrape_timeout,
@@ -685,7 +690,7 @@ def _run_finalize_item(
             "skipped": True,
             "reason": "execute_scrape_not_requested",
             "strm_path": strm_root,
-            "mp_path": service_root,
+            "mp_path": mp_root,
             "safety": "MoviePilot scrape skipped because execute_scrape was not requested",
         }
     if not _append_stage(row, _stage_report_path(output_dir, report_prefix, "02-mp-scrape-strm"), "mp_scrape_strm", scrape_report):
@@ -1246,6 +1251,7 @@ def _finalize_plan_row(
     env_file: str,
     cloud_root: str,
     host_strm_root: str,
+    mp_strm_root: str,
     service_strm_root: str,
     required_target_prefix: str,
     forbidden_target_prefixes: Sequence[str],
@@ -1262,6 +1268,7 @@ def _finalize_plan_row(
     derived_cloud_season_path = _cloud_target_prefix_from_strm_root(strm_root)
     cloud_title_path = _cloud_title_path_from_strm_root(strm_root) or planned_cloud_title_path
     cloud_required_prefix = required_target_prefix or derived_cloud_season_path or cloud_season_path or cloud_title_path
+    mp_root = _map_strm_root(strm_root, host_strm_root, mp_strm_root) if mp_strm_root else _map_strm_root(strm_root, host_strm_root, service_strm_root)
     service_root = _map_strm_root(strm_root, host_strm_root, service_strm_root)
 
     blockers: List[str] = []
@@ -1278,6 +1285,8 @@ def _finalize_plan_row(
         blockers.append("hlink_root_required")
     if not strm_root:
         blockers.append("strm_root_required")
+    if not mp_root:
+        blockers.append("mp_strm_root_required")
     if not service_root:
         blockers.append("service_strm_root_required")
     if not cloud_title_path:
@@ -1303,6 +1312,7 @@ def _finalize_plan_row(
             expected_episodes=expected_episodes,
             hlink_root=hlink_root,
             strm_root=strm_root,
+            mp_root=mp_root,
             service_root=service_root,
             cloud_title_path=cloud_title_path,
             cloud_required_prefix=cloud_required_prefix,
@@ -1324,6 +1334,7 @@ def _finalize_plan_row(
         "expected_episodes": expected_episodes,
         "hlink_root": hlink_root,
         "strm_root": strm_root,
+        "mp_strm_root": mp_root,
         "service_strm_root": service_root,
         "cloud_title_path": cloud_title_path,
         "cloud_media_path": cloud_season_path,
@@ -1347,6 +1358,7 @@ def _finalize_commands(
     expected_episodes: Sequence[int],
     hlink_root: str,
     strm_root: str,
+    mp_root: str,
     service_root: str,
     cloud_title_path: str,
     cloud_required_prefix: str,
@@ -1358,6 +1370,7 @@ def _finalize_commands(
     title_q = _q(title)
     title_contains_q = _q(title.split(" (", 1)[0].strip() or title)
     strm_q = _q(strm_root)
+    mp_q = _q(mp_root)
     service_q = _q(service_root)
     hlink_q = _q(hlink_root)
     cloud_title_q = _q(cloud_title_path)
@@ -1382,7 +1395,7 @@ def _finalize_commands(
             "output": f"{report_prefix}-mp-scrape.json",
             "command": (
                 f"PYTHONPATH=src python3 -m series_cloud_archiver mp-scrape-strm {env}"
-                f"--strm-path {strm_q} --mp-path {service_q} --storage local --type dir "
+                f"--strm-path {strm_q} --mp-path {mp_q} --storage local --type dir "
                 f"--approve-scrape --format json --output {report_prefix}-mp-scrape.json"
             ),
         },

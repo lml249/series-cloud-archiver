@@ -205,6 +205,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
   --cloud-root /已整理/series \
   --mv3-strm-root /strm \
   --host-strm-root /example/host/strm \
+  --mp-strm-root /example/moviepilot/strm \
   --emby-strm-root /example/service/strm \
   --forbidden-target-prefix /series/series \
   --forbidden-target-prefix /已整理/series/series \
@@ -225,6 +226,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
   --cloud-root /已整理/series \
   --mv3-strm-root /strm \
   --host-strm-root /example/host/strm \
+  --mp-strm-root /example/moviepilot/strm \
   --emby-strm-root /example/service/strm \
   --format json \
   --output /example/app/series-cloud-archiver/outputs/current-20260629/pipeline-runs/scan-dry-run-YYYYMMDD.json
@@ -242,7 +244,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
 - `--approve-emby-stale-delete`：只在 STRM 替代完整时删 Emby 旧本地条目。
 - `--approve-delete`：最后才允许 qB/hlink/source 清理。
 
-目录角色不能混用：`--cloud-root` 是计划用的 `/已整理/series`，`--organize-target-dir` 必须是 `/已整理`，`--transfer-target-path` 必须在 `/未整理` 下，`--mv3-strm-root`/`--host-strm-root`/`--emby-strm-root` 必须是 STRM 侧路径。云盘实体目录只做转存和生成 STRM，NFO/JPG/Emby 入库验证都只在 STRM 侧跑。
+目录角色不能混用：`--cloud-root` 是计划用的 `/已整理/series`，`--organize-target-dir` 必须是 `/已整理`，`--transfer-target-path` 必须在 `/未整理` 下，`--mv3-strm-root`/`--host-strm-root`/`--mp-strm-root`/`--emby-strm-root` 必须是 STRM 侧路径。`--host-strm-root` 是脚本所在机器看到的 STRM 路径，`--mp-strm-root` 是 MoviePilot 容器看到的 STRM 路径，`--emby-strm-root` 是 Emby 容器/库里看到的 STRM 路径；三者可以不同。云盘实体目录只做转存和生成 STRM，NFO/JPG/Emby 入库验证都只在 STRM 侧跑。
 
 输出目录里最重要的文件：
 
@@ -933,6 +935,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-finalize-plan \
   --env-file .env \
   --batch-plan reports/batch-plan.json \
   --host-strm-root "/example/host/strm" \
+  --mp-strm-root "/example/moviepilot/strm" \
   --service-strm-root "/example/service/strm" \
   --forbidden-target-prefix "/未整理" \
   --format json \
@@ -948,7 +951,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-finalize-run \
   --output reports/batch-finalize-run-sample.json
 ```
 
-`batch-finalize-run` 会逐部剧季执行 `strm-verify -> mv3-cloud-duplicate-video-cleanup dry-run -> mp-scrape-strm -> strm-nfo-language-audit -> emby-media-updated -> cloud-hlink-cleanup-preview`。任何一步失败都会停止当前项并写报告；默认不会删除云盘重复视频、Emby 旧条目、qB、种子文件或 hlink。
+`batch-finalize-run` 会逐部剧季执行 `strm-verify -> mv3-cloud-duplicate-video-cleanup dry-run -> mp-scrape-strm -> strm-nfo-language-audit -> emby-media-updated -> cloud-hlink-cleanup-preview`。任何一步失败都会停止当前项并写报告；默认不会删除云盘重复视频、Emby 旧条目、qB、种子文件或 hlink。MoviePilot 和 Emby 如果挂载路径不同，finalize plan 用 `--mp-strm-root` 给 MoviePilot，用 `--service-strm-root` 给 Emby。
 
 三个删除动作分开审批：
 

@@ -317,6 +317,7 @@ class BatchRunnerTest(unittest.TestCase):
                     "expected_episodes": list(range(1, 37)),
                     "hlink_root": "/example/local-tv/折腰 (2025)/Season 1",
                     "strm_root": "/example/host/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                    "mp_strm_root": "/example/mp/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
                     "service_strm_root": "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
                     "cloud_title_path": "/已整理/series/折腰 (2025) {tmdbid=296753}",
                     "required_target_prefix": "/已整理/series/折腰 (2025) {tmdbid=296753}",
@@ -528,6 +529,7 @@ class BatchRunnerTest(unittest.TestCase):
         item = report["items"][0]
         self.assertEqual(item["status"], "planned_finalize")
         self.assertEqual(item["service_strm_root"], "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
+        self.assertEqual(item["mp_strm_root"], "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
         self.assertEqual(item["cloud_title_path"], "/已整理/series/折腰 (2025) {tmdbid=296753}")
         stages = [command["stage"] for command in item["commands"]]
         self.assertEqual(
@@ -550,6 +552,37 @@ class BatchRunnerTest(unittest.TestCase):
         rendered = render_batch_finalize_plan(report, "markdown")
         self.assertIn("Batch Finalize Plan", rendered)
         self.assertIn("折腰", rendered)
+
+    def test_batch_finalize_plan_can_separate_moviepilot_and_emby_paths(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "settings": {
+                "cloud_root": "/已整理/series",
+                "host_strm_root": "/example/host/strm",
+                "emby_strm_root": "/example/emby/strm",
+            },
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "title": "鱿鱼游戏",
+                    "tmdbid": 93405,
+                    "season": 1,
+                    "expected_episode_count": 9,
+                    "source_paths": ["/example/local-tv/鱿鱼游戏 (2021)/Season 1"],
+                    "cloud_media_path": "/已整理/series/鱿鱼游戏 (2021) {tmdbid=93405}/Season 1",
+                    "strm_root": "/example/host/strm/series/鱿鱼游戏 (2021) {tmdbid=93405}/Season 1",
+                }
+            ],
+        }
+
+        report = build_batch_finalize_plan(batch_plan, env_file="/safe/.env", mp_strm_root="/example/mp/strm")
+        item = report["items"][0]
+        commands = "\n".join(command["command"] for command in item["commands"])
+
+        self.assertEqual(item["mp_strm_root"], "/example/mp/strm/series/鱿鱼游戏 (2021) {tmdbid=93405}/Season 1")
+        self.assertEqual(item["service_strm_root"], "/example/emby/strm/series/鱿鱼游戏 (2021) {tmdbid=93405}/Season 1")
+        self.assertIn("--mp-path '/example/mp/strm/series/鱿鱼游戏 (2021) {tmdbid=93405}/Season 1'", commands)
+        self.assertIn("--updated-path '/example/emby/strm/series/鱿鱼游戏 (2021) {tmdbid=93405}/Season 1'", commands)
 
     def test_batch_finalize_plan_prefers_strm_derived_cloud_prefix(self) -> None:
         batch_plan = {
@@ -679,6 +712,26 @@ class BatchRunnerTest(unittest.TestCase):
         rendered = render_batch_finalize_run(report, "markdown")
         self.assertIn("Batch Finalize Run", rendered)
         self.assertIn("cleanup_waiting_for_approval", rendered)
+
+    def test_batch_finalize_run_uses_moviepilot_path_separately_from_emby_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            report = run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=False,
+                actions=_batch_finalize_actions(actions),
+            )
+
+        self.assertTrue(report["ok"])
+        scrape_call = next(call for call in actions.calls if call[0] == "mp-scrape-strm-result")
+        emby_call = next(call for call in actions.calls if call[0] == "emby-media-updated")
+        self.assertEqual(scrape_call[1]["kwargs"]["mp_path"], "/example/mp/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
+        self.assertEqual(emby_call[1]["kwargs"]["updated_paths"], ["/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1"])
+        self.assertEqual(report["items"][0]["mp_strm_root"], "/example/mp/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
+        self.assertEqual(report["items"][0]["service_strm_root"], "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
 
     def test_batch_finalize_run_waits_for_cloud_duplicate_delete_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -827,10 +880,12 @@ class BatchRunnerTest(unittest.TestCase):
 
         scrape_call = next(call for call in actions.calls if call[0] == "mp-scrape-strm-result")
         self.assertEqual(scrape_call[1]["kwargs"]["strm_path"], "/example/host/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
-        self.assertEqual(scrape_call[1]["kwargs"]["mp_path"], "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
+        self.assertEqual(scrape_call[1]["kwargs"]["mp_path"], "/example/mp/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
         self.assertNotIn("/已整理", scrape_call[1]["kwargs"]["strm_path"])
         nfo_call = next(call for call in actions.calls if call[0] == "strm-nfo-language-audit")
         self.assertEqual(nfo_call[1]["expected"]["expected_nfo_count"], 36)
+        emby_call = next(call for call in actions.calls if call[0] == "emby-media-updated")
+        self.assertEqual(emby_call[1]["kwargs"]["updated_paths"], ["/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1"])
         cloud_duplicate_call = next(call for call in actions.calls if call[0] == "mv3-cloud-duplicate-video-cleanup-result")
         self.assertEqual(
             cloud_duplicate_call[1]["kwargs"]["season_path"],

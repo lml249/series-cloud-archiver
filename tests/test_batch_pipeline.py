@@ -81,9 +81,11 @@ class BatchPipelineTest(unittest.TestCase):
                 cloud_report=self._cloud_report(),
                 share_search_plans=[self._share_search_plan()],
                 host_strm_root="/example/host/strm",
+                mp_strm_root="/example/mp/strm",
                 emby_strm_root="/example/service/strm",
             )
             run_dir = Path(report["run_dir"])
+            finalize_plan = json.loads((run_dir / "12-finalize-plan.json").read_text(encoding="utf-8"))
 
             self.assertTrue((run_dir / "05-batch-plan.json").exists())
             self.assertTrue((run_dir / "06-share-preview.json").exists())
@@ -93,6 +95,8 @@ class BatchPipelineTest(unittest.TestCase):
             self.assertEqual(report["summary"]["batch_plan"]["auto_transfer_items"], 1)
             self.assertEqual(report["summary"]["share_preview"]["executable_preview_items"], 1)
             self.assertEqual(report["settings"]["cloud_root"], "/已整理/series")
+            self.assertEqual(report["settings"]["mp_strm_root"], "/example/mp/strm")
+            self.assertEqual(finalize_plan["settings"]["mp_strm_root"], "/example/mp/strm")
             self.assertEqual(report["settings"]["organize_target_dir"], "/已整理")
             self.assertEqual(report["settings"]["approve_delete"], False)
             rendered = render_batch_pipeline_report(report, "markdown")

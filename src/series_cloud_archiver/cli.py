@@ -752,7 +752,8 @@ def build_parser() -> argparse.ArgumentParser:
     batch_finalize_parser.add_argument("--batch-plan", required=True, help="JSON report from batch-plan")
     batch_finalize_parser.add_argument("--cloud-root", default="", help="Cloud media title root, defaults to batch-plan setting")
     batch_finalize_parser.add_argument("--host-strm-root", default="", help="Host STRM root, defaults to batch-plan setting")
-    batch_finalize_parser.add_argument("--service-strm-root", default="", help="MoviePilot/Emby visible STRM root, defaults to batch-plan emby_strm_root setting")
+    batch_finalize_parser.add_argument("--mp-strm-root", default="", help="MoviePilot visible STRM root; defaults to --service-strm-root")
+    batch_finalize_parser.add_argument("--service-strm-root", default="", help="Emby visible STRM root, defaults to batch-plan emby_strm_root setting")
     batch_finalize_parser.add_argument("--required-target-prefix", default="", help="Required STRM target prefix; defaults per item to cloud media path")
     batch_finalize_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
     batch_finalize_parser.add_argument("--limit", type=int, default=0, help="Maximum planned finalize rows; 0 means all")
@@ -794,7 +795,8 @@ def build_parser() -> argparse.ArgumentParser:
     batch_pipeline_parser.add_argument("--cloud-root", default=DEFAULT_CLOUD_ROOT, help="Cloud media root for planning, usually /已整理/series")
     batch_pipeline_parser.add_argument("--mv3-strm-root", default=DEFAULT_STRM_ROOT, help="MV3/container STRM root")
     batch_pipeline_parser.add_argument("--host-strm-root", default="", help="Host STRM root, e.g. /example/host/strm")
-    batch_pipeline_parser.add_argument("--emby-strm-root", default="", help="MoviePilot/Emby visible STRM root")
+    batch_pipeline_parser.add_argument("--mp-strm-root", default="", help="MoviePilot visible STRM root; defaults to --emby-strm-root")
+    batch_pipeline_parser.add_argument("--emby-strm-root", default="", help="Emby visible STRM root")
     batch_pipeline_parser.add_argument("--min-candidate-score", type=int, default=60)
     batch_pipeline_parser.add_argument("--max-auto-size-delta", type=float, default=0.35)
     batch_pipeline_parser.add_argument("--required-target-prefix", default="/已整理")
@@ -2640,6 +2642,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             env_file=args.env_file,
             cloud_root=args.cloud_root,
             host_strm_root=args.host_strm_root,
+            mp_strm_root=args.mp_strm_root,
             service_strm_root=args.service_strm_root,
             required_target_prefix=args.required_target_prefix,
             forbidden_target_prefixes=args.forbidden_target_prefix,
@@ -2719,6 +2722,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             cloud_root=args.cloud_root,
             mv3_strm_root=args.mv3_strm_root,
             host_strm_root=args.host_strm_root,
+            mp_strm_root=args.mp_strm_root,
             emby_strm_root=args.emby_strm_root,
             min_candidate_score=args.min_candidate_score,
             max_auto_size_delta=args.max_auto_size_delta,
