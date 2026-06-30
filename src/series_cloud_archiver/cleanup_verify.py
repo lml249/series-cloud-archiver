@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import urllib.parse
 import xml.etree.ElementTree as ET
 
@@ -257,6 +257,183 @@ def render_strm_nfo_language_audit(report: Dict[str, object], output_format: str
                                 plot_ratio=sample.get("plot_chinese_ratio", 0),
                             )
                         )
+    return "\n".join(lines)
+
+
+def rewrite_strm_targets(
+    title: str,
+    strm_root: str,
+    old_target_prefix: str,
+    new_target_prefix: str,
+    expected_episode_count: int = 0,
+    expected_episode_min: int = 0,
+    expected_episode_max: int = 0,
+    expected_rewrite_count: int = 0,
+    approve_write: bool = False,
+) -> Dict[str, object]:
+    blockers: List[str] = []
+    warnings: List[str] = []
+    root = Path(strm_root)
+    normalized_old = _normalize_target(old_target_prefix)
+    normalized_new = _normalize_target(new_target_prefix)
+    if not strm_root:
+        blockers.append("strm_root_required")
+    if strm_root and strm_root in cloud_media_paths([strm_root]):
+        blockers.append("strm_root_must_not_be_cloud_media_path")
+    if strm_root and strm_root in non_strm_side_paths([strm_root]):
+        blockers.append("strm_root_must_be_strm_side")
+    if not root.exists():
+        blockers.append("strm_root_missing")
+    if not normalized_old:
+        blockers.append("old_target_prefix_required")
+    if not normalized_new:
+        blockers.append("new_target_prefix_required")
+    if normalized_old and normalized_new and normalized_old == normalized_new:
+        blockers.append("target_prefixes_must_differ")
+    if normalized_new.startswith("/未整理") or normalized_new == "/series" or normalized_new.startswith("/series/"):
+        blockers.append("new_target_prefix_must_be_organized_cloud_media_path")
+    if not normalized_new.startswith("/已整理/"):
+        blockers.append("new_target_prefix_must_be_under_organized_root")
+
+    files = sorted(item for item in root.rglob("*") if item.is_file() and item.suffix.lower() == ".strm") if root.exists() else []
+    episodes = episode_signal([item.name for item in files]).episodes
+    missing = _missing_episode_numbers(episodes)
+    if expected_episode_count and len(episodes) != expected_episode_count:
+        blockers.append("strm_episode_count_mismatch")
+    if expected_episode_min and (not episodes or min(episodes) != expected_episode_min):
+        blockers.append("strm_episode_min_mismatch")
+    if expected_episode_max and (not episodes or max(episodes) != expected_episode_max):
+        blockers.append("strm_episode_max_mismatch")
+    if missing:
+        blockers.append("strm_episode_gap_detected")
+
+    items: List[Dict[str, object]] = []
+    for path in files:
+        items.append(_strm_rewrite_item(path, normalized_old, normalized_new))
+    rewritable = [item for item in items if item.get("will_rewrite")]
+    already_new = [item for item in items if item.get("already_new")]
+    mismatched = [item for item in items if not item.get("will_rewrite") and not item.get("already_new")]
+    if files and len(rewritable) + len(already_new) != len(files):
+        blockers.append("strm_targets_outside_old_or_new_prefix")
+    if not rewritable:
+        blockers.append("no_strm_targets_to_rewrite")
+    if expected_rewrite_count >= 0 and expected_rewrite_count and len(rewritable) != expected_rewrite_count:
+        blockers.append("rewrite_count_mismatch")
+    if expected_rewrite_count < 0:
+        blockers.append("expected_rewrite_count_invalid")
+
+    writes: List[Dict[str, object]] = []
+    write_executed = False
+    if not blockers and approve_write:
+        for item in rewritable:
+            path = Path(str(item.get("file") or ""))
+            new_content = str(item.get("new_content") or "")
+            old_content = str(item.get("content") or "")
+            try:
+                path.write_text(new_content, encoding="utf-8")
+                write_executed = True
+                writes.append(
+                    {
+                        "file": str(path),
+                        "old_target": item.get("resolved_target", ""),
+                        "new_target": item.get("new_target", ""),
+                        "old_bytes": len(old_content.encode("utf-8")),
+                        "new_bytes": len(new_content.encode("utf-8")),
+                    }
+                )
+            except OSError as exc:
+                blockers.append("strm_write_failed")
+                warnings.append(f"strm_write_failed:{path}:{exc.__class__.__name__}:{exc}")
+                break
+
+    post_verify: Dict[str, object] = {"skipped": True}
+    if write_executed:
+        post_verify = verify_strm_paths(
+            title,
+            [str(root)],
+            expected_episode_count=expected_episode_count,
+            expected_episode_min=expected_episode_min,
+            expected_episode_max=expected_episode_max,
+            required_target_prefix=normalized_new,
+            forbidden_target_prefixes=[normalized_old],
+        )
+        if not post_verify.get("ok"):
+            blockers.append("post_rewrite_strm_verify_failed")
+
+    return {
+        "mode": "strm-target-rewrite",
+        "title": title,
+        "ok": not blockers and (not approve_write or bool(write_executed)),
+        "dry_run": not approve_write,
+        "write_executed": write_executed,
+        "strm_root": str(root),
+        "old_target_prefix": normalized_old,
+        "new_target_prefix": normalized_new,
+        "expected": {
+            "episode_count": expected_episode_count,
+            "episode_min": expected_episode_min,
+            "episode_max": expected_episode_max,
+            "rewrite_count": expected_rewrite_count,
+        },
+        "summary": {
+            "file_count": len(files),
+            "episode_count": len(episodes),
+            "episodes": episodes,
+            "missing_in_range": missing,
+            "rewritable_count": len(rewritable),
+            "already_new_count": len(already_new),
+            "mismatched_count": len(mismatched),
+        },
+        "items": [_public_strm_rewrite_item(item) for item in items[:200]],
+        "writes": writes,
+        "post_verify": post_verify,
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "safety": "default dry-run; with approval this rewrites only local STRM file targets from one explicit old cloud prefix to one explicit organized cloud prefix. It does not move cloud media, scrape metadata, call MoviePilot, refresh Emby, touch qBittorrent, or delete hlink/source files",
+    }
+
+
+def render_strm_target_rewrite(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    lines = [
+        "# STRM Target Rewrite",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Dry run: `{bool(report.get('dry_run'))}`",
+        f"- Write executed: `{bool(report.get('write_executed'))}`",
+        f"- STRM root: `{report.get('strm_root', '')}`",
+        f"- Old target prefix: `{report.get('old_target_prefix', '')}`",
+        f"- New target prefix: `{report.get('new_target_prefix', '')}`",
+        f"- Files: `{summary.get('file_count', 0)}`",
+        f"- Rewritable: `{summary.get('rewritable_count', 0)}`",
+        f"- Already new: `{summary.get('already_new_count', 0)}`",
+        f"- Mismatched: `{summary.get('mismatched_count', 0)}`",
+        "- Safety: rewrites only local STRM target text after explicit approval.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
+    items = report.get("items")
+    if isinstance(items, list) and items:
+        lines.extend(["", "## Items", "", "| File | Episode | Action | New target |", "| --- | ---: | --- | --- |"])
+        for item in items[:20]:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "| {file} | {episode} | {action} | {target} |".format(
+                    file=_escape(str(item.get("file") or "")),
+                    episode=item.get("episode") or "",
+                    action=_escape(str(item.get("action") or "")),
+                    target=_escape(str(item.get("new_target") or "")),
+                )
+            )
     return "\n".join(lines)
 
 
@@ -823,6 +1000,86 @@ def _strm_target_row(path: Path, required_target_prefix: str, forbidden_target_p
         "target_prefix_mismatch": target_prefix_mismatch,
         "forbidden_target": forbidden_target,
     }
+
+
+def _strm_rewrite_item(path: Path, old_prefix: str, new_prefix: str) -> Dict[str, object]:
+    content = path.read_text(encoding="utf-8", errors="replace").strip()
+    resolved_target = _normalize_target(_strm_target_path(content))
+    path_episodes = episode_signal([path.name]).episodes
+    new_target = ""
+    new_content = content
+    will_rewrite = _target_has_prefix(resolved_target, old_prefix)
+    already_new = _target_has_prefix(resolved_target, new_prefix)
+    action = "blocked"
+    if will_rewrite:
+        new_target = _replace_target_prefix(resolved_target, old_prefix, new_prefix)
+        new_content, replaced = _replace_strm_content_target(content, resolved_target, new_target)
+        action = "rewrite" if replaced else "blocked"
+        will_rewrite = bool(replaced)
+    elif already_new:
+        action = "already_new"
+        new_target = resolved_target
+    return {
+        "file": str(path),
+        "episode": path_episodes[0] if path_episodes else None,
+        "content": content,
+        "resolved_target": resolved_target,
+        "new_target": new_target,
+        "new_content": new_content,
+        "will_rewrite": will_rewrite,
+        "already_new": already_new,
+        "action": action,
+    }
+
+
+def _public_strm_rewrite_item(item: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "file": str(item.get("file") or ""),
+        "episode": item.get("episode"),
+        "resolved_target": str(item.get("resolved_target") or ""),
+        "new_target": str(item.get("new_target") or ""),
+        "will_rewrite": bool(item.get("will_rewrite")),
+        "already_new": bool(item.get("already_new")),
+        "action": str(item.get("action") or ""),
+    }
+
+
+def _target_has_prefix(path: str, prefix: str) -> bool:
+    clean_path = _normalize_target(path)
+    clean_prefix = _normalize_target(prefix)
+    return bool(clean_prefix and (clean_path == clean_prefix or clean_path.startswith(clean_prefix + "/")))
+
+
+def _replace_target_prefix(path: str, old_prefix: str, new_prefix: str) -> str:
+    clean_path = _normalize_target(path)
+    clean_old = _normalize_target(old_prefix)
+    clean_new = _normalize_target(new_prefix)
+    if clean_path == clean_old:
+        return clean_new
+    suffix = clean_path[len(clean_old) :].lstrip("/")
+    return clean_new + ("/" + suffix if suffix else "")
+
+
+def _replace_strm_content_target(content: str, old_target: str, new_target: str) -> Tuple[str, bool]:
+    parsed = urllib.parse.urlparse(content)
+    if parsed.query:
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        for key in ("path", "file", "target"):
+            values = query.get(key)
+            if not values:
+                continue
+            value = urllib.parse.unquote(values[0])
+            if _normalize_target(value) == _normalize_target(old_target):
+                pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+                new_pairs = [(item_key, new_target if item_key == key else item_value) for item_key, item_value in pairs]
+                encoded_query = urllib.parse.urlencode(new_pairs)
+                return urllib.parse.urlunparse(parsed._replace(query=encoded_query)), True
+        return content, False
+    if _normalize_target(content) == _normalize_target(old_target):
+        return new_target, True
+    if content.startswith(old_target):
+        return new_target + content[len(old_target) :], True
+    return content, False
 
 
 def _nfo_language_root_row(path: str, min_chinese_ratio: float, sample_limit: int) -> Dict[str, object]:

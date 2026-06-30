@@ -14,7 +14,9 @@ from series_cloud_archiver.cleanup_verify import (
     render_duplicate_strm_cleanup,
     render_mp_cleanup_verification,
     render_strm_nfo_language_audit,
+    render_strm_target_rewrite,
     render_strm_verification,
+    rewrite_strm_targets,
     verify_strm_paths,
 )
 from series_cloud_archiver.emby import (
@@ -3154,6 +3156,118 @@ class MoviePilotEvidenceTest(unittest.TestCase):
             self.assertFalse(report["ok"])
             self.assertIn("strm_target_prefix_mismatch", report["blockers"])
             self.assertIn("strm_forbidden_target_prefix", report["blockers"])
+
+    def test_strm_target_rewrite_dry_run_does_not_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm" / "series" / "广告狂人 (2007) {tmdbid=1104}" / "Season 07"
+            strm_root.mkdir(parents=True)
+            file_path = strm_root / "广告狂人 S07E01.strm"
+            original = "/已整理/series/美剧【广告狂人】1-7季全 1080P中字【373G】/S07/E01.mkv"
+            file_path.write_text(original, encoding="utf-8")
+
+            report = rewrite_strm_targets(
+                "广告狂人",
+                str(strm_root),
+                old_target_prefix="/已整理/series/美剧【广告狂人】1-7季全 1080P中字【373G】/S07",
+                new_target_prefix="/已整理/series/广告狂人 (2007) {tmdbid=1104}/Season 07",
+                expected_episode_count=1,
+                expected_episode_min=1,
+                expected_episode_max=1,
+                expected_rewrite_count=1,
+            )
+            rendered = render_strm_target_rewrite(report, "markdown")
+
+            self.assertTrue(report["ok"])
+            self.assertTrue(report["dry_run"])
+            self.assertEqual(report["summary"]["rewritable_count"], 1)
+            self.assertEqual(file_path.read_text(encoding="utf-8"), original)
+            self.assertIn("STRM Target Rewrite", rendered)
+
+    def test_strm_target_rewrite_updates_url_path_with_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm" / "series" / "广告狂人 (2007) {tmdbid=1104}" / "Season 07"
+            strm_root.mkdir(parents=True)
+            file_path = strm_root / "广告狂人 S07E01.strm"
+            encoded = "/已整理/series/美剧【广告狂人】1-7季全%201080P中字【373G】/S07/E01.mkv"
+            file_path.write_text(f"https://mv3.example/redirect?path={encoded}&pickcode=secret", encoding="utf-8")
+
+            report = rewrite_strm_targets(
+                "广告狂人",
+                str(strm_root),
+                old_target_prefix="/已整理/series/美剧【广告狂人】1-7季全 1080P中字【373G】/S07",
+                new_target_prefix="/已整理/series/广告狂人 (2007) {tmdbid=1104}/Season 07",
+                expected_episode_count=1,
+                expected_episode_min=1,
+                expected_episode_max=1,
+                expected_rewrite_count=1,
+                approve_write=True,
+            )
+            rewritten = file_path.read_text(encoding="utf-8")
+
+            self.assertTrue(report["ok"])
+            self.assertTrue(report["write_executed"])
+            self.assertIn("%E5%B9%BF%E5%91%8A%E7%8B%82%E4%BA%BA+%282007%29+%7Btmdbid%3D1104%7D%2FSeason+07%2FE01.mkv", rewritten)
+            self.assertNotIn("美剧【广告狂人】", rewritten)
+            self.assertTrue(report["post_verify"]["ok"])
+
+    def test_strm_target_rewrite_blocks_non_strm_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cloud_root = Path(tmp) / "已整理" / "series" / "广告狂人"
+            cloud_root.mkdir(parents=True)
+
+            report = rewrite_strm_targets(
+                "广告狂人",
+                str(cloud_root),
+                old_target_prefix="/已整理/series/old",
+                new_target_prefix="/已整理/series/new",
+                expected_rewrite_count=1,
+                approve_write=True,
+            )
+
+            self.assertFalse(report["ok"])
+            self.assertIn("strm_root_must_be_strm_side", report["blockers"])
+
+    def test_cli_writes_strm_target_rewrite_dry_run_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            strm_root = tmp_path / "strm" / "series" / "广告狂人 (2007) {tmdbid=1104}" / "Season 07"
+            strm_root.mkdir(parents=True)
+            (strm_root / "广告狂人 S07E01.strm").write_text(
+                "/已整理/series/美剧【广告狂人】1-7季全 1080P中字【373G】/S07/E01.mkv",
+                encoding="utf-8",
+            )
+            output = tmp_path / "rewrite.json"
+
+            code = main(
+                [
+                    "strm-target-rewrite",
+                    "--title",
+                    "广告狂人",
+                    "--strm-root",
+                    str(strm_root),
+                    "--old-target-prefix",
+                    "/已整理/series/美剧【广告狂人】1-7季全 1080P中字【373G】/S07",
+                    "--new-target-prefix",
+                    "/已整理/series/广告狂人 (2007) {tmdbid=1104}/Season 07",
+                    "--expected-episode-count",
+                    "1",
+                    "--expected-episode-min",
+                    "1",
+                    "--expected-episode-max",
+                    "1",
+                    "--expected-rewrite-count",
+                    "1",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["dry_run"])
+            self.assertEqual(payload["summary"]["rewritable_count"], 1)
 
     def test_strm_nfo_language_audit_accepts_chinese_nfo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

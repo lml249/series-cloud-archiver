@@ -33,9 +33,11 @@ from .cleanup_verify import (
     audit_strm_nfo_language,
     cleanup_duplicate_strm_root,
     render_duplicate_strm_cleanup,
+    render_strm_target_rewrite,
     render_mp_cleanup_verification,
     render_strm_nfo_language_audit,
     render_strm_verification,
+    rewrite_strm_targets,
     verify_mp_cleanup_from_services,
     verify_strm_paths,
 )
@@ -507,6 +509,19 @@ def build_parser() -> argparse.ArgumentParser:
     strm_nfo_parser.add_argument("--expected-nfo-count", type=int, default=0, help="Require at least this many STRM-side NFO files")
     strm_nfo_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     strm_nfo_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    strm_target_rewrite_parser = subcommands.add_parser("strm-target-rewrite", help="Dry-run or rewrite local STRM target paths from one cloud prefix to another")
+    strm_target_rewrite_parser.add_argument("--title", required=True, help="Series title for reporting")
+    strm_target_rewrite_parser.add_argument("--strm-root", required=True, help="One STRM-side root to rewrite")
+    strm_target_rewrite_parser.add_argument("--old-target-prefix", required=True, help="Existing cloud media target prefix inside STRM files")
+    strm_target_rewrite_parser.add_argument("--new-target-prefix", required=True, help="Replacement organized cloud media target prefix")
+    strm_target_rewrite_parser.add_argument("--expected-episode-count", type=int, default=0, help="Expected distinct STRM episode count")
+    strm_target_rewrite_parser.add_argument("--expected-episode-min", type=int, default=0, help="Expected first STRM episode number")
+    strm_target_rewrite_parser.add_argument("--expected-episode-max", type=int, default=0, help="Expected last STRM episode number")
+    strm_target_rewrite_parser.add_argument("--expected-rewrite-count", type=int, default=0, help="Safety check: expected number of STRM files to rewrite")
+    strm_target_rewrite_parser.add_argument("--approve-write", action="store_true", help="Required: actually rewrite STRM file contents")
+    strm_target_rewrite_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    strm_target_rewrite_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     strm_duplicate_cleanup_parser = subcommands.add_parser("strm-duplicate-cleanup", help="Delete an approved duplicate STRM root after verification")
     strm_duplicate_cleanup_parser.add_argument("--title", required=True, help="Series title for reporting")
@@ -2171,6 +2186,25 @@ def main(argv: Optional[List[str]] = None) -> int:
             expected_nfo_count=args.expected_nfo_count,
         )
         rendered = render_strm_nfo_language_audit(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "strm-target-rewrite":
+        report = rewrite_strm_targets(
+            title=args.title,
+            strm_root=args.strm_root,
+            old_target_prefix=args.old_target_prefix,
+            new_target_prefix=args.new_target_prefix,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            expected_rewrite_count=args.expected_rewrite_count,
+            approve_write=args.approve_write,
+        )
+        rendered = render_strm_target_rewrite(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:
