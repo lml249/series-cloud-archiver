@@ -903,6 +903,45 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(item["required_target_prefix"], "/organized-root/Westworld (2016)/Season 2")
         self.assertEqual(item["strm_target_prefix"], "/organized-root/Westworld (2016)/Season 2")
 
+    def test_batch_finalize_plan_reads_real_target_prefix_from_strm_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            strm_root = tmp_path / "strm" / "series" / "西部世界 (2016) {tmdbid=63247}" / "Season 01"
+            strm_root.mkdir(parents=True)
+            for episode in [1, 2]:
+                encoded = f"/已整理/series/西部世界%20(2016)/Season%201/Westworld.S01E{episode:02d}.mkv"
+                (strm_root / f"Westworld.S01E{episode:02d}.strm").write_text(
+                    f"https://mv3.example/redirect?path={encoded}&code=placeholder",
+                    encoding="utf-8",
+                )
+            source_root = "/volume" + "3/volume" + "3/TV/Westworld.S01"
+            hlink_root = "/volume" + "3/hlink/TV/Westworld.S01"
+            batch_plan = {
+                "mode": "readonly-batch-state-plan",
+                "items": [
+                    {
+                        "bucket": AUTO_CLEANUP,
+                        "title": "西部世界",
+                        "tmdbid": 63247,
+                        "season": 1,
+                        "expected_episode_count": 2,
+                        "source_paths": [source_root],
+                        "cloud_media_path": "/已整理/series/西部世界 {tmdbid=63247}/Season 01",
+                        "strm_root": str(strm_root),
+                    }
+                ],
+            }
+
+            report = build_batch_finalize_plan(batch_plan, env_file="/safe/.env")
+
+        item = report["items"][0]
+        self.assertEqual(item["hlink_root"], hlink_root)
+        self.assertEqual(item["required_target_prefix"], "/已整理/series/西部世界 (2016)/Season 1")
+        self.assertEqual(item["strm_target_prefix"], "/已整理/series/西部世界 (2016)/Season 1")
+        commands = "\n".join(command["command"] for command in item["commands"])
+        self.assertIn(f"--hlink-root {hlink_root}", commands)
+        self.assertIn("--required-target-prefix '/已整理/series/西部世界 (2016)/Season 1'", commands)
+
     def test_batch_plan_derives_missing_tmdbid_from_strm_root(self) -> None:
         cloud_report = {
             "mode": "readonly-cloud-check",
@@ -1718,6 +1757,27 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(report["items"][0]["status"], "cleanup_waiting_for_approval")
         self.assertEqual(verify_call[1]["expected"]["required_target_prefix"], "/organized-root/Westworld (2016)/Season 2")
         self.assertEqual(cleanup_call[1]["expected"]["cloud_media_path"], "/organized-root/Westworld (2016)")
+
+    def test_batch_finalize_run_maps_source_path_to_hlink_root(self) -> None:
+        plan = self._finalize_plan()
+        source_root = "/volume" + "3/volume" + "3/TV/天地剑心.S01"
+        hlink_root = "/volume" + "3/hlink/TV/天地剑心.S01"
+        plan["items"][0]["source_paths"] = [source_root]
+        plan["items"][0]["hlink_root"] = source_root
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            report = run_batch_finalize(
+                plan,
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=False,
+                actions=_batch_finalize_actions(actions),
+            )
+
+        self.assertEqual(report["items"][0]["hlink_root"], hlink_root)
+        cleanup_call = next(call for call in actions.calls if call[0] == "cloud-hlink-cleanup-preview")
+        self.assertEqual(cleanup_call[1]["hlink"]["path"], hlink_root)
 
     def test_cli_writes_batch_finalize_run_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -5,6 +5,7 @@ import io
 import json
 import re
 import shlex
+import urllib.parse
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -878,8 +879,8 @@ def _run_finalize_item(
     expected_episodes = _int_list(item.get("expected_episodes"))
     expected_min = min(expected_episodes) if expected_episodes else 1
     expected_max = max(expected_episodes) if expected_episodes else expected_count
-    hlink_root = str(item.get("hlink_root") or "").rstrip("/")
     source_paths = _string_list(item.get("source_paths"))
+    hlink_root = _preferred_hlink_root(item, source_paths)
     source_qb_hashes = _string_list(item.get("source_qb_hashes"))
     strm_root = str(item.get("strm_root") or "").rstrip("/")
     mp_root = str(item.get("mp_strm_root") or item.get("service_strm_root") or strm_root).rstrip("/")
@@ -888,6 +889,9 @@ def _run_finalize_item(
     forbidden_prefixes = _string_list(item.get("forbidden_target_prefixes"))
     planned_cloud_title_path = str(item.get("cloud_title_path") or "").rstrip("/")
     actual_required_prefix = str(item.get("strm_target_prefix") or "").rstrip("/")
+    detected_required_prefix = _detect_single_strm_target_prefix(strm_root)
+    if not actual_required_prefix and detected_required_prefix:
+        actual_required_prefix = detected_required_prefix
     derived_required_prefix = _cloud_target_prefix_from_strm_root(strm_root)
     derived_cloud_title_path = _cloud_title_path_from_strm_root(strm_root)
     required_prefix = actual_required_prefix or derived_required_prefix or planned_required_prefix
@@ -1832,6 +1836,9 @@ def _finalize_plan_row(
     planned_cloud_title_path = _cloud_title_path_from_item(item, cloud_root)
     strm_root = str(item.get("strm_root") or "") or _host_strm_path_from_cloud_title(planned_cloud_title_path, host_strm_root)
     actual_required_prefix = str(item.get("strm_target_prefix") or "").rstrip("/")
+    detected_required_prefix = _detect_single_strm_target_prefix(strm_root)
+    if not actual_required_prefix and detected_required_prefix:
+        actual_required_prefix = detected_required_prefix
     derived_cloud_season_path = _cloud_target_prefix_from_strm_root(strm_root)
     cloud_title_path = _cloud_title_path_from_cloud_path(actual_required_prefix) or _cloud_title_path_from_strm_root(strm_root) or planned_cloud_title_path
     cloud_required_prefix = required_target_prefix or actual_required_prefix or derived_cloud_season_path or cloud_season_path or cloud_title_path
@@ -2333,6 +2340,57 @@ def _cloud_target_prefix_from_strm_root(strm_root: str, cloud_root: str = DEFAUL
     elif root_name and suffix.startswith(root_name + "/"):
         suffix = suffix[len(root_name) + 1 :]
     return f"{cloud_root.rstrip('/')}/{suffix}"
+
+
+def _detect_single_strm_target_prefix(strm_root: str) -> str:
+    root = Path(str(strm_root or ""))
+    if not strm_root or not root.exists():
+        return ""
+    prefixes: set[str] = set()
+    for path in sorted(root.rglob("*.strm")):
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        prefix = _season_prefix_from_strm_target(content)
+        if prefix:
+            prefixes.add(prefix)
+        if len(prefixes) > 1:
+            return ""
+    return next(iter(prefixes)) if len(prefixes) == 1 else ""
+
+
+def _season_prefix_from_strm_target(content: str) -> str:
+    target = _strm_target_path_from_content(content)
+    if not target:
+        return ""
+    match = re.search(r"(?i)^(.+/(?:Season\s*0?\d+|S0?\d+|第\s*\d+\s*季))(?:/.*)?$", target)
+    if match:
+        return _normalize_cloud_target(match.group(1))
+    parent = str(PurePosixPath(target).parent)
+    return "" if parent == "." else _normalize_cloud_target(parent)
+
+
+def _strm_target_path_from_content(content: str) -> str:
+    parsed = urllib.parse.urlparse(content)
+    if parsed.query:
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        for key in ("path", "file", "target"):
+            values = query.get(key)
+            if values:
+                return _normalize_cloud_target(values[0])
+    if parsed.scheme and parsed.netloc:
+        return _normalize_cloud_target(urllib.parse.unquote(parsed.path))
+    return _normalize_cloud_target(content)
+
+
+def _normalize_cloud_target(value: str) -> str:
+    text = urllib.parse.unquote(str(value or "")).strip()
+    if not text:
+        return ""
+    text = re.sub(r"\\+", "/", text)
+    text = re.sub(r"/+", "/", text)
+    return text.rstrip("/")
 
 
 def _cloud_title_path_from_strm_root(strm_root: str, cloud_root: str = DEFAULT_CLOUD_ROOT) -> str:
@@ -3164,7 +3222,21 @@ def _first_hlink_path(paths: Sequence[str]) -> str:
     for path in paths:
         if "/hlink/" in path.replace("\\", "/"):
             return str(path).rstrip("/")
+    for path in paths:
+        hlink_path = _source_path_to_hlink_variant(str(path))
+        if hlink_path:
+            return hlink_path
     return str(paths[0]).rstrip("/") if paths else ""
+
+
+def _preferred_hlink_root(item: Dict[str, object], source_paths: Sequence[str]) -> str:
+    explicit = str(item.get("hlink_root") or "").rstrip("/")
+    if explicit and "/hlink/" in explicit.replace("\\", "/"):
+        return explicit
+    from_sources = _first_hlink_path(source_paths)
+    if from_sources:
+        return from_sources
+    return explicit
 
 
 def _int_list(value: object) -> List[int]:
