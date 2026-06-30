@@ -2701,6 +2701,73 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("qB 种子不存在", item["post_cleanup_result"])
         self.assertIn("qb-orphan-torrent-cleanup-preview", item["post_cleanup_reports"])
 
+    def test_batch_review_report_uses_no_hash_local_absent_verify_as_cleanup_gate(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "state": "planned_validation_then_cleanup",
+                    "title": "主角",
+                    "tmdbid": 300001,
+                    "season": 1,
+                    "cloud_status": "cloud_strm_complete",
+                    "expected_episode_count": 48,
+                }
+            ],
+        }
+        no_hash_verify = {
+            "mode": "no-hash-local-absent-verify",
+            "title": "主角",
+            "ok": True,
+            "expected": {
+                "tmdbid": 300001,
+                "season": 1,
+                "required_target_prefix": "/已整理/series/主角 (2025) {tmdbid=300001}/Season 01",
+                "episode_count": 48,
+            },
+            "moviepilot": {"matched_count": 0},
+            "qbittorrent": {"matched_count": 0, "path_match_count": 0, "title_match_count": 0},
+            "filesystem": {
+                "source_roots": [{"path": "/example/source/主角", "exists": False}],
+                "hlink_roots": [{"path": "/example/hlink/主角", "exists": False}],
+            },
+            "strm": {
+                "ok": True,
+                "strm": {
+                    "roots": [{"path": "/example/mv3/strm/series/主角 (2025) {tmdbid=300001}/Season 01"}],
+                    "combined": {"episode_count": 48, "missing_in_range": []},
+                },
+            },
+            "blockers": [],
+        }
+        nfo_audit = {
+            "mode": "strm-nfo-language-audit",
+            "ok": True,
+            "roots": [{"path": "/example/mv3/strm/series/主角 (2025) {tmdbid=300001}/Season 01"}],
+            "summary": {"nfo_count": 49, "suspect_english_count": 0},
+            "blockers": [],
+        }
+        emby_verify = {
+            "mode": "emby-media-updated",
+            "title": "主角",
+            "ok": True,
+            "verification": {
+                "strm_paths": [{"prefix": "/example/service/strm/series/主角 (2025) {tmdbid=300001}/Season 01"}],
+                "strm": {"episode_count": 48, "missing_in_range": []},
+                "totals": {"stale_records": 0, "strm_records": 48},
+                "blockers": [],
+            },
+            "blockers": [],
+        }
+
+        report = build_batch_review_report(batch_plan, post_cleanup_reports=[no_hash_verify, nfo_audit, emby_verify])
+        item = report["items"][0]
+
+        self.assertEqual(item["decision"], "done_cleanup_verified")
+        self.assertEqual(item["post_cleanup_status"], "cleanup_executed_verified")
+        self.assertIn("no-hash-local-absent-verify", item["post_cleanup_reports"])
+
     def test_batch_review_report_treats_empty_hlink_cleanup_as_partial_gate(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",

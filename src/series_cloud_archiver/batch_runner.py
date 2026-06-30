@@ -2431,6 +2431,8 @@ def _post_cleanup_gate_item(report: Dict[str, object]) -> Dict[str, object]:
         return _post_cleanup_item_from_strm_verify(report)
     if mode == "qb-orphan-torrent-cleanup-preview":
         return _post_cleanup_item_from_qb_orphan_preview(report)
+    if mode == "no-hash-local-absent-verify":
+        return _post_cleanup_item_from_no_hash_local_absent_verify(report)
     if mode == "hlink-empty-root-cleanup":
         return _post_cleanup_item_from_empty_hlink_cleanup(report)
     return {}
@@ -2558,6 +2560,36 @@ def _post_cleanup_item_from_qb_orphan_preview(report: Dict[str, object]) -> Dict
     }
 
 
+def _post_cleanup_item_from_no_hash_local_absent_verify(report: Dict[str, object]) -> Dict[str, object]:
+    expected = report.get("expected") if isinstance(report.get("expected"), dict) else {}
+    filesystem = report.get("filesystem") if isinstance(report.get("filesystem"), dict) else {}
+    qb = report.get("qbittorrent") if isinstance(report.get("qbittorrent"), dict) else {}
+    mp_history = report.get("moviepilot") if isinstance(report.get("moviepilot"), dict) else {}
+    strm = report.get("strm") if isinstance(report.get("strm"), dict) else {}
+    strm_section = strm.get("strm") if isinstance(strm.get("strm"), dict) else {}
+    combined = strm_section.get("combined") if isinstance(strm_section.get("combined"), dict) else {}
+    roots = strm_section.get("roots") if isinstance(strm_section.get("roots"), list) else []
+    identity = _post_cleanup_identity_from_paths(_paths_from_strm_roots(roots) + [str(expected.get("required_target_prefix") or "")])
+    source_roots = filesystem.get("source_roots") if isinstance(filesystem.get("source_roots"), list) else []
+    hlink_roots = filesystem.get("hlink_roots") if isinstance(filesystem.get("hlink_roots"), list) else []
+    return {
+        "mode": "post-cleanup-gate-summary",
+        "source_mode": "no-hash-local-absent-verify",
+        "title": report.get("title", ""),
+        "tmdbid": int(expected.get("tmdbid") or identity[0] or 0),
+        "season": int(expected.get("season") or identity[1] or 0),
+        "status": "post_cleanup_gates_partial",
+        "qb_remaining": str(int(qb.get("matched_count") or 0)),
+        "hlink_exists": _bool_string(any(bool(item.get("exists")) for item in hlink_roots if isinstance(item, dict))),
+        "source_exists": _bool_string(any(bool(item.get("exists")) for item in source_roots if isinstance(item, dict))),
+        "strm_ok": _bool_string(bool(report.get("ok")) and int(combined.get("episode_count") or 0) > 0 and not combined.get("missing_in_range")),
+        "mp_history_remaining": str(int(mp_history.get("matched_count") or 0)),
+        "episode_count": int(combined.get("episode_count") or expected.get("episode_count") or 0),
+        "blockers": _string_list(report.get("blockers")),
+        "reports": "no-hash-local-absent-verify",
+    }
+
+
 def _post_cleanup_item_from_empty_hlink_cleanup(report: Dict[str, object]) -> Dict[str, object]:
     expected = report.get("expected") if isinstance(report.get("expected"), dict) else {}
     hlink = report.get("hlink") if isinstance(report.get("hlink"), dict) else {}
@@ -2680,7 +2712,7 @@ def _post_cleanup_status(item: Dict[str, object]) -> str:
         return _merged_post_cleanup_status(item)
     if mode == "cloud-hlink-cleanup-execute":
         return "cleanup_executed_verified" if bool(item.get("ok")) else "cleanup_execute_failed"
-    if mode in {"mp-cleanup-verify", "strm-verify", "strm-nfo-language-audit", "emby-refresh-verify", "emby-media-updated"}:
+    if mode in {"mp-cleanup-verify", "no-hash-local-absent-verify", "strm-verify", "strm-nfo-language-audit", "emby-refresh-verify", "emby-media-updated"}:
         return f"{mode}_ok" if bool(item.get("ok")) else f"{mode}_failed"
     return str(item.get("status") or "")
 

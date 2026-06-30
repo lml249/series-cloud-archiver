@@ -10,6 +10,8 @@ from series_cloud_archiver.moviepilot import MPTransferHistoryRecord
 from series_cloud_archiver.qb_orphan_cleanup import (
     execute_qb_orphan_torrent_cleanup,
     preview_qb_orphan_torrent_cleanup,
+    render_no_hash_local_absent_verification,
+    verify_no_hash_local_absent_cleanup,
 )
 
 
@@ -22,6 +24,278 @@ def write(path: Path, text: str = "x") -> None:
 
 
 class QbOrphanTorrentCleanupTest(unittest.TestCase):
+    def test_no_hash_local_absent_verify_passes_when_no_qb_or_mp_residue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_root = tmp_path / "volume3" / "TV" / "主角.S01"
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "主角"
+            strm_root = tmp_path / "strm" / "series" / "主角 (2026) {tmdbid=123}" / "Season 01"
+            write(strm_root / "主角.S01E01.strm", "/已整理/series/主角 (2026) {tmdbid=123}/Season 01/E01.mkv")
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return [
+                        {
+                            "name": "别的剧.S01",
+                            "hash": FULL_HASH,
+                            "save_path": "/example-qb",
+                            "content_path": "/example-qb/Other.S01",
+                        }
+                    ]
+
+                def torrent_files(self, _torrent_hash):
+                    return [{"name": "Other.S01/Other.S01E01.mkv", "size": 1}]
+
+            with patch("series_cloud_archiver.qb_orphan_cleanup.QBClient", FakeClient), patch(
+                "series_cloud_archiver.qb_orphan_cleanup.MoviePilotClient.transfer_history", return_value=[]
+            ):
+                report = verify_no_hash_local_absent_cleanup(
+                    "主角",
+                    [str(source_root)],
+                    [str(hlink_root)],
+                    [str(strm_root)],
+                    expected_tmdbid=123,
+                    expected_season=1,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                    mp_base_url="http://mp.example",
+                    mp_token="token",
+                    path_aliases={"/example-qb": str(tmp_path / "volume3" / "TV")},
+                    required_target_prefix="/已整理/series/主角 (2026) {tmdbid=123}/Season 01",
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["mode"], "no-hash-local-absent-verify")
+        self.assertEqual(report["qbittorrent"]["matched_count"], 0)
+        self.assertEqual(report["moviepilot"]["matched_count"], 0)
+
+    def test_no_hash_local_absent_verify_blocks_qb_path_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_root = tmp_path / "volume3" / "TV" / "Show.S01"
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "Show"
+            strm_root = tmp_path / "strm" / "series" / "主角 (2026) {tmdbid=123}" / "Season 01"
+            write(strm_root / "主角.S01E01.strm", "/已整理/series/主角 (2026) {tmdbid=123}/Season 01/E01.mkv")
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return [
+                        {
+                            "name": "Unclear.Release",
+                            "hash": FULL_HASH,
+                            "save_path": "/example-qb",
+                            "content_path": "/example-qb/Show.S01",
+                        }
+                    ]
+
+                def torrent_files(self, _torrent_hash):
+                    return [{"name": "Show.S01/Show.S01E01.mkv", "size": 1}]
+
+            with patch("series_cloud_archiver.qb_orphan_cleanup.QBClient", FakeClient), patch(
+                "series_cloud_archiver.qb_orphan_cleanup.MoviePilotClient.transfer_history", return_value=[]
+            ):
+                report = verify_no_hash_local_absent_cleanup(
+                    "Show",
+                    [str(source_root)],
+                    [str(hlink_root)],
+                    [str(strm_root)],
+                    expected_tmdbid=123,
+                    expected_season=1,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                    mp_base_url="http://mp.example",
+                    mp_token="token",
+                    path_aliases={"/example-qb": str(tmp_path / "volume3" / "TV")},
+                    required_target_prefix="/已整理/series/Show (2026) {tmdbid=123}/Season 01",
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("qb_path_match_still_present", report["blockers"])
+
+    def test_no_hash_local_absent_verify_blocks_qb_title_season_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_root = tmp_path / "volume3" / "TV" / "Show.S01"
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "Show"
+            strm_root = tmp_path / "strm" / "series" / "主角 (2026) {tmdbid=123}" / "Season 01"
+            write(strm_root / "主角.S01E01.strm", "/已整理/series/主角 (2026) {tmdbid=123}/Season 01/E01.mkv")
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return [{"name": "Show.S01.1080p.WEB-DL", "hash": FULL_HASH, "save_path": "/other", "content_path": "/other/Show.S01"}]
+
+                def torrent_files(self, _torrent_hash):
+                    return []
+
+            with patch("series_cloud_archiver.qb_orphan_cleanup.QBClient", FakeClient), patch(
+                "series_cloud_archiver.qb_orphan_cleanup.MoviePilotClient.transfer_history", return_value=[]
+            ):
+                report = verify_no_hash_local_absent_cleanup(
+                    "Show",
+                    [str(source_root)],
+                    [str(hlink_root)],
+                    [str(strm_root)],
+                    expected_tmdbid=123,
+                    expected_season=1,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                    mp_base_url="http://mp.example",
+                    mp_token="token",
+                    required_target_prefix="/已整理/series/Show (2026) {tmdbid=123}/Season 01",
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("qb_title_season_match_still_present", report["blockers"])
+
+    def test_no_hash_local_absent_verify_blocks_local_video(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_root = tmp_path / "volume3" / "TV" / "Show.S01"
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "Show"
+            strm_root = tmp_path / "strm" / "series" / "Show (2026) {tmdbid=123}" / "Season 01"
+            write(source_root / "Show.S01E01.mkv")
+            write(strm_root / "Show.S01E01.strm", "/已整理/series/Show (2026) {tmdbid=123}/Season 01/E01.mkv")
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.qb_orphan_cleanup.QBClient", FakeClient), patch(
+                "series_cloud_archiver.qb_orphan_cleanup.MoviePilotClient.transfer_history", return_value=[]
+            ):
+                report = verify_no_hash_local_absent_cleanup(
+                    "Show",
+                    [str(source_root)],
+                    [str(hlink_root)],
+                    [str(strm_root)],
+                    expected_tmdbid=123,
+                    expected_season=1,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                    mp_base_url="http://mp.example",
+                    mp_token="token",
+                    required_target_prefix="/已整理/series/Show (2026) {tmdbid=123}/Season 01",
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("source_root_contains_video_files", report["blockers"])
+
+    def test_cli_writes_no_hash_local_absent_verify_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            output = tmp_path / "report.json"
+            strm_root = tmp_path / "strm" / "series" / "主角 (2026) {tmdbid=123}" / "Season 01"
+            write(strm_root / "主角.S01E01.strm", "/已整理/series/主角 (2026) {tmdbid=123}/Season 01/E01.mkv")
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "QB_BASE_URL=http://qb.example",
+                        "MP_BASE_URL=http://mp.example",
+                        "MP_API_TOKEN=token",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.qb_orphan_cleanup.QBClient", FakeClient), patch(
+                "series_cloud_archiver.qb_orphan_cleanup.MoviePilotClient.transfer_history", return_value=[]
+            ):
+                code = main(
+                    [
+                        "no-hash-local-absent-verify",
+                        "--env-file",
+                        str(env_file),
+                        "--title",
+                        "主角",
+                        "--expected-tmdbid",
+                        "123",
+                        "--expected-season",
+                        "1",
+                        "--source-root",
+                        str(tmp_path / "source" / "主角.S01"),
+                        "--hlink-root",
+                        str(tmp_path / "hlink" / "主角"),
+                        "--strm-root",
+                        str(strm_root),
+                        "--expected-episode-count",
+                        "1",
+                        "--expected-episode-min",
+                        "1",
+                        "--expected-episode-max",
+                        "1",
+                        "--required-target-prefix",
+                        "/已整理/series/主角 (2026) {tmdbid=123}/Season 01",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+                data = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(data["mode"], "no-hash-local-absent-verify")
+        self.assertTrue(data["ok"])
+
+    def test_no_hash_local_absent_render_markdown(self) -> None:
+        rendered = render_no_hash_local_absent_verification(
+            {
+                "mode": "no-hash-local-absent-verify",
+                "title": "Show",
+                "ok": False,
+                "expected": {"tmdbid": 123, "season": 1},
+                "qbittorrent": {"scanned_count": 1, "matched_count": 1, "path_match_count": 0, "title_match_count": 1},
+                "filesystem": {"source_roots": [], "hlink_roots": []},
+                "blockers": ["qb_title_season_match_still_present"],
+            },
+            "markdown",
+        )
+        self.assertIn("No-hash Local-absent Verification", rendered)
+        self.assertIn("qb_title_season_match_still_present", rendered)
+
     def test_preview_allows_missing_local_roots_with_complete_strm(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

@@ -161,7 +161,9 @@ from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
 from .qb_orphan_cleanup import (
     execute_qb_orphan_torrent_cleanup,
     preview_qb_orphan_torrent_cleanup,
+    render_no_hash_local_absent_verification,
     render_qb_orphan_torrent_cleanup,
+    verify_no_hash_local_absent_cleanup,
 )
 from .qbittorrent import audit_dotqb_files, fetch_qb_torrents, render_dotqb_audit_report
 from .reporting import render_report
@@ -285,6 +287,31 @@ def build_parser() -> argparse.ArgumentParser:
     qb_orphan_exec_parser.add_argument("--approve-delete", action="store_true", help="Required: actually remove qB tasks with deleteFiles=false")
     qb_orphan_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     qb_orphan_exec_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    no_hash_verify_parser = subcommands.add_parser(
+        "no-hash-local-absent-verify",
+        help="Readonly post-cleanup verification when local roots are already absent and no trusted qB hash is available",
+    )
+    no_hash_verify_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    no_hash_verify_parser.add_argument("--title", required=True, help="Series title for reporting and MP/qB absence checks")
+    no_hash_verify_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Expected TMDB ID")
+    no_hash_verify_parser.add_argument("--expected-season", type=int, required=True, help="Expected season number")
+    no_hash_verify_parser.add_argument("--source-root", action="append", required=True, help="Explicit source root that must be missing or contain no videos; can be repeated")
+    no_hash_verify_parser.add_argument("--hlink-root", action="append", required=True, help="Explicit hlink root that must be missing or contain no videos; can be repeated")
+    no_hash_verify_parser.add_argument("--strm-root", action="append", required=True, help="STRM root that must remain complete; can be repeated")
+    no_hash_verify_parser.add_argument("--expected-episode-count", type=int, required=True, help="Expected distinct STRM episode count")
+    no_hash_verify_parser.add_argument("--expected-episode-min", type=int, required=True, help="Expected first STRM episode number")
+    no_hash_verify_parser.add_argument("--expected-episode-max", type=int, required=True, help="Expected last STRM episode number")
+    no_hash_verify_parser.add_argument("--expected-title-contains", default="", help="Additional qB title/path token to treat as suspicious")
+    no_hash_verify_parser.add_argument("--expected-title-token", action="append", default=[], help="Additional qB title/path token to treat as suspicious; can be repeated")
+    no_hash_verify_parser.add_argument("--required-target-prefix", default="", help="Every STRM target must start with this prefix")
+    no_hash_verify_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
+    no_hash_verify_parser.add_argument("--cloud-media-path", default="", help="Optional MV3 cloud media path that must not contain NFO/JPG/PNG/WEBP before completion")
+    no_hash_verify_parser.add_argument("--cloud-media-folder-id", default="", help="Optional MV3 cloud media folder id that must not contain NFO/JPG/PNG/WEBP before completion")
+    no_hash_verify_parser.add_argument("--cloud-media-storage", default="115-default", help="MV3 cloud storage slug for cloud media sidecar verification")
+    no_hash_verify_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    no_hash_verify_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    no_hash_verify_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     mp_cleanup_parser = subcommands.add_parser("mp-cleanup-preview", help="Readonly MoviePilot cleanup preview from transfer history")
     mp_cleanup_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -1919,6 +1946,46 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_qb_orphan_torrent_cleanup(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "no-hash-local-absent-verify":
+        config = config_from_env(args.env_file, [])
+        if not config.mp_base_url or not config.mp_token:
+            parser.error("no-hash-local-absent-verify requires MP_BASE_URL and MP_API_TOKEN")
+        if not config.qb_base_url:
+            parser.error("no-hash-local-absent-verify requires QB_BASE_URL")
+        report = verify_no_hash_local_absent_cleanup(
+            title=args.title,
+            source_roots=args.source_root,
+            hlink_roots=args.hlink_root,
+            strm_roots=args.strm_root,
+            expected_tmdbid=args.expected_tmdbid,
+            expected_season=args.expected_season,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            qb_base_url=config.qb_base_url,
+            qb_user=config.qb_user,
+            qb_pass=config.qb_pass,
+            mp_base_url=config.mp_base_url,
+            mp_token=config.mp_token,
+            path_aliases=config.path_aliases,
+            expected_title_contains=args.expected_title_contains,
+            expected_title_tokens=args.expected_title_token,
+            required_target_prefix=args.required_target_prefix,
+            forbidden_target_prefixes=args.forbidden_target_prefix,
+            mv3_base_url=config.mv3_base_url,
+            mv3_token=config.mv3_token,
+            cloud_media_path=args.cloud_media_path,
+            cloud_media_folder_id=args.cloud_media_folder_id,
+            cloud_media_storage=args.cloud_media_storage,
+            timeout=args.timeout,
+        )
+        rendered = render_no_hash_local_absent_verification(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:
