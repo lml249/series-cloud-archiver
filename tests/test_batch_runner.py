@@ -1526,11 +1526,56 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("source_root_check_failed", rendered)
         self.assertIn("SP2.The.Making", rendered)
 
+    def test_batch_review_report_marks_failed_transfer_for_manual_review(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_TRANSFER,
+                    "state": "planned_share_preview",
+                    "title": "亦舞之城",
+                    "tmdbid": 263218,
+                    "season": 1,
+                    "cloud_status": "cloud_strm_not_found",
+                    "expected_episode_count": 28,
+                    "expected_episodes": list(range(1, 29)),
+                }
+            ],
+        }
+        transfer_report = {
+            "mode": "batch-transfer-run",
+            "items": [
+                {
+                    "status": "failed_receive",
+                    "title": "亦舞之城",
+                    "tmdbid": 263218,
+                    "season": 1,
+                    "blockers": ["receive_failed"],
+                    "stage_reports": {"share_receive": "/reports/ywzc-share-receive.json"},
+                }
+            ],
+        }
+
+        report = build_batch_review_report(batch_plan, transfer_run_reports=[transfer_report])
+
+        self.assertEqual(report["input_report_counts"]["transfer_run"], 1)
+        self.assertEqual(report["decision_counts"]["manual_review_transfer_failed"], 1)
+        item = report["items"][0]
+        self.assertEqual(item["decision"], "manual_review_transfer_failed")
+        self.assertEqual(item["transfer_status"], "failed_receive")
+        self.assertEqual(item["transfer_last_stage"], "share_receive")
+        self.assertIn("receive_failed", item["reason_summary"])
+        self.assertIn("不要清理本地", item["next_action"])
+        rendered = render_batch_review_report(report, "csv")
+        self.assertIn("manual_review_transfer_failed", rendered)
+        self.assertIn("ywzc-share-receive", rendered)
+
     def test_cli_writes_batch_review_report_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             batch = tmp_path / "batch.json"
             finalize = tmp_path / "finalize.json"
+            transfer = tmp_path / "transfer.json"
             output = tmp_path / "review.csv"
             batch.write_text(
                 json.dumps(
@@ -1568,12 +1613,31 @@ class BatchRunnerTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            transfer.write_text(
+                json.dumps(
+                    {
+                        "mode": "batch-transfer-run",
+                        "items": [
+                            {
+                                "status": "failed_receive",
+                                "title": "亦舞之城",
+                                "tmdbid": 263218,
+                                "season": 1,
+                                "blockers": ["receive_failed"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             exit_code = main(
                 [
                     "batch-review-report",
                     "--batch-plan",
                     str(batch),
+                    "--transfer-run-report",
+                    str(transfer),
                     "--finalize-run-report",
                     str(finalize),
                     "--format",

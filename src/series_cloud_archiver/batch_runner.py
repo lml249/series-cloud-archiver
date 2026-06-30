@@ -205,11 +205,13 @@ def build_batch_review_report(
     batch_plan: Dict[str, object],
     *,
     share_preview_reports: Optional[Sequence[Dict[str, object]]] = None,
+    transfer_run_reports: Optional[Sequence[Dict[str, object]]] = None,
     finalize_run_reports: Optional[Sequence[Dict[str, object]]] = None,
 ) -> Dict[str, object]:
     """Build a readonly human-review report from batch state and run reports."""
 
     preview_by_key = _review_preview_by_identity(share_preview_reports or [])
+    transfer_by_key = _review_transfer_by_identity(transfer_run_reports or [])
     finalize_by_key = _review_finalize_by_identity(finalize_run_reports or [])
     rows: List[Dict[str, object]] = []
 
@@ -222,6 +224,7 @@ def build_batch_review_report(
                 index,
                 item,
                 preview_by_key.get(key, {}),
+                transfer_by_key.get(key, {}),
                 finalize_by_key.get(key, {}),
             )
         )
@@ -236,6 +239,7 @@ def build_batch_review_report(
         "bucket_counts": dict(sorted(bucket_counts.items())),
         "input_report_counts": {
             "share_preview": len(share_preview_reports or []),
+            "transfer_run": len(transfer_run_reports or []),
             "finalize_run": len(finalize_run_reports or []),
         },
         "items": rows,
@@ -1821,6 +1825,36 @@ def _review_preview_rank(item: Dict[str, object]) -> Tuple[int, int, int, int]:
     )
 
 
+def _review_transfer_by_identity(reports: Sequence[Dict[str, object]]) -> Dict[Tuple[int, int], Dict[str, object]]:
+    result: Dict[Tuple[int, int], Dict[str, object]] = {}
+    for report_index, report in enumerate(reports, start=1):
+        if not isinstance(report, dict):
+            continue
+        for item in report.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            key = _review_identity_key(item)
+            if key == (0, 0):
+                continue
+            enriched = dict(item)
+            enriched["transfer_report_index"] = report_index
+            existing = result.get(key)
+            if existing is None or _review_transfer_rank(enriched) > _review_transfer_rank(existing):
+                result[key] = enriched
+    return result
+
+
+def _review_transfer_rank(item: Dict[str, object]) -> Tuple[int, int, int, int]:
+    status = str(item.get("status") or "")
+    status_rank = {
+        "organized_requires_finalize": 5,
+        "transfer_approval_required": 4,
+        "approval_required": 3,
+    }.get(status, 2 if status.startswith("failed_") else 1)
+    progress = sum(1 for key in ("receive_ok", "browse_ok", "organize_ok", "post_verify_ok") if bool(item.get(key)))
+    return status_rank, progress, int(item.get("expected_episode_count") or 0), -int(item.get("transfer_report_index") or 0)
+
+
 def _review_finalize_by_identity(reports: Sequence[Dict[str, object]]) -> Dict[Tuple[int, int], Dict[str, object]]:
     result: Dict[Tuple[int, int], Dict[str, object]] = {}
     for report_index, report in enumerate(reports, start=1):
@@ -1856,19 +1890,22 @@ def _batch_review_row(
     source_index: int,
     item: Dict[str, object],
     preview_item: Dict[str, object],
+    transfer_item: Dict[str, object],
     finalize_item: Dict[str, object],
 ) -> Dict[str, object]:
     diagnostics = item.get("candidate_diagnostics") if isinstance(item.get("candidate_diagnostics"), dict) else {}
     best_candidate = diagnostics.get("best_candidate") if isinstance(diagnostics.get("best_candidate"), dict) else {}
     recommended = item.get("recommended_candidate") if isinstance(item.get("recommended_candidate"), dict) else {}
-    decision = _review_decision(item, preview_item, finalize_item)
+    decision = _review_decision(item, preview_item, transfer_item, finalize_item)
     reasons = sorted(
         set(
             _string_list(item.get("review_reasons"))
             + _string_list(item.get("blockers"))
             + _string_list(item.get("cleanup_preview_blockers"))
+            + _string_list(transfer_item.get("blockers"))
             + _string_list(finalize_item.get("blockers"))
             + _review_preview_reasons(preview_item, decision)
+            + _review_transfer_reasons(transfer_item)
         )
     )
     next_action = _review_next_action(decision, reasons)
@@ -1904,6 +1941,10 @@ def _batch_review_row(
         "preview_missing_expected": _episode_cell(preview_item.get("preview_missing_expected")) if preview_item else "",
         "preview_unexpected_episodes": _episode_cell(preview_item.get("preview_unexpected_episodes")) if preview_item else "",
         "preview_blockers": "; ".join(_string_list(preview_item.get("preview_blockers"))) if preview_item else "",
+        "transfer_status": transfer_item.get("status", "") if transfer_item else "",
+        "transfer_last_stage": _review_transfer_last_stage(transfer_item),
+        "transfer_blockers": "; ".join(_string_list(transfer_item.get("blockers"))) if transfer_item else "",
+        "transfer_stage_reports": _stage_reports_cell(transfer_item.get("stage_reports")) if transfer_item else "",
         "finalize_status": finalize_item.get("status", "") if finalize_item else "",
         "finalize_last_stage": _review_last_stage(finalize_item),
         "finalize_blockers": "; ".join(_string_list(finalize_item.get("blockers"))) if finalize_item else "",
@@ -1915,7 +1956,12 @@ def _batch_review_row(
     }
 
 
-def _review_decision(item: Dict[str, object], preview_item: Dict[str, object], finalize_item: Dict[str, object]) -> str:
+def _review_decision(
+    item: Dict[str, object],
+    preview_item: Dict[str, object],
+    transfer_item: Dict[str, object],
+    finalize_item: Dict[str, object],
+) -> str:
     finalize_status = str(finalize_item.get("status") or "")
     if finalize_status == "cleanup_executed":
         return "done_cleanup_executed"
@@ -1929,6 +1975,16 @@ def _review_decision(item: Dict[str, object], preview_item: Dict[str, object], f
         return "ready_for_receive_plan"
     if preview_status == "preview_blocked":
         return "manual_review_preview_blocked"
+
+    transfer_status = str(transfer_item.get("status") or "")
+    if transfer_status == "organized_requires_finalize":
+        return "ready_for_finalize_gates"
+    if transfer_status == "transfer_approval_required":
+        return "ready_for_transfer_approval"
+    if transfer_status.startswith("failed_"):
+        return "manual_review_transfer_failed"
+    if transfer_status:
+        return "blocked_after_transfer_run"
 
     bucket = str(item.get("bucket") or "")
     if bucket == AUTO_CLEANUP:
@@ -1951,6 +2007,16 @@ def _review_preview_reasons(preview_item: Dict[str, object], decision: str) -> L
     return []
 
 
+def _review_transfer_reasons(transfer_item: Dict[str, object]) -> List[str]:
+    if not transfer_item:
+        return []
+    reasons = _string_list(transfer_item.get("blockers"))
+    status = str(transfer_item.get("status") or "")
+    if status and status not in reasons:
+        reasons.append(status)
+    return reasons
+
+
 def _review_next_action(decision: str, reasons: Sequence[str]) -> str:
     if decision == "done_cleanup_executed":
         return "已完成清理，保留报告归档"
@@ -1960,6 +2026,12 @@ def _review_next_action(decision: str, reasons: Sequence[str]) -> str:
         return "先处理 finalize 阶段阻断，再重新运行 finalize"
     if decision == "ready_for_receive_plan":
         return "生成 receive plan，审批后由批量 runner 接收并整理"
+    if decision == "ready_for_transfer_approval":
+        return "复核 receive/browse 报告后，可显式批准 MV3 整理和 STRM 生成"
+    if decision == "manual_review_transfer_failed":
+        return "转存或整理失败；换分享源/重新搜索后再跑，不要清理本地"
+    if decision == "blocked_after_transfer_run":
+        return "先处理 transfer-run 阶段阻断，再重新运行批量转存"
     if decision == "manual_review_preview_blocked":
         return "人工核对分享内容、缺失集和候选标题"
     if decision == "ready_for_finalize_gates":
@@ -1985,6 +2057,30 @@ def _review_last_stage(item: Dict[str, object]) -> str:
         return ""
     last = stages[-1]
     return str(last.get("stage") or "") if isinstance(last, dict) else ""
+
+
+def _review_transfer_last_stage(item: Dict[str, object]) -> str:
+    reports = item.get("stage_reports") if isinstance(item.get("stage_reports"), dict) else {}
+    if not reports:
+        return ""
+    stage_order = [
+        "share_receive",
+        "received_browse",
+        "organize_transfer",
+        "organized_browse_verify",
+        "staging_browse_verify",
+    ]
+    for stage in reversed(stage_order):
+        if reports.get(stage):
+            return stage
+    return str(next(reversed(reports.keys()))) if reports else ""
+
+
+def _stage_reports_cell(value: object) -> str:
+    if not isinstance(value, dict):
+        return ""
+    parts = [f"{key}:{path}" for key, path in value.items() if str(path)]
+    return " | ".join(parts)
 
 
 def _episode_cell(value: object) -> str:
@@ -2260,6 +2356,10 @@ def _render_review_csv(report: Dict[str, object]) -> str:
         "preview_missing_expected",
         "preview_unexpected_episodes",
         "preview_blockers",
+        "transfer_status",
+        "transfer_last_stage",
+        "transfer_blockers",
+        "transfer_stage_reports",
         "finalize_status",
         "finalize_last_stage",
         "finalize_blockers",

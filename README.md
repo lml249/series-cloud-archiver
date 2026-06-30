@@ -305,12 +305,13 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-plan \
 
 如果只是想给人工复核看，也可以把同一条命令的 `--format json` 改成 `--format csv`，输出会平铺出剧名、TMDB、季号、集数、复核原因、推荐资源、清理预览阻断和本地路径。
 
-更推荐在每批 dry-run 或执行后生成一份合并人工复核表。`batch-review-report` 只读取已有 JSON 报告，不重新扫描全库，不调用 MV3/MP/Emby/qB，也不会写云盘或删除本地文件。它会把 `batch-plan`、只读分享预览结果和 finalize 运行结果合并，给每个剧季写出 `decision`、`next_action`、候选资源、缺失集、失败阶段和阻断原因：
+更推荐在每批 dry-run 或执行后生成一份合并人工复核表。`batch-review-report` 只读取已有 JSON 报告，不重新扫描全库，不调用 MV3/MP/Emby/qB，也不会写云盘或删除本地文件。它会把 `batch-plan`、只读分享预览结果、转存整理 runner 结果和 finalize 运行结果合并，给每个剧季写出 `decision`、`next_action`、候选资源、缺失集、转存失败阶段、清理失败阶段和阻断原因：
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver batch-review-report \
   --batch-plan /example/app/series-cloud-archiver/outputs/current-20260629/batch-plan-YYYYMMDD.json \
   --share-preview-report /example/app/series-cloud-archiver/outputs/current-20260629/batch-share-preview-executed-YYYYMMDD.json \
+  --transfer-run-report /example/app/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-YYYYMMDD.json \
   --finalize-run-report /example/app/series-cloud-archiver/outputs/current-20260629/batch-finalize-run-YYYYMMDD.json \
   --format csv \
   --output /example/app/series-cloud-archiver/outputs/current-20260629/batch-review-YYYYMMDD.csv
@@ -320,6 +321,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-review-report \
 
 - `ready_for_share_preview`：可以进入只读分享预览，但还不能转存。
 - `ready_for_receive_plan`：分享预览已证明完整，可以生成接收计划并等待显式审批。
+- `manual_review_transfer_failed`：分享预览通过，但接收、整理或 STRM 生成阶段失败；常见原因是 115 分享过期或 MV3 整理未完成。不要清理本地，先换分享源或重新搜索。
 - `ready_for_finalize_gates`：云端 STRM 已完整，可以跑 STRM/NFO/Emby/qB/MP 清理前门禁。
 - `blocked_after_finalize_gates`：STRM/NFO/Emby 等前置门禁可能已过，但清理前验证失败，必须处理阻断原因后重跑。
 - `manual_review_required` / `manual_review_preview_blocked`：证据不足、缺集、错季、错剧或体积异常，需要人工复核。

@@ -685,6 +685,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_review_parser = subcommands.add_parser("batch-review-report", help="Build a readonly human-review report from batch state and run reports")
     batch_review_parser.add_argument("--batch-plan", required=True, help="JSON report from batch-plan")
     batch_review_parser.add_argument("--share-preview-report", action="append", default=[], help="Optional JSON report from batch-share-preview; can be repeated")
+    batch_review_parser.add_argument("--transfer-run-report", action="append", default=[], help="Optional JSON report from batch-transfer-run; can be repeated")
     batch_review_parser.add_argument("--finalize-run-report", action="append", default=[], help="Optional JSON report from batch-finalize-run; can be repeated")
     batch_review_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     batch_review_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
@@ -2503,6 +2504,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             for report in (load_optional_json_report(path) for path in args.share_preview_report)
             if isinstance(report, dict)
         ]
+        transfer_run_reports = [
+            report
+            for report in (load_optional_json_report(path) for path in args.transfer_run_report)
+            if isinstance(report, dict)
+        ]
         finalize_run_reports = [
             report
             for report in (load_optional_json_report(path) for path in args.finalize_run_report)
@@ -2511,6 +2517,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         report = build_batch_review_report(
             batch_plan,
             share_preview_reports=share_preview_reports,
+            transfer_run_reports=transfer_run_reports,
             finalize_run_reports=finalize_run_reports,
         )
         rendered = render_batch_review_report(report, args.format)
