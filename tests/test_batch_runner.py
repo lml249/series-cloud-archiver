@@ -2919,6 +2919,32 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(filtered["items"][0]["review_decision"], "ready_for_finalize_gates")
         self.assertEqual(len(filtered["filter_skipped_items"]), 2)
 
+    def test_filter_batch_plan_by_review_accepts_global_coverage_report(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {"bucket": AUTO_CLEANUP, "title": "西部世界", "tmdbid": 63247, "season": 1},
+                {"bucket": AUTO_CLEANUP, "title": "主角", "tmdbid": 284110, "season": 1},
+                {"bucket": MANUAL_REVIEW, "title": "基地", "tmdbid": 93740, "season": 1},
+            ],
+        }
+        coverage_report = {
+            "mode": "readonly-batch-global-coverage-report",
+            "items": [
+                {"coverage": "ready_for_finalize_gates", "title": "西部世界", "tmdbid": 63247, "season": 1},
+                {"coverage": "done_cleanup_verified", "title": "主角", "tmdbid": 284110, "season": 1},
+                {"review_decision": "manual_review_required", "title": "基地", "tmdbid": 93740, "season": 1},
+            ],
+        }
+
+        filtered = filter_batch_plan_by_review(batch_plan, coverage_report)
+
+        self.assertEqual(filtered["planned_items"], 1)
+        self.assertEqual(filtered["selected_decision_counts"], {"ready_for_finalize_gates": 1})
+        self.assertEqual(filtered["items"][0]["title"], "西部世界")
+        self.assertEqual(filtered["items"][0]["review_decision"], "ready_for_finalize_gates")
+        self.assertEqual(filtered["filter_skipped_items"][0]["filter_skip_reason"], "decision_not_selected")
+
     def test_cli_writes_batch_review_report_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

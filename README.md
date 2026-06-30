@@ -362,6 +362,19 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-review-report \
 - `blocked_after_finalize_gates`：STRM/NFO/Emby 等前置门禁可能已过，但清理前验证失败，必须处理阻断原因后重跑。
 - `manual_review_required` / `manual_review_preview_blocked`：证据不足、缺集、错季、错剧或体积异常，需要人工复核。
 
+如果要把复核表里某一类状态切成下一阶段批量计划，可以用只读过滤器。它支持标准 `batch-review-report` 的 `decision` 字段，也支持全局覆盖汇总表里的 `coverage` / `review_decision` 字段：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver batch-plan-filter \
+  --batch-plan /example/app/series-cloud-archiver/outputs/current-20260629/05-batch-plan.json \
+  --review-report /example/app/series-cloud-archiver/outputs/current-20260629/batch-review-YYYYMMDD.json \
+  --decision ready_for_finalize_gates \
+  --format json \
+  --output /example/app/series-cloud-archiver/outputs/current-20260629/ready-finalize-plan-YYYYMMDD.json
+```
+
+这个命令只筛选计划，不调用 MV3/MP/Emby/qB，也不会写云盘或删除本地文件。
+
 ## 批量 MV3 分享预览 dry-run
 
 如果批量计划里大量条目只是卡在 `episode_coverage_unclear`，说明 MV3 搜索结果标题无法证明集数完整，但分享内部可能是完整剧集。可以让编排器从 `batch-plan` 中自动挑选候选，批量生成只读分享预览计划：

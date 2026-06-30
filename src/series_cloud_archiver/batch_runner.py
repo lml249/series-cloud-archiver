@@ -283,13 +283,15 @@ def filter_batch_plan_by_review(
     for item in source_items:
         key = _review_identity_key(item)
         review_item = review_by_key.get(key, {})
-        decision = str(review_item.get("decision") or "")
+        decision = _review_filter_decision(review_item)
         enriched = dict(item)
         enriched["review_decision"] = decision
         if review_item.get("next_action"):
             enriched["review_next_action"] = review_item.get("next_action")
         if review_item.get("reason_summary"):
             enriched["review_reason_summary"] = review_item.get("reason_summary")
+        if review_item.get("coverage") and review_item.get("coverage") != decision:
+            enriched["review_coverage"] = review_item.get("coverage")
         if decision in wanted:
             rows.append(enriched)
         else:
@@ -339,6 +341,14 @@ def filter_batch_plan_by_review(
             "cloud media write, or filesystem deletion is performed"
         ),
     }
+
+
+def _review_filter_decision(review_item: Dict[str, object]) -> str:
+    for field in ("decision", "coverage", "review_decision"):
+        value = review_item.get(field)
+        if value:
+            return str(value)
+    return ""
 
 
 def build_batch_finalize_plan(
