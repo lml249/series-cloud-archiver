@@ -12,10 +12,12 @@ from series_cloud_archiver.batch_runner import (
     MANUAL_REVIEW,
     build_batch_finalize_plan,
     build_batch_plan,
+    build_batch_review_report,
     merge_share_search_plans,
     render_batch_finalize_plan,
     render_batch_finalize_run,
     render_batch_plan,
+    render_batch_review_report,
     run_batch_finalize,
 )
 from series_cloud_archiver.batch_preview import (
@@ -1313,6 +1315,161 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("怪奇物语：1985故事集 S01E01-E10", rendered)
         self.assertIn("season_mismatch:1", rendered)
         self.assertIn("no_candidate_passed_recommendation_gate", rendered)
+
+    def test_batch_review_report_combines_preview_and_finalize_results(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "state": "planned_validation_then_cleanup",
+                    "title": "兄弟连",
+                    "tmdbid": 4613,
+                    "season": 1,
+                    "cloud_status": "cloud_strm_complete",
+                    "size": "45.5GB",
+                    "size_bytes": 48_841_375_069,
+                    "expected_episode_count": 10,
+                    "expected_episodes": list(range(1, 11)),
+                    "source_paths": ["/volume3/hlink/TV/兄弟连/Season 01"],
+                    "strm_root": "/volume4/mv3/strm/series/兄弟连/Season 1",
+                    "cloud_media_path": "/已整理/series/兄弟连/Season 1",
+                },
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "state": "held_for_manual_review",
+                    "title": "长安二十四计",
+                    "tmdbid": 254482,
+                    "season": 1,
+                    "cloud_status": "cloud_strm_not_found",
+                    "size": "193.4GB",
+                    "size_bytes": 207_625_138_073,
+                    "expected_episode_count": 28,
+                    "expected_episodes": list(range(1, 29)),
+                    "review_reasons": ["episode_coverage_unclear"],
+                    "candidate_diagnostics": {
+                        "search_result_count": 5,
+                        "best_candidate": {
+                            "title": "长安二十四计 S01E01-E14",
+                            "score": 80,
+                            "size_delta_ratio": 0.1,
+                            "blockers": ["episode_coverage_unclear"],
+                        },
+                    },
+                },
+            ],
+        }
+        preview_report = {
+            "mode": "readonly-batch-mv3-share-preview",
+            "items": [
+                {
+                    "status": "preview_blocked",
+                    "title": "长安二十四计",
+                    "tmdbid": 254482,
+                    "season": 1,
+                    "preview_episode_count": 14,
+                    "preview_missing_expected": list(range(15, 29)),
+                    "preview_blockers": ["episode_count_mismatch"],
+                    "candidate_score": 80,
+                }
+            ],
+        }
+        finalize_report = {
+            "mode": "batch-finalize-run",
+            "items": [
+                {
+                    "status": "failed_cleanup_preview",
+                    "title": "兄弟连",
+                    "tmdbid": 4613,
+                    "season": 1,
+                    "blockers": ["source_root_check_failed"],
+                    "stages": [{"stage": "cloud_hlink_cleanup_preview", "ok": False}],
+                }
+            ],
+        }
+
+        report = build_batch_review_report(
+            batch_plan,
+            share_preview_reports=[preview_report],
+            finalize_run_reports=[finalize_report],
+        )
+
+        self.assertEqual(report["decision_counts"]["blocked_after_finalize_gates"], 1)
+        self.assertEqual(report["decision_counts"]["manual_review_preview_blocked"], 1)
+        brother = next(item for item in report["items"] if item["tmdbid"] == 4613)
+        changan = next(item for item in report["items"] if item["tmdbid"] == 254482)
+        self.assertEqual(brother["decision"], "blocked_after_finalize_gates")
+        self.assertIn("source_root_check_failed", brother["reason_summary"])
+        self.assertEqual(brother["finalize_last_stage"], "cloud_hlink_cleanup_preview")
+        self.assertEqual(changan["decision"], "manual_review_preview_blocked")
+        self.assertIn("15-28", changan["preview_missing_expected"])
+        rendered = render_batch_review_report(report, "csv")
+        self.assertIn("decision,next_action,bucket,state,title", rendered.splitlines()[0])
+        self.assertIn("blocked_after_finalize_gates", rendered)
+        self.assertIn("manual_review_preview_blocked", rendered)
+        self.assertIn("source_root_check_failed", rendered)
+
+    def test_cli_writes_batch_review_report_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            batch = tmp_path / "batch.json"
+            finalize = tmp_path / "finalize.json"
+            output = tmp_path / "review.csv"
+            batch.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-batch-state-plan",
+                        "items": [
+                            {
+                                "bucket": AUTO_CLEANUP,
+                                "state": "planned_validation_then_cleanup",
+                                "title": "兄弟连",
+                                "tmdbid": 4613,
+                                "season": 1,
+                                "cloud_status": "cloud_strm_complete",
+                                "expected_episode_count": 10,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            finalize.write_text(
+                json.dumps(
+                    {
+                        "mode": "batch-finalize-run",
+                        "items": [
+                            {
+                                "status": "failed_cleanup_preview",
+                                "title": "兄弟连",
+                                "tmdbid": 4613,
+                                "season": 1,
+                                "blockers": ["source_root_check_failed"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code = main(
+                [
+                    "batch-review-report",
+                    "--batch-plan",
+                    str(batch),
+                    "--finalize-run-report",
+                    str(finalize),
+                    "--format",
+                    "csv",
+                    "--output",
+                    str(output),
+                ]
+            )
+            rendered = output.read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("blocked_after_finalize_gates", rendered)
+        self.assertIn("source_root_check_failed", rendered)
 
     def test_cli_writes_batch_plan_from_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

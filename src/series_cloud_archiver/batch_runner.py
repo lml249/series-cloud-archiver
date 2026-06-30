@@ -200,6 +200,60 @@ def render_batch_plan(plan: Dict[str, object], output_format: str) -> str:
     return _render_markdown(plan)
 
 
+def build_batch_review_report(
+    batch_plan: Dict[str, object],
+    *,
+    share_preview_reports: Optional[Sequence[Dict[str, object]]] = None,
+    finalize_run_reports: Optional[Sequence[Dict[str, object]]] = None,
+) -> Dict[str, object]:
+    """Build a readonly human-review report from batch state and run reports."""
+
+    preview_by_key = _review_preview_by_identity(share_preview_reports or [])
+    finalize_by_key = _review_finalize_by_identity(finalize_run_reports or [])
+    rows: List[Dict[str, object]] = []
+
+    for index, item in enumerate(batch_plan.get("items", []), start=1):
+        if not isinstance(item, dict):
+            continue
+        key = _review_identity_key(item)
+        rows.append(
+            _batch_review_row(
+                index,
+                item,
+                preview_by_key.get(key, {}),
+                finalize_by_key.get(key, {}),
+            )
+        )
+
+    decision_counts = Counter(str(row.get("decision") or "") for row in rows)
+    bucket_counts = Counter(str(row.get("bucket") or "") for row in rows)
+    return {
+        "mode": "readonly-batch-human-review-report",
+        "source_mode": batch_plan.get("mode", ""),
+        "total_items": len(rows),
+        "decision_counts": dict(sorted(decision_counts.items())),
+        "bucket_counts": dict(sorted(bucket_counts.items())),
+        "input_report_counts": {
+            "share_preview": len(share_preview_reports or []),
+            "finalize_run": len(finalize_run_reports or []),
+        },
+        "items": rows,
+        "safety": (
+            "readonly human-review report only; no scan, MV3 receive, organize transfer, STRM generation, "
+            "MoviePilot scrape, Emby refresh, qBittorrent action, hlink deletion, source deletion, "
+            "cloud media write, or filesystem deletion is performed"
+        ),
+    }
+
+
+def render_batch_review_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    if output_format == "csv":
+        return _render_review_csv(report)
+    return _render_review_markdown(report)
+
+
 def build_batch_finalize_plan(
     batch_plan: Dict[str, object],
     *,
@@ -1687,6 +1741,221 @@ def _map_strm_root(path: str, host_strm_root: str, emby_strm_root: str) -> str:
     return path
 
 
+def _review_identity_key(item: Dict[str, object]) -> Tuple[int, int]:
+    return int(item.get("tmdbid") or 0), int(item.get("season") or 0)
+
+
+def _review_preview_by_identity(reports: Sequence[Dict[str, object]]) -> Dict[Tuple[int, int], Dict[str, object]]:
+    result: Dict[Tuple[int, int], Dict[str, object]] = {}
+    for report_index, report in enumerate(reports, start=1):
+        if not isinstance(report, dict):
+            continue
+        for item in report.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            key = _review_identity_key(item)
+            if key == (0, 0):
+                continue
+            enriched = dict(item)
+            enriched["preview_report_index"] = report_index
+            existing = result.get(key)
+            if existing is None or _review_preview_rank(enriched) > _review_preview_rank(existing):
+                result[key] = enriched
+    return result
+
+
+def _review_preview_rank(item: Dict[str, object]) -> Tuple[int, int, int, int]:
+    status = str(item.get("status") or "")
+    return (
+        3 if status == "preview_ready_for_receive" else 2 if status == "preview_blocked" else 1 if status == "planned_preview" else 0,
+        int(item.get("preview_episode_count") or 0),
+        int(item.get("candidate_score") or 0),
+        -int(item.get("source_index") or 0),
+    )
+
+
+def _review_finalize_by_identity(reports: Sequence[Dict[str, object]]) -> Dict[Tuple[int, int], Dict[str, object]]:
+    result: Dict[Tuple[int, int], Dict[str, object]] = {}
+    for report_index, report in enumerate(reports, start=1):
+        if not isinstance(report, dict):
+            continue
+        for item in report.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            key = _review_identity_key(item)
+            if key == (0, 0):
+                continue
+            enriched = dict(item)
+            enriched["finalize_report_index"] = report_index
+            existing = result.get(key)
+            if existing is None or _review_finalize_rank(enriched) > _review_finalize_rank(existing):
+                result[key] = enriched
+    return result
+
+
+def _review_finalize_rank(item: Dict[str, object]) -> Tuple[int, int, int]:
+    status = str(item.get("status") or "")
+    status_rank = {
+        "cleanup_executed": 5,
+        "cleanup_waiting_for_approval": 4,
+        "failed_cleanup_preview": 3,
+    }.get(status, 2 if status.startswith("failed_") else 1)
+    stages = item.get("stages") if isinstance(item.get("stages"), list) else []
+    ok_stages = sum(1 for stage in stages if isinstance(stage, dict) and bool(stage.get("ok")))
+    return status_rank, ok_stages, -int(item.get("finalize_report_index") or 0)
+
+
+def _batch_review_row(
+    source_index: int,
+    item: Dict[str, object],
+    preview_item: Dict[str, object],
+    finalize_item: Dict[str, object],
+) -> Dict[str, object]:
+    diagnostics = item.get("candidate_diagnostics") if isinstance(item.get("candidate_diagnostics"), dict) else {}
+    best_candidate = diagnostics.get("best_candidate") if isinstance(diagnostics.get("best_candidate"), dict) else {}
+    recommended = item.get("recommended_candidate") if isinstance(item.get("recommended_candidate"), dict) else {}
+    decision = _review_decision(item, preview_item, finalize_item)
+    reasons = sorted(
+        set(
+            _string_list(item.get("review_reasons"))
+            + _string_list(item.get("blockers"))
+            + _string_list(item.get("cleanup_preview_blockers"))
+            + _string_list(finalize_item.get("blockers"))
+            + _review_preview_reasons(preview_item, decision)
+        )
+    )
+    next_action = _review_next_action(decision, reasons)
+    return {
+        "source_index": source_index,
+        "decision": decision,
+        "next_action": next_action,
+        "bucket": item.get("bucket", ""),
+        "state": item.get("state", ""),
+        "title": item.get("title", ""),
+        "tmdbid": item.get("tmdbid", ""),
+        "season": item.get("season", ""),
+        "cloud_status": item.get("cloud_status", ""),
+        "size": item.get("size", ""),
+        "size_bytes": int(item.get("size_bytes") or 0),
+        "expected_episode_count": item.get("expected_episode_count", ""),
+        "expected_episodes": _episode_cell(item.get("expected_episodes")),
+        "reason_summary": "; ".join(reasons),
+        "review_reasons": "; ".join(_string_list(item.get("review_reasons"))),
+        "blockers": "; ".join(_string_list(item.get("blockers"))),
+        "candidate_count": item.get("candidate_count", ""),
+        "search_result_count": diagnostics.get("search_result_count", "") if diagnostics else "",
+        "search_warnings": "; ".join(_string_list(diagnostics.get("search_warnings"))) if diagnostics else "",
+        "recommended_candidate_title": recommended.get("title", "") if recommended else "",
+        "recommended_candidate_score": recommended.get("score", "") if recommended else "",
+        "recommended_candidate_size_delta_ratio": recommended.get("size_delta_ratio", "") if recommended else "",
+        "best_candidate_title": best_candidate.get("title", "") if best_candidate else "",
+        "best_candidate_score": best_candidate.get("score", "") if best_candidate else "",
+        "best_candidate_size_delta_ratio": best_candidate.get("size_delta_ratio", "") if best_candidate else "",
+        "best_candidate_blockers": "; ".join(_string_list(best_candidate.get("blockers"))) if best_candidate else "",
+        "preview_status": preview_item.get("status", "") if preview_item else "",
+        "preview_episode_count": preview_item.get("preview_episode_count", "") if preview_item else "",
+        "preview_missing_expected": _episode_cell(preview_item.get("preview_missing_expected")) if preview_item else "",
+        "preview_unexpected_episodes": _episode_cell(preview_item.get("preview_unexpected_episodes")) if preview_item else "",
+        "preview_blockers": "; ".join(_string_list(preview_item.get("preview_blockers"))) if preview_item else "",
+        "finalize_status": finalize_item.get("status", "") if finalize_item else "",
+        "finalize_last_stage": _review_last_stage(finalize_item),
+        "finalize_blockers": "; ".join(_string_list(finalize_item.get("blockers"))) if finalize_item else "",
+        "cloud_media_path": item.get("cloud_media_path", ""),
+        "strm_root": item.get("strm_root", ""),
+        "source_paths": " | ".join(_string_list(item.get("source_paths"))),
+    }
+
+
+def _review_decision(item: Dict[str, object], preview_item: Dict[str, object], finalize_item: Dict[str, object]) -> str:
+    finalize_status = str(finalize_item.get("status") or "")
+    if finalize_status == "cleanup_executed":
+        return "done_cleanup_executed"
+    if finalize_status == "cleanup_waiting_for_approval":
+        return "ready_for_cleanup_approval"
+    if finalize_status:
+        return "blocked_after_finalize_gates"
+
+    preview_status = str(preview_item.get("status") or "")
+    if preview_status == "preview_ready_for_receive":
+        return "ready_for_receive_plan"
+    if preview_status == "preview_blocked":
+        return "manual_review_preview_blocked"
+
+    bucket = str(item.get("bucket") or "")
+    if bucket == AUTO_CLEANUP:
+        return "ready_for_finalize_gates"
+    if bucket == AUTO_TRANSFER:
+        return "ready_for_share_preview"
+    if bucket == MANUAL_REVIEW:
+        return "manual_review_required"
+    return "skipped"
+
+
+def _review_preview_reasons(preview_item: Dict[str, object], decision: str) -> List[str]:
+    if not preview_item:
+        return []
+    status = str(preview_item.get("status") or "")
+    if status == "preview_blocked":
+        return _string_list(preview_item.get("preview_blockers"))
+    if decision.startswith("manual_review") and status == "skipped_preview":
+        return _string_list(preview_item.get("skip_reasons"))
+    return []
+
+
+def _review_next_action(decision: str, reasons: Sequence[str]) -> str:
+    if decision == "done_cleanup_executed":
+        return "已完成清理，保留报告归档"
+    if decision == "ready_for_cleanup_approval":
+        return "复核 finalize 报告后，可进入显式清理审批"
+    if decision == "blocked_after_finalize_gates":
+        return "先处理 finalize 阶段阻断，再重新运行 finalize"
+    if decision == "ready_for_receive_plan":
+        return "生成 receive plan，审批后由批量 runner 接收并整理"
+    if decision == "manual_review_preview_blocked":
+        return "人工核对分享内容、缺失集和候选标题"
+    if decision == "ready_for_finalize_gates":
+        return "运行 batch-finalize-plan/run，只刮削 STRM 并验证 Emby"
+    if decision == "ready_for_share_preview":
+        return "运行 batch-share-preview，再决定是否接收"
+    if "identity_or_season_requires_review" in reasons:
+        return "先补 TMDB/季号身份映射，再重新 cloud-check/batch-plan"
+    if "no_recommended_mv3_share_candidate" in reasons:
+        return "继续扩展 MV3 搜索或人工指定分享候选"
+    if "episode_coverage_unclear" in reasons:
+        return "先做只读分享预览确认集数"
+    if "possible_chinese_subtitle_mismatch" in reasons or "season_mismatch" in reasons:
+        return "候选疑似错剧或错季，人工确认前不要转存"
+    if "remote_size_not_similar_enough" in reasons or "size_far_from_local" in reasons:
+        return "体积差异较大，人工确认版本/清晰度后再处理"
+    return "保留本地，等待更多证据"
+
+
+def _review_last_stage(item: Dict[str, object]) -> str:
+    stages = item.get("stages") if isinstance(item.get("stages"), list) else []
+    if not stages:
+        return ""
+    last = stages[-1]
+    return str(last.get("stage") or "") if isinstance(last, dict) else ""
+
+
+def _episode_cell(value: object) -> str:
+    episodes = _int_list(value)
+    if not episodes:
+        return ""
+    ranges: List[str] = []
+    start = episodes[0]
+    previous = episodes[0]
+    for episode in episodes[1:]:
+        if episode == previous + 1:
+            previous = episode
+            continue
+        ranges.append(f"{start}-{previous}" if start != previous else str(start))
+        start = previous = episode
+    ranges.append(f"{start}-{previous}" if start != previous else str(start))
+    suffix = f" ({len(episodes)}集)" if len(episodes) > 20 else ""
+    return ",".join(ranges) + suffix
+
+
 def _strip_identity_suffix(value: str) -> str:
     import re
 
@@ -1861,6 +2130,85 @@ def _render_csv(plan: Dict[str, object]) -> str:
                 "source_paths": " | ".join(_string_list(item.get("source_paths"))),
             }
         )
+    return output.getvalue().rstrip("\r\n")
+
+
+def _render_review_markdown(report: Dict[str, object]) -> str:
+    lines = [
+        "# Batch Human Review Report",
+        "",
+        f"- Mode: `{report.get('mode', '')}`",
+        f"- Total items: `{report.get('total_items', 0)}`",
+        f"- Decision counts: `{report.get('decision_counts', {})}`",
+        f"- Bucket counts: `{report.get('bucket_counts', {})}`",
+        "- Safety: readonly report only; no scan, network call, write, or delete action is performed.",
+        "",
+        "| Decision | Size | TMDB | S | Episodes | Title | Reason | Next action |",
+        "| --- | ---: | ---: | ---: | ---: | --- | --- | --- |",
+    ]
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {decision} | {size} | {tmdbid} | {season} | {episodes} | {title} | {reason} | {next_action} |".format(
+                decision=item.get("decision", ""),
+                size=item.get("size", ""),
+                tmdbid=item.get("tmdbid") or "",
+                season=item.get("season") or "",
+                episodes=item.get("expected_episode_count") or "",
+                title=_escape_cell(str(item.get("title") or "")),
+                reason=_escape_cell(str(item.get("reason_summary") or "")),
+                next_action=_escape_cell(str(item.get("next_action") or "")),
+            )
+        )
+    return "\n".join(lines)
+
+
+def _render_review_csv(report: Dict[str, object]) -> str:
+    fieldnames = [
+        "decision",
+        "next_action",
+        "bucket",
+        "state",
+        "title",
+        "tmdbid",
+        "season",
+        "cloud_status",
+        "size",
+        "size_bytes",
+        "expected_episode_count",
+        "expected_episodes",
+        "reason_summary",
+        "review_reasons",
+        "blockers",
+        "candidate_count",
+        "search_result_count",
+        "search_warnings",
+        "recommended_candidate_title",
+        "recommended_candidate_score",
+        "recommended_candidate_size_delta_ratio",
+        "best_candidate_title",
+        "best_candidate_score",
+        "best_candidate_size_delta_ratio",
+        "best_candidate_blockers",
+        "preview_status",
+        "preview_episode_count",
+        "preview_missing_expected",
+        "preview_unexpected_episodes",
+        "preview_blockers",
+        "finalize_status",
+        "finalize_last_stage",
+        "finalize_blockers",
+        "cloud_media_path",
+        "strm_root",
+        "source_paths",
+    ]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for item in report.get("items", []):
+        if isinstance(item, dict):
+            writer.writerow({name: item.get(name, "") for name in fieldnames})
     return output.getvalue().rstrip("\r\n")
 
 

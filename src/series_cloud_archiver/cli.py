@@ -11,8 +11,10 @@ from .batch_preview import (
     render_batch_share_receive_plan,
 )
 from .batch_runner import (
+    build_batch_review_report,
     build_batch_finalize_plan,
     build_batch_plan,
+    render_batch_review_report,
     render_batch_finalize_plan,
     render_batch_finalize_run,
     render_batch_plan,
@@ -669,6 +671,13 @@ def build_parser() -> argparse.ArgumentParser:
     batch_plan_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="Forbidden STRM target prefix; can be repeated")
     batch_plan_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     batch_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    batch_review_parser = subcommands.add_parser("batch-review-report", help="Build a readonly human-review report from batch state and run reports")
+    batch_review_parser.add_argument("--batch-plan", required=True, help="JSON report from batch-plan")
+    batch_review_parser.add_argument("--share-preview-report", action="append", default=[], help="Optional JSON report from batch-share-preview; can be repeated")
+    batch_review_parser.add_argument("--finalize-run-report", action="append", default=[], help="Optional JSON report from batch-finalize-run; can be repeated")
+    batch_review_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
+    batch_review_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     batch_share_preview_parser = subcommands.add_parser("batch-share-preview", help="Build or execute readonly MV3 share previews from a batch-plan report")
     batch_share_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -2349,6 +2358,32 @@ def main(argv: Optional[List[str]] = None) -> int:
             limit=args.limit,
         )
         rendered = render_batch_plan(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "batch-review-report":
+        batch_plan = load_optional_json_report(args.batch_plan)
+        if not isinstance(batch_plan, dict):
+            parser.error("batch-review-report requires a valid --batch-plan JSON report")
+        share_preview_reports = [
+            report
+            for report in (load_optional_json_report(path) for path in args.share_preview_report)
+            if isinstance(report, dict)
+        ]
+        finalize_run_reports = [
+            report
+            for report in (load_optional_json_report(path) for path in args.finalize_run_report)
+            if isinstance(report, dict)
+        ]
+        report = build_batch_review_report(
+            batch_plan,
+            share_preview_reports=share_preview_reports,
+            finalize_run_reports=finalize_run_reports,
+        )
+        rendered = render_batch_review_report(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

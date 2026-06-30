@@ -212,6 +212,25 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-plan \
 
 如果只是想给人工复核看，也可以把同一条命令的 `--format json` 改成 `--format csv`，输出会平铺出剧名、TMDB、季号、集数、复核原因、推荐资源、清理预览阻断和本地路径。
 
+更推荐在每批 dry-run 或执行后生成一份合并人工复核表。`batch-review-report` 只读取已有 JSON 报告，不重新扫描全库，不调用 MV3/MP/Emby/qB，也不会写云盘或删除本地文件。它会把 `batch-plan`、只读分享预览结果和 finalize 运行结果合并，给每个剧季写出 `decision`、`next_action`、候选资源、缺失集、失败阶段和阻断原因：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver batch-review-report \
+  --batch-plan /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-plan-YYYYMMDD.json \
+  --share-preview-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-share-preview-executed-YYYYMMDD.json \
+  --finalize-run-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-finalize-run-YYYYMMDD.json \
+  --format csv \
+  --output /volume1/docker/series-cloud-archiver/outputs/current-20260629/batch-review-YYYYMMDD.csv
+```
+
+常见 `decision` 含义：
+
+- `ready_for_share_preview`：可以进入只读分享预览，但还不能转存。
+- `ready_for_receive_plan`：分享预览已证明完整，可以生成接收计划并等待显式审批。
+- `ready_for_finalize_gates`：云端 STRM 已完整，可以跑 STRM/NFO/Emby/qB/MP 清理前门禁。
+- `blocked_after_finalize_gates`：STRM/NFO/Emby 等前置门禁可能已过，但清理前验证失败，必须处理阻断原因后重跑。
+- `manual_review_required` / `manual_review_preview_blocked`：证据不足、缺集、错季、错剧或体积异常，需要人工复核。
+
 ## 批量 MV3 分享预览 dry-run
 
 如果批量计划里大量条目只是卡在 `episode_coverage_unclear`，说明 MV3 搜索结果标题无法证明集数完整，但分享内部可能是完整剧集。可以让编排器从 `batch-plan` 中自动挑选候选，批量生成只读分享预览计划：
