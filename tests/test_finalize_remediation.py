@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import List, Optional
 
 from series_cloud_archiver.cli import main
 from series_cloud_archiver.finalize_remediation import (
@@ -69,8 +70,8 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
         tmdbid: int,
         season: int,
         status: str,
-        blockers: list[str],
-        source_qb_hashes: list[str] | None = None,
+        blockers: List[str],
+        source_qb_hashes: Optional[List[str]] = None,
     ) -> dict:
         return {
             "title": title,
