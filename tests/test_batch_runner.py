@@ -2630,6 +2630,101 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("strm-nfo-language-audit", item["post_cleanup_reports"])
         self.assertIn("emby-media-updated", item["post_cleanup_reports"])
 
+    def test_batch_review_report_treats_qb_orphan_missing_hash_as_noop_gate(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "state": "planned_validation_then_cleanup",
+                    "title": "操控游戏",
+                    "tmdbid": 239385,
+                    "season": 1,
+                    "cloud_status": "cloud_strm_complete",
+                    "expected_episode_count": 12,
+                }
+            ],
+        }
+        qb_orphan = {
+            "mode": "qb-orphan-torrent-cleanup-preview",
+            "title": "操控游戏",
+            "ok": False,
+            "expected": {
+                "tmdbid": 239385,
+                "qb_hashes": ["a1f4304756793fee07f540aa9c6d396de4c5062a"],
+                "required_target_prefix": "/已整理/series/操控游戏 (2025) {tmdbid=239385}/Season 1",
+                "episode_count": 12,
+            },
+            "moviepilot": {"matched_count": 0},
+            "qbittorrent": {
+                "matched_count": 0,
+                "missing_hashes": ["a1f4304756793fee07f540aa9c6d396de4c5062a"],
+            },
+            "filesystem": {
+                "source_roots": [{"path": "/example/source/manipulated", "exists": False}],
+                "hlink_roots": [{"path": "/example/hlink/manipulated", "exists": False}],
+            },
+            "strm": {
+                "ok": True,
+                "strm": {
+                    "roots": [{"path": "/example/mv3/strm/series/操控游戏 (2025) {tmdbid=239385}/Season 1"}],
+                    "combined": {"episode_count": 12, "missing_in_range": []},
+                },
+            },
+            "blockers": ["qb_torrent_not_found"],
+        }
+        nfo_audit = {
+            "mode": "strm-nfo-language-audit",
+            "ok": True,
+            "roots": [{"path": "/example/mv3/strm/series/操控游戏 (2025) {tmdbid=239385}/Season 1"}],
+            "summary": {"nfo_count": 13, "suspect_english_count": 0},
+            "blockers": [],
+        }
+        emby_verify = {
+            "mode": "emby-media-updated",
+            "title": "操控游戏",
+            "ok": True,
+            "verification": {
+                "strm_paths": [{"prefix": "/example/service/strm/series/操控游戏 (2025) {tmdbid=239385}/Season 1"}],
+                "strm": {"episode_count": 12, "missing_in_range": []},
+                "totals": {"stale_records": 0, "strm_records": 12},
+                "blockers": [],
+            },
+            "blockers": [],
+        }
+
+        report = build_batch_review_report(batch_plan, post_cleanup_reports=[qb_orphan, nfo_audit, emby_verify])
+        item = report["items"][0]
+
+        self.assertEqual(item["decision"], "done_cleanup_verified")
+        self.assertEqual(item["post_cleanup_status"], "cleanup_executed_verified")
+        self.assertIn("qB 种子不存在", item["post_cleanup_result"])
+        self.assertIn("qb-orphan-torrent-cleanup-preview", item["post_cleanup_reports"])
+
+    def test_batch_review_report_treats_empty_hlink_cleanup_as_partial_gate(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [{"bucket": AUTO_CLEANUP, "title": "罚罪2", "tmdbid": 296146, "season": 1}],
+        }
+        empty_hlink = {
+            "mode": "hlink-empty-root-cleanup",
+            "title": "罚罪2 Season 01",
+            "ok": True,
+            "expected": {"tmdbid": 296146},
+            "hlink": {"path": "/example/hlink/TV/罚罪2 (2025) {tmdbid=296146}/Season 01", "exists": True},
+            "delete": {"ok": True},
+            "blockers": [],
+        }
+
+        report = build_batch_review_report(batch_plan, post_cleanup_reports=[empty_hlink])
+        item = report["items"][0]
+
+        self.assertEqual(item["decision"], "ready_for_finalize_gates")
+        self.assertEqual(item["post_cleanup_status"], "post_cleanup_gates_partial")
+        self.assertIn("qB 清理", item["post_cleanup_result"])
+        self.assertNotIn("hlink 删除", item["post_cleanup_result"])
+        self.assertIn("hlink-empty-root-cleanup", item["post_cleanup_reports"])
+
     def test_batch_review_report_keeps_partial_post_cleanup_gates_unverified(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",

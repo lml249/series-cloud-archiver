@@ -2429,6 +2429,10 @@ def _post_cleanup_gate_item(report: Dict[str, object]) -> Dict[str, object]:
         return _post_cleanup_item_from_emby_verify(report)
     if mode == "strm-verify":
         return _post_cleanup_item_from_strm_verify(report)
+    if mode == "qb-orphan-torrent-cleanup-preview":
+        return _post_cleanup_item_from_qb_orphan_preview(report)
+    if mode == "hlink-empty-root-cleanup":
+        return _post_cleanup_item_from_empty_hlink_cleanup(report)
     return {}
 
 
@@ -2517,6 +2521,60 @@ def _post_cleanup_item_from_emby_verify(report: Dict[str, object]) -> Dict[str, 
         "episode_count": int(strm.get("episode_count") or 0),
         "blockers": _string_list(report.get("blockers")) + _string_list(verification.get("blockers")),
         "reports": str(report.get("mode") or ""),
+    }
+
+
+def _post_cleanup_item_from_qb_orphan_preview(report: Dict[str, object]) -> Dict[str, object]:
+    expected = report.get("expected") if isinstance(report.get("expected"), dict) else {}
+    filesystem = report.get("filesystem") if isinstance(report.get("filesystem"), dict) else {}
+    qb = report.get("qbittorrent") if isinstance(report.get("qbittorrent"), dict) else {}
+    mp_history = report.get("moviepilot") if isinstance(report.get("moviepilot"), dict) else {}
+    strm = report.get("strm") if isinstance(report.get("strm"), dict) else {}
+    strm_section = strm.get("strm") if isinstance(strm.get("strm"), dict) else {}
+    combined = strm_section.get("combined") if isinstance(strm_section.get("combined"), dict) else {}
+    roots = strm_section.get("roots") if isinstance(strm_section.get("roots"), list) else []
+    identity = _post_cleanup_identity_from_paths(_paths_from_strm_roots(roots) + [str(expected.get("required_target_prefix") or "")])
+    source_roots = filesystem.get("source_roots") if isinstance(filesystem.get("source_roots"), list) else []
+    hlink_roots = filesystem.get("hlink_roots") if isinstance(filesystem.get("hlink_roots"), list) else []
+    qb_remaining = int(qb.get("matched_count") or 0)
+    missing_hashes = qb.get("missing_hashes") if isinstance(qb.get("missing_hashes"), list) else []
+    expected_hashes = expected.get("qb_hashes") if isinstance(expected.get("qb_hashes"), list) else []
+    qbit_absent = qb_remaining == 0 and sorted(str(item) for item in missing_hashes) == sorted(str(item) for item in expected_hashes)
+    return {
+        "mode": "post-cleanup-gate-summary",
+        "source_mode": "qb-orphan-torrent-cleanup-preview",
+        "title": report.get("title", ""),
+        "tmdbid": int(expected.get("tmdbid") or identity[0] or 0),
+        "season": int(identity[1] or 0),
+        "status": "post_cleanup_gates_partial",
+        "qb_remaining": "0" if qbit_absent else str(qb_remaining),
+        "hlink_exists": _bool_string(any(bool(item.get("exists")) for item in hlink_roots if isinstance(item, dict))),
+        "source_exists": _bool_string(any(bool(item.get("exists")) for item in source_roots if isinstance(item, dict))),
+        "strm_ok": _bool_string(bool(strm.get("ok")) and int(combined.get("episode_count") or 0) > 0 and not combined.get("missing_in_range")),
+        "mp_history_remaining": str(int(mp_history.get("matched_count") or 0)),
+        "episode_count": int(combined.get("episode_count") or expected.get("episode_count") or 0),
+        "blockers": [blocker for blocker in _string_list(report.get("blockers")) if blocker != "qb_torrent_not_found"],
+        "reports": "qb-orphan-torrent-cleanup-preview",
+    }
+
+
+def _post_cleanup_item_from_empty_hlink_cleanup(report: Dict[str, object]) -> Dict[str, object]:
+    expected = report.get("expected") if isinstance(report.get("expected"), dict) else {}
+    hlink = report.get("hlink") if isinstance(report.get("hlink"), dict) else {}
+    path = str(hlink.get("path") or "")
+    identity = _post_cleanup_identity_from_paths([path, str(report.get("title") or "")])
+    delete = report.get("delete") if isinstance(report.get("delete"), dict) else {}
+    hlink_gone = bool(report.get("ok")) and bool(delete.get("ok"))
+    return {
+        "mode": "post-cleanup-gate-summary",
+        "source_mode": "hlink-empty-root-cleanup",
+        "title": report.get("title", ""),
+        "tmdbid": int(expected.get("tmdbid") or identity[0] or 0),
+        "season": int(identity[1] or 0),
+        "status": "post_cleanup_gates_partial",
+        "hlink_exists": "false" if hlink_gone else _bool_string(bool(hlink.get("exists"))),
+        "blockers": _string_list(report.get("blockers")),
+        "reports": "hlink-empty-root-cleanup",
     }
 
 
