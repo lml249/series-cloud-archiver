@@ -564,6 +564,61 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(item["bucket"], MANUAL_REVIEW)
         self.assertIn("season_mismatch", item["review_reasons"])
 
+    def test_not_found_with_spinoff_share_candidate_requires_review_even_when_season_matches(self) -> None:
+        plan = build_batch_plan(
+            cloud_report={
+                "items": [
+                    {
+                        "status": "cloud_strm_not_found",
+                        "title": "怪奇物语",
+                        "tmdbid": 66732,
+                        "season": 1,
+                        "size_bytes": 43_000_000_000,
+                        "expected_count": 8,
+                        "source_paths": ["/volume3/hlink/TV/怪奇物语/Season 01"],
+                    }
+                ],
+            },
+            transfer_plan={
+                "items": [
+                    {
+                        "title": "怪奇物语",
+                        "tmdbid": 66732,
+                        "season": 1,
+                        "size_bytes": 43_000_000_000,
+                        "expected_count": 8,
+                        "source_paths": ["/volume3/hlink/TV/怪奇物语/Season 01"],
+                    }
+                ],
+            },
+            share_search_plan={
+                "items": [
+                    {
+                        "title": "怪奇物语",
+                        "tmdbid": 66732,
+                        "season": 1,
+                        "recommended_candidate": {
+                            "search_index": 15,
+                            "search_keyword": "怪奇物语",
+                            "title": "📺 电视剧：怪奇物语：1985故事集 (2026) - S01E01-E10(完结)",
+                            "score": 100,
+                            "size_delta_ratio": 0.06,
+                            "blockers": [],
+                        },
+                    }
+                ],
+            },
+        )
+
+        item = plan["items"][0]
+
+        self.assertEqual(item["bucket"], MANUAL_REVIEW)
+        self.assertIn("possible_chinese_subtitle_mismatch", item["review_reasons"])
+        self.assertIn(
+            "possible_chinese_subtitle_mismatch",
+            item["candidate_diagnostics"]["best_candidate"]["blockers"],
+        )
+
     def test_complete_cloud_item_with_blocked_cleanup_preview_requires_review(self) -> None:
         plan = build_batch_plan(
             cloud_report={

@@ -693,12 +693,30 @@ def _has_chinese_subtitle_drift(expected_title: str, remote_title: str) -> bool:
     if index < 0:
         return False
     suffix = remote[index + len(expected) :]
-    suffix = re.sub(r"^[\s:：,，\-—_【】\[\]（）()]+", "", suffix)
-    if not suffix:
+    suffix = _chinese_title_suffix(suffix)
+    if not suffix or _chinese_suffix_is_metadata(suffix):
         return False
-    if re.match(r"(?i)^(第?\d|S\d|E\d|全\d|更新|完结|Complete|\(|（|\[|【)", suffix):
-        return False
-    return bool(re.match(r"[\u4e00-\u9fff]{1,12}", suffix))
+    return bool(re.match(r"(?:\d{1,4}[\s:：\-—_]*[\u4e00-\u9fff]|[\u4e00-\u9fff]{1,12})", suffix))
+
+
+def _chinese_title_suffix(value: str) -> str:
+    text = re.sub(r"^[\s:：,，\-—_【】\[\]（）()]+", "", value or "")
+    text = re.sub(r"^(?:19|20)\d{2}[)）]?", "", text)
+    return re.sub(r"^[\s:：,，\-—_【】\[\]（）()]+", "", text)
+
+
+def _chinese_suffix_is_metadata(value: str) -> bool:
+    return bool(
+        re.match(
+            r"(?i)^(?:"
+            r"S0?\d{1,2}(?:E|\b)|Season0?\d{1,2}\b|第?\d{1,3}[集话話期]|第\d{1,2}季|"
+            r"第[一二三四五六七八九十百两]+[季集部]|[全共]\d{1,3}[集话話期]|"
+            r"更新|更至|完结|全集|Complete|4K|8K|720P|1080P|2160P|HDR|DV|DOVI|WEB|"
+            r"BluRay|BD|Remux|HEVC|H265|H264|杜比|高码|国粤|国语|粤语|中字"
+            r")",
+            value or "",
+        )
+    )
 
 
 def _first_chinese_run(value: str) -> str:

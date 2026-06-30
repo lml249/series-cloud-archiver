@@ -699,7 +699,7 @@ def _batch_item(
     status = str(cloud_item.get("status") or transfer_item.get("source_status") or "")
     recommended = share_item.get("recommended_candidate") if isinstance(share_item.get("recommended_candidate"), dict) else {}
     share_candidates = share_item.get("candidates") if isinstance(share_item.get("candidates"), list) else []
-    candidate_diagnostics = _candidate_diagnostics(share_item, recommended, share_candidates, season)
+    candidate_diagnostics = _candidate_diagnostics(share_item, recommended, share_candidates, season, title)
     strm_root = _strm_root_from_cloud_item(cloud_item, host_strm_root)
     cloud_media_path = _cloud_media_path(cloud_root, title, tmdbid, season)
 
@@ -743,6 +743,8 @@ def _batch_item(
             review_reasons.extend(candidate_blockers)
         if recommended and _candidate_has_explicit_wrong_season(recommended, season):
             review_reasons.append("season_mismatch")
+        if recommended:
+            review_reasons.extend(_candidate_identity_blockers(title, recommended))
         if recommended and size_delta is None:
             review_reasons.append("remote_size_unknown")
         if isinstance(size_delta, (int, float)) and float(size_delta) > max_auto_size_delta:
@@ -1187,18 +1189,65 @@ def _candidate_has_explicit_wrong_season(candidate: Dict[str, object], expected_
     return bool(seasons and expected_season not in seasons)
 
 
+def _candidate_identity_blockers(expected_title: str, candidate: Dict[str, object]) -> List[str]:
+    remote_title = str(candidate.get("title") or candidate.get("name") or "")
+    if _candidate_has_chinese_subtitle_drift(expected_title, remote_title):
+        return ["possible_chinese_subtitle_mismatch"]
+    return []
+
+
+def _candidate_has_chinese_subtitle_drift(expected_title: str, remote_title: str) -> bool:
+    expected = _first_chinese_run(_strip_identity_suffix(expected_title))
+    if len(expected) < 2:
+        return False
+    remote = re.sub(r"\s+", "", remote_title or "")
+    index = remote.find(expected)
+    if index < 0:
+        return False
+    suffix = _candidate_title_suffix(remote[index + len(expected) :])
+    if not suffix or _candidate_suffix_is_metadata(suffix):
+        return False
+    return bool(re.match(r"(?:\d{1,4}[\s:：\-—_]*[\u4e00-\u9fff]|[\u4e00-\u9fff]{1,12})", suffix))
+
+
+def _candidate_title_suffix(value: str) -> str:
+    text = re.sub(r"^[\s:：,，\-—_【】\[\]（）()]+", "", value or "")
+    text = re.sub(r"^(?:19|20)\d{2}[)）]?", "", text)
+    return re.sub(r"^[\s:：,，\-—_【】\[\]（）()]+", "", text)
+
+
+def _candidate_suffix_is_metadata(value: str) -> bool:
+    return bool(
+        re.match(
+            r"(?i)^(?:"
+            r"S0?\d{1,2}(?:E|\b)|Season0?\d{1,2}\b|第?\d{1,3}[集话話期]|第\d{1,2}季|"
+            r"第[一二三四五六七八九十百两]+[季集部]|[全共]\d{1,3}[集话話期]|"
+            r"更新|更至|完结|全集|Complete|4K|8K|720P|1080P|2160P|HDR|DV|DOVI|WEB|"
+            r"BluRay|BD|Remux|HEVC|H265|H264|杜比|高码|国粤|国语|粤语|中字"
+            r")",
+            value or "",
+        )
+    )
+
+
+def _first_chinese_run(value: str) -> str:
+    match = re.search(r"[\u4e00-\u9fff]{2,}", value or "")
+    return match.group(0) if match else ""
+
+
 def _candidate_diagnostics(
     share_item: Dict[str, object],
     recommended: Dict[str, object],
     candidates: List[object],
     expected_season: int,
+    expected_title: str,
 ) -> Dict[str, object]:
     candidate_rows = [candidate for candidate in candidates if isinstance(candidate, dict)]
     best = _best_candidate_for_diagnostics(recommended, candidate_rows)
     blocker_counts: Counter = Counter()
     reason_counts: Counter = Counter()
     for candidate in candidate_rows:
-        blocker_counts.update(_candidate_diagnostic_blockers(candidate, expected_season))
+        blocker_counts.update(_candidate_diagnostic_blockers(candidate, expected_season, expected_title))
         reason_counts.update(_string_list(candidate.get("reasons")))
 
     return {
@@ -1206,11 +1255,11 @@ def _candidate_diagnostics(
         "search_result_count": int(share_item.get("search_result_count") or 0) if share_item else 0,
         "search_warnings": _string_list(share_item.get("warnings")) if share_item else [],
         "recommended_candidate_present": bool(recommended),
-        "best_candidate": _candidate_diagnostic_summary(best, expected_season) if best else {},
+        "best_candidate": _candidate_diagnostic_summary(best, expected_season, expected_title) if best else {},
         "candidate_score_max": int(best.get("score") or 0) if best else 0,
         "candidate_blocker_counts": dict(sorted(blocker_counts.items())),
         "candidate_reason_counts": dict(sorted(reason_counts.items())),
-        "top_candidates": [_candidate_diagnostic_summary(candidate, expected_season) for candidate in candidate_rows[:3]],
+        "top_candidates": [_candidate_diagnostic_summary(candidate, expected_season, expected_title) for candidate in candidate_rows[:3]],
     }
 
 
@@ -1234,8 +1283,8 @@ def _candidate_diagnostic_rank(candidate: Dict[str, object]) -> Tuple[int, int, 
     )
 
 
-def _candidate_diagnostic_summary(candidate: Dict[str, object], expected_season: int) -> Dict[str, object]:
-    blockers = _candidate_diagnostic_blockers(candidate, expected_season)
+def _candidate_diagnostic_summary(candidate: Dict[str, object], expected_season: int, expected_title: str) -> Dict[str, object]:
+    blockers = _candidate_diagnostic_blockers(candidate, expected_season, expected_title)
     return {
         "search_index": int(candidate.get("search_index") or 0),
         "search_keyword": str(candidate.get("search_keyword") or ""),
@@ -1249,10 +1298,13 @@ def _candidate_diagnostic_summary(candidate: Dict[str, object], expected_season:
     }
 
 
-def _candidate_diagnostic_blockers(candidate: Dict[str, object], expected_season: int) -> List[str]:
+def _candidate_diagnostic_blockers(candidate: Dict[str, object], expected_season: int, expected_title: str) -> List[str]:
     blockers = _string_list(candidate.get("blockers"))
     if _candidate_has_explicit_wrong_season(candidate, expected_season) and "season_mismatch" not in blockers:
         blockers.append("season_mismatch")
+    for blocker in _candidate_identity_blockers(expected_title, candidate):
+        if blocker not in blockers:
+            blockers.append(blocker)
     return blockers
 
 
