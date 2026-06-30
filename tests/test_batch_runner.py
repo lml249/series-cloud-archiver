@@ -753,7 +753,7 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("cloud_duplicate_delete_approval_required", item["blockers"])
         self.assertNotIn("mp-scrape-strm-result", [call[0] for call in actions.calls])
 
-    def test_batch_finalize_run_deletes_cloud_duplicates_and_emby_stale_before_local_cleanup(self) -> None:
+    def test_batch_finalize_run_previews_cleanup_before_emby_stale_delete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             actions = FinalizeFakeActions()
             actions.cloud_duplicate_count = 36
@@ -776,11 +776,38 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertGreaterEqual(call_names.count("mv3-cloud-duplicate-video-cleanup-result"), 3)
         self.assertEqual(call_names.count("emby-delete-stale-paths"), 2)
         self.assertNotIn("cloud-hlink-cleanup-execute", call_names)
+        cleanup_preview_index = call_names.index("cloud-hlink-cleanup-preview")
+        first_stale_delete_index = call_names.index("emby-delete-stale-paths")
+        self.assertLess(cleanup_preview_index, first_stale_delete_index)
         stale_calls = [call for call in actions.calls if call[0] == "emby-delete-stale-paths"]
         self.assertEqual(stale_calls[0][1]["kwargs"]["delete_scope"], "season")
         self.assertEqual(stale_calls[1][1]["kwargs"]["delete_scope"], "root")
         self.assertEqual(stale_calls[0][1]["kwargs"]["stale_path_prefixes"], ["/example/local-tv/折腰 (2025)/Season 1"])
         self.assertEqual(stale_calls[1][1]["kwargs"]["stale_path_prefixes"], ["/example/local-tv/折腰 (2025)"])
+
+    def test_batch_finalize_run_executes_cached_cleanup_preview_after_emby_stale_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            report = run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}, emby_library_db_path="/emby/library.db"),
+                execute_scrape=True,
+                approve_emby_stale_delete=True,
+                approve_delete=True,
+                actions=_batch_finalize_actions(actions),
+            )
+
+        item = report["items"][0]
+        self.assertTrue(report["ok"])
+        self.assertEqual(item["status"], "cleanup_executed")
+        call_names = [call[0] for call in actions.calls]
+        self.assertEqual(call_names.count("cloud-hlink-cleanup-preview"), 1)
+        self.assertIn("cloud-hlink-cleanup-execute", call_names)
+        self.assertLess(call_names.index("cloud-hlink-cleanup-preview"), call_names.index("emby-delete-stale-paths"))
+        self.assertLess(call_names.index("emby-delete-stale-paths"), call_names.index("cloud-hlink-cleanup-execute"))
+        execute_call = next(call for call in actions.calls if call[0] == "cloud-hlink-cleanup-execute")
+        self.assertEqual(execute_call[1]["args"][0]["mode"], "cloud-hlink-cleanup-preview")
 
     def test_batch_finalize_run_gate_failure_stops_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

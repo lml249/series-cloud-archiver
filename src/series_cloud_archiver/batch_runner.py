@@ -736,60 +736,6 @@ def _run_finalize_item(
         row["status"] = "failed_emby_media_updated"
         return row
 
-    emby_stale_prefixes = _emby_stale_path_prefixes(hlink_root)
-    if approve_emby_stale_delete and emby_stale_prefixes and _config_value(config, "emby_library_db_path"):
-        for stale_prefix in emby_stale_prefixes:
-            stale_delete = actions.emby_delete_stale(
-                _config_value(config, "emby_base_url"),
-                _config_value(config, "emby_key"),
-                title=title,
-                stale_path_prefixes=[stale_prefix],
-                stale_host_prefix=stale_prefix,
-                delete_scope="season" if _cloud_path_looks_like_season(stale_prefix) else "root",
-                allow_season_duplicate_replacement=False,
-                strm_filesystem_roots=[],
-                required_target_prefix="",
-                forbidden_target_prefixes=[],
-                strm_path_prefixes=[_series_service_root(service_root)],
-                expected_episode_count=expected_count,
-                expected_episode_min=expected_min,
-                expected_episode_max=expected_max,
-                library_db_path=_config_value(config, "emby_library_db_path"),
-                timeout=timeout,
-            )
-            if not _append_stage(
-                row,
-                _stage_report_path(output_dir, report_prefix, f"04-emby-delete-stale-{_safe_stage_suffix(stale_prefix)}"),
-                "emby_delete_stale_paths",
-                stale_delete,
-            ):
-                if _string_list(stale_delete.get("blockers")) == ["stale_root_item_not_found"]:
-                    continue
-                row["status"] = "failed_emby_delete_stale"
-                return row
-        if not _append_stage(
-            row,
-            _stage_report_path(output_dir, report_prefix, "04-emby-media-updated-after-stale-delete"),
-            "emby_media_updated_verify_after_stale_delete",
-            actions.emby_media_updated(
-                _config_value(config, "emby_base_url"),
-                _config_value(config, "emby_key"),
-                title=title,
-                updated_paths=[service_root],
-                stale_path_prefixes=_emby_stale_path_prefixes(hlink_root, include_season=False),
-                strm_path_prefixes=[_series_service_root(service_root)],
-                update_type="Created",
-                expected_strm_records=0,
-                expected_episode_count=expected_count,
-                expected_episode_min=expected_min,
-                expected_episode_max=expected_max,
-                library_db_path=_config_value(config, "emby_library_db_path"),
-                timeout=timeout,
-            ),
-        ):
-            row["status"] = "failed_emby_media_updated_after_stale_delete"
-            return row
-
     if not _config_value(config, "qb_base_url"):
         return _finish_missing_credentials(row, "qb_credentials_required", "failed_cleanup_preview")
     cleanup_preview = actions.cleanup_preview(
@@ -821,6 +767,60 @@ def _run_finalize_item(
     ):
         row["status"] = "failed_cleanup_preview"
         return row
+
+    emby_stale_prefixes = _emby_stale_path_prefixes(hlink_root)
+    if approve_emby_stale_delete and emby_stale_prefixes and _config_value(config, "emby_library_db_path"):
+        for stale_prefix in emby_stale_prefixes:
+            stale_delete = actions.emby_delete_stale(
+                _config_value(config, "emby_base_url"),
+                _config_value(config, "emby_key"),
+                title=title,
+                stale_path_prefixes=[stale_prefix],
+                stale_host_prefix=stale_prefix,
+                delete_scope="season" if _cloud_path_looks_like_season(stale_prefix) else "root",
+                allow_season_duplicate_replacement=False,
+                strm_filesystem_roots=[],
+                required_target_prefix="",
+                forbidden_target_prefixes=[],
+                strm_path_prefixes=[_series_service_root(service_root)],
+                expected_episode_count=expected_count,
+                expected_episode_min=expected_min,
+                expected_episode_max=expected_max,
+                library_db_path=_config_value(config, "emby_library_db_path"),
+                timeout=timeout,
+            )
+            if not _append_stage(
+                row,
+                _stage_report_path(output_dir, report_prefix, f"05-emby-delete-stale-{_safe_stage_suffix(stale_prefix)}"),
+                "emby_delete_stale_paths",
+                stale_delete,
+            ):
+                if _string_list(stale_delete.get("blockers")) == ["stale_root_item_not_found"]:
+                    continue
+                row["status"] = "failed_emby_delete_stale"
+                return row
+        if not _append_stage(
+            row,
+            _stage_report_path(output_dir, report_prefix, "05-emby-media-updated-after-stale-delete"),
+            "emby_media_updated_verify_after_stale_delete",
+            actions.emby_media_updated(
+                _config_value(config, "emby_base_url"),
+                _config_value(config, "emby_key"),
+                title=title,
+                updated_paths=[service_root],
+                stale_path_prefixes=_emby_stale_path_prefixes(hlink_root, include_season=False),
+                strm_path_prefixes=[_series_service_root(service_root)],
+                update_type="Created",
+                expected_strm_records=0,
+                expected_episode_count=expected_count,
+                expected_episode_min=expected_min,
+                expected_episode_max=expected_max,
+                library_db_path=_config_value(config, "emby_library_db_path"),
+                timeout=timeout,
+            ),
+        ):
+            row["status"] = "failed_emby_media_updated_after_stale_delete"
+            return row
 
     if not approve_delete:
         row["status"] = "cleanup_waiting_for_approval"
