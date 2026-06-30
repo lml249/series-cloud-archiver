@@ -319,6 +319,7 @@ def _transfer_item(item: Dict[str, object]) -> Dict[str, object]:
         "size_bytes": int(item.get("size_bytes") or 0),
         "candidate_count": int(item.get("candidate_count") or 0),
         "expected_count": int(item.get("expected_count") or 0),
+        "expected_episodes": _int_list(item.get("expected_episodes")),
         "missing_episodes": _int_list(item.get("missing_episodes")),
         "titles": _string_list(item.get("titles")),
         "source_paths": _string_list(item.get("source_paths")),

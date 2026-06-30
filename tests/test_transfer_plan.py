@@ -40,6 +40,7 @@ class TransferPlanTest(unittest.TestCase):
                     "season": 1,
                     "size_bytes": 100,
                     "expected_count": 10,
+                    "expected_episodes": [1, 3, 7],
                     "candidate_count": 1,
                     "titles": ["Small.Show.S01"],
                     "source_paths": ["/example/media/Small.Show.S01"],
@@ -75,6 +76,8 @@ class TransferPlanTest(unittest.TestCase):
         self.assertEqual(plan["total_planned"], 2)
         self.assertEqual([item["title"] for item in plan["items"]], ["Big Show", "Small Show"])
         self.assertEqual(plan["total_size_bytes"], 300)
+        small = next(item for item in plan["items"] if item["title"] == "Small Show")
+        self.assertEqual(small["expected_episodes"], [1, 3, 7])
 
     def test_cloud_check_carries_search_keywords_from_qb_release_name(self) -> None:
         report = {
