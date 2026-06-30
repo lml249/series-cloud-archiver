@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path, PurePosixPath
 from typing import Dict, Iterable, List, Optional, Sequence, Set
 
@@ -280,7 +281,8 @@ def _plan_cleanup_item(
     source_check_paths_host = [_service_to_host_path(path, path_aliases) for path in source_check_paths_service]
     destination_roots_host = [_service_to_host_path(path, path_aliases) for path in destination_roots_service]
     cloud_source_paths = _string_list(item.get("source_paths"))
-    if cloud_source_paths and destination_roots_host and not set(_normalize_paths(destination_roots_host)).intersection(_normalize_paths(cloud_source_paths)):
+    allowed_destination_roots = _cleanup_destination_source_variants(cloud_source_paths, path_aliases)
+    if cloud_source_paths and destination_roots_host and not set(_normalize_paths(destination_roots_host)).intersection(allowed_destination_roots):
         blockers.append("mp_destination_root_not_in_cloud_source_paths")
 
     qb_targets = [target for target in preview.get("qb_targets", []) if isinstance(target, dict)]
@@ -436,6 +438,27 @@ def _service_to_host_path(path: str, path_aliases: Dict[str, str]) -> str:
         if normalized == service_prefix or normalized.startswith(service_prefix + "/"):
             return host_prefix + normalized[len(service_prefix) :]
     return normalized
+
+
+def _cleanup_destination_source_variants(source_paths: Sequence[str], path_aliases: Dict[str, str]) -> Set[str]:
+    variants: List[str] = []
+    for path in source_paths:
+        for candidate in (str(path or "").rstrip("/"), _service_to_host_path(str(path or ""), path_aliases)):
+            if candidate and candidate not in variants:
+                variants.append(candidate)
+            hlink_variant = _source_path_to_hlink_variant(candidate)
+            if hlink_variant and hlink_variant not in variants:
+                variants.append(hlink_variant)
+    return _normalize_paths(variants)
+
+
+def _source_path_to_hlink_variant(path: str) -> str:
+    normalized = str(path or "").rstrip("/")
+    volume = r"volume(?:\d+|-example)"
+    match = re.match(rf"^(/(?:{volume}))/(?:{volume}/)?TV/(.+)$", normalized)
+    if match:
+        return f"{match.group(1)}/hlink/TV/{match.group(2)}"
+    return ""
 
 
 def _normalize_paths(paths: Sequence[str]) -> Set[str]:

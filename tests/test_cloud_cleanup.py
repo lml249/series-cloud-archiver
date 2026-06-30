@@ -167,6 +167,41 @@ class CloudCompleteCleanupTest(unittest.TestCase):
         self.assertTrue(allowed["items"][0]["ready_for_execute"])
         self.assertEqual(allowed["items"][0]["expected_hash_prefixes"], ["feedface0000", "beadfeed1111"])
 
+    def test_plan_accepts_hlink_destination_derived_from_source_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm" / "series" / "沉默的荣耀 (2025) {tmdbid=281538}" / "Season 1"
+            touch_strm(root / "沉默的荣耀 S01E01.strm")
+            touch_strm(root / "沉默的荣耀 S01E02.strm")
+            item = cloud_complete_item(root)
+            item["source_paths"] = ["/volume-example/volume-example/TV/Silent.Honor.S01"]
+            preview = ready_preview()
+            preview["destination_roots"] = ["/volume-example/hlink/TV/Silent.Honor.S01"]
+            report = {"items": [item]}
+
+            with patch("series_cloud_archiver.cloud_cleanup.mp_cleanup_preview_from_transfer_history", return_value=preview):
+                plan = plan_cloud_complete_cleanup(report, "http://mp.example", "token")
+
+        self.assertEqual(plan["ready_items"], 1)
+        self.assertTrue(plan["items"][0]["ready_for_execute"])
+        self.assertNotIn("mp_destination_root_not_in_cloud_source_paths", plan["items"][0]["execution_blockers"])
+
+    def test_plan_blocks_unrelated_hlink_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm" / "series" / "沉默的荣耀 (2025) {tmdbid=281538}" / "Season 1"
+            touch_strm(root / "沉默的荣耀 S01E01.strm")
+            touch_strm(root / "沉默的荣耀 S01E02.strm")
+            item = cloud_complete_item(root)
+            item["source_paths"] = ["/volume-example/volume-example/TV/Silent.Honor.S01"]
+            preview = ready_preview()
+            preview["destination_roots"] = ["/volume-example/hlink/TV/Other.Show.S01"]
+            report = {"items": [item]}
+
+            with patch("series_cloud_archiver.cloud_cleanup.mp_cleanup_preview_from_transfer_history", return_value=preview):
+                plan = plan_cloud_complete_cleanup(report, "http://mp.example", "token")
+
+        self.assertEqual(plan["ready_items"], 0)
+        self.assertIn("mp_destination_root_not_in_cloud_source_paths", plan["items"][0]["execution_blockers"])
+
     def test_execute_skips_not_ready_items_before_moviepilot_delete(self) -> None:
         plan = {
             "mode": "cloud-complete-cleanup-plan",
