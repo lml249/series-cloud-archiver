@@ -160,6 +160,7 @@ class TransferFakeActions:
         organize_fails_after_side_effect: bool = False,
         received_name: str = "折腰",
         direct_received_browse_missing: bool = False,
+        receive_already_completed: bool = False,
     ) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.duplicate_after_organize = duplicate_after_organize
@@ -168,16 +169,27 @@ class TransferFakeActions:
         self.organize_fails_after_side_effect = organize_fails_after_side_effect
         self.received_name = received_name
         self.direct_received_browse_missing = direct_received_browse_missing
+        self.receive_already_completed = receive_already_completed
         self.organized = False
 
     def receive_share(self, *args: object, **kwargs: object) -> dict:
         self.calls.append(("receive", {"args": list(args), "kwargs": kwargs}))
         return {
             "mode": "mv3-share-receive-one-result",
-            "ok": True,
+            "ok": not self.receive_already_completed,
             "warnings": [],
             "target_path": kwargs.get("target_path"),
             "browse_selection": {"name": self.received_name},
+            "video_file_count": 36,
+            "episode_count": 36,
+            "episode_min": 1,
+            "episode_max": 36,
+            "missing_expected": [],
+            "receive": {
+                "api_message": "转存失败: 文件已接收，无需重复接收！"
+                if self.receive_already_completed
+                else "转存成功"
+            },
         }
 
     def browse_cloud(self, *args: object, **kwargs: object) -> dict:
@@ -565,6 +577,39 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(browse_calls[2]["folder_id"], "received-folder")
         organize_call = next(call for call in actions.calls if call[0] == "organize")
         self.assertEqual(organize_call[1]["args"][2]["path"], "/未整理/韩剧【夫妻的世界】(2020) 金喜爱 / 朴解浚")
+
+    def test_batch_transfer_run_reuses_staging_when_share_was_already_received(self) -> None:
+        actions = TransferFakeActions(
+            received_name="韩剧【夫妻的世界】(2020) 金喜爱 / 朴解浚",
+            direct_received_browse_missing=True,
+            receive_already_completed=True,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            preview = Path(tmp) / "preview.json"
+            preview.write_text(
+                json.dumps({"ok": True, "episodes": list(range(1, 37)), "video_file_count": 36}),
+                encoding="utf-8",
+            )
+            report = run_batch_transfer(
+                self._receive_plan(str(preview)),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(),
+                approve_receive=True,
+                approve_transfer=True,
+                actions=BatchTransferActions(
+                    receive_share=actions.receive_share,
+                    browse_cloud=actions.browse_cloud,
+                    organize_transfer=actions.organize_transfer,
+                ),
+            )
+
+        item = report["items"][0]
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["received_items"], 1)
+        self.assertTrue(item["receive_recovered_after_already_exists"])
+        self.assertIn("receive_already_completed_reused_staging", item["warnings"])
+        self.assertEqual(item["status"], "organized_requires_finalize")
+        self.assertIn("organize", [call[0] for call in actions.calls])
 
     def test_batch_transfer_run_recovers_when_organize_times_out_but_post_verify_passes(self) -> None:
         actions = TransferFakeActions(organize_fails_after_side_effect=True)

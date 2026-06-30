@@ -214,10 +214,22 @@ def _run_transfer_item(
     _write_json(receive_path, receive_report)
     row["stage_reports"]["share_receive"] = str(receive_path)
     row["receive_ok"] = bool(receive_report.get("ok"))
+    receive_recovered = False
+    if not row["receive_ok"] and _receive_is_idempotent_success(receive_report) and _receive_episode_gate_ok(
+        receive_report,
+        expected_count=expected_count,
+        expected_min=expected_min,
+        expected_max=expected_max,
+    ):
+        row["receive_ok"] = True
+        receive_recovered = True
+        row["warnings"] = sorted(set(_string_list(row.get("warnings")) + ["receive_already_completed_reused_staging"]))
     if not row["receive_ok"]:
         row["status"] = "failed_receive"
         row["blockers"] = _report_blockers(receive_report) or ["receive_failed"]
         return row
+    if receive_recovered:
+        row["receive_recovered_after_already_exists"] = True
 
     browse_report, received_resolution_reports = _browse_received_folder(
         actions,
@@ -363,6 +375,30 @@ def _received_browse_path(target_path: str, title: str, receive_report: Dict[str
     clean_title = str(selection.get("name") or "").strip() if isinstance(selection, dict) else ""
     clean_title = clean_title or _title_contains(title)
     return f"{target_path.rstrip('/')}/{clean_title}"
+
+
+def _receive_is_idempotent_success(report: Dict[str, object]) -> bool:
+    receive = report.get("receive") if isinstance(report.get("receive"), dict) else {}
+    message = str(receive.get("api_message") or "")
+    return "已接收" in message and ("无需重复" in message or "重复接收" in message)
+
+
+def _receive_episode_gate_ok(
+    report: Dict[str, object],
+    *,
+    expected_count: int,
+    expected_min: int,
+    expected_max: int,
+) -> bool:
+    if expected_count and int(report.get("episode_count") or 0) != expected_count:
+        return False
+    if expected_min and int(report.get("episode_min") or 0) != expected_min:
+        return False
+    if expected_max and int(report.get("episode_max") or 0) != expected_max:
+        return False
+    if _string_list(report.get("missing_expected")):
+        return False
+    return int(report.get("video_file_count") or 0) >= expected_count > 0
 
 
 def _browse_received_folder(
