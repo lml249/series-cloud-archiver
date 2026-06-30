@@ -460,7 +460,7 @@ class BatchRunnerTest(unittest.TestCase):
             },
             "items": [
                 {
-                    "bucket": MANUAL_REVIEW,
+                    "bucket": AUTO_CLEANUP,
                     "title": "折腰",
                     "tmdbid": 296753,
                     "season": 1,
@@ -512,7 +512,7 @@ class BatchRunnerTest(unittest.TestCase):
             },
             "items": [
                 {
-                    "bucket": MANUAL_REVIEW,
+                    "bucket": AUTO_CLEANUP,
                     "title": "兄弟连",
                     "tmdbid": 4613,
                     "season": 1,
@@ -530,6 +530,36 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(item["cloud_title_path"], "/已整理/series/兄弟连 (2001) {tmdbid=4613}")
         self.assertEqual(item["required_target_prefix"], "/已整理/series/兄弟连 (2001) {tmdbid=4613}/Season 1")
 
+    def test_batch_finalize_plan_skips_manual_review_items(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "settings": {
+                "cloud_root": "/已整理/series",
+                "host_strm_root": "/volume4/volume4/mv3/strm",
+                "emby_strm_root": "/volume4/mv3/strm",
+            },
+            "items": [
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "折腰",
+                    "tmdbid": 296753,
+                    "season": 1,
+                    "expected_episode_count": 36,
+                    "source_paths": ["/volume3/volume3/hlink/TV/折腰 (2025)/Season 1"],
+                    "cloud_media_path": "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                    "strm_root": "/volume4/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                }
+            ],
+        }
+
+        report = build_batch_finalize_plan(batch_plan, env_file="/safe/.env")
+        item = report["items"][0]
+
+        self.assertEqual(report["finalize_ready_items"], 0)
+        self.assertEqual(item["status"], "skipped_finalize")
+        self.assertIn("not_ready_for_finalize:manual_review", item["skip_reasons"])
+        self.assertEqual(item["commands"], [])
+
     def test_cli_writes_batch_finalize_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -546,7 +576,7 @@ class BatchRunnerTest(unittest.TestCase):
                         },
                         "items": [
                             {
-                                "bucket": MANUAL_REVIEW,
+                                "bucket": AUTO_CLEANUP,
                                 "title": "折腰",
                                 "tmdbid": 296753,
                                 "season": 1,

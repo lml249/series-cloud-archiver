@@ -1178,7 +1178,10 @@ def _finalize_plan_row(
         blockers.append("service_strm_root_required")
     if not cloud_title_path:
         blockers.append("cloud_title_path_required")
-    if str(item.get("bucket") or "") not in {AUTO_CLEANUP, MANUAL_REVIEW, AUTO_TRANSFER}:
+    bucket = str(item.get("bucket") or "")
+    if bucket != AUTO_CLEANUP:
+        skip_reasons.append(f"not_ready_for_finalize:{bucket or 'unknown'}")
+    if bucket not in {AUTO_CLEANUP, MANUAL_REVIEW, AUTO_TRANSFER}:
         skip_reasons.append("unsupported_batch_bucket")
 
     status = "planned_finalize" if not blockers and not skip_reasons else "skipped_finalize"
