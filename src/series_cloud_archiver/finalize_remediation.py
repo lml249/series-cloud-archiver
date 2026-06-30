@@ -1,0 +1,493 @@
+from __future__ import annotations
+
+import csv
+import io
+import json
+import re
+import shlex
+from collections import Counter
+from typing import Dict, List, Sequence, Tuple
+
+
+JsonDict = Dict[str, object]
+
+
+def build_finalize_remediation_plan(
+    review_report: JsonDict,
+    finalize_run_reports: Sequence[JsonDict],
+    *,
+    env_file: str = "",
+    cloud_media_storage: str = "115-default",
+    timeout: int = 20,
+) -> JsonDict:
+    """Build a readonly follow-up plan for blocked finalize rows.
+
+    The report is intentionally diagnostic: generated commands are dry-run or
+    readonly checks. Destructive approval flags are not included.
+    """
+
+    finalize_by_identity = _finalize_items_by_identity(finalize_run_reports)
+    rows: List[JsonDict] = []
+    for review_item in review_report.get("items", []) if isinstance(review_report.get("items"), list) else []:
+        if not isinstance(review_item, dict) or review_item.get("decision") != "blocked_after_finalize_gates":
+            continue
+        key = _identity_key(review_item)
+        finalize_item = finalize_by_identity.get(key, {})
+        row = _remediation_row(
+            review_item,
+            finalize_item,
+            env_file=env_file,
+            cloud_media_storage=cloud_media_storage,
+            timeout=timeout,
+        )
+        rows.append(row)
+
+    category_counts = Counter(str(row.get("category") or "") for row in rows)
+    status_counts = Counter(str(row.get("finalize_status") or "") for row in rows)
+    return {
+        "mode": "readonly-finalize-remediation-plan",
+        "source_mode": str(review_report.get("mode") or ""),
+        "ok": True,
+        "planned_items": len(rows),
+        "category_counts": dict(sorted(category_counts.items())),
+        "finalize_status_counts": dict(sorted(status_counts.items())),
+        "items": rows,
+        "settings": {
+            "env_file": env_file,
+            "cloud_media_storage": cloud_media_storage,
+            "timeout": timeout,
+        },
+        "safety": (
+            "readonly remediation plan only; generated commands are diagnostic dry-runs or readonly checks. "
+            "No cloud write/delete, STRM write, scrape, Emby delete, qBittorrent action, hlink deletion, "
+            "source deletion, or filesystem cleanup is performed by this report."
+        ),
+    }
+
+
+def render_finalize_remediation_plan(report: JsonDict, output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    if output_format == "csv":
+        return _render_csv(report)
+    return _render_markdown(report)
+
+
+def _remediation_row(
+    review_item: JsonDict,
+    finalize_item: JsonDict,
+    *,
+    env_file: str,
+    cloud_media_storage: str,
+    timeout: int,
+) -> JsonDict:
+    blockers = _strings(finalize_item.get("blockers")) or _split_cell(review_item.get("finalize_blockers")) or _split_cell(review_item.get("reason_summary"))
+    category = _category(str(finalize_item.get("status") or review_item.get("finalize_status") or ""), blockers)
+    title = str(review_item.get("title") or finalize_item.get("title") or "")
+    tmdbid = int(review_item.get("tmdbid") or finalize_item.get("tmdbid") or 0)
+    season = int(review_item.get("season") or finalize_item.get("season") or 0)
+    expected_count = int(review_item.get("expected_episode_count") or finalize_item.get("expected_episode_count") or 0)
+    expected_min, expected_max = _episode_range(review_item, finalize_item, expected_count)
+    strm_root = str(finalize_item.get("strm_root") or review_item.get("strm_root") or "")
+    cloud_season_path = str(finalize_item.get("cloud_season_path") or finalize_item.get("required_target_prefix") or review_item.get("cloud_media_path") or "")
+    cloud_title_path = str(finalize_item.get("cloud_title_path") or _cloud_title_path(cloud_season_path) or "")
+    hlink_root = str(finalize_item.get("hlink_root") or _first_cell_value(review_item.get("source_paths")) or "")
+    source_paths = _strings(finalize_item.get("source_paths")) or _split_paths_cell(review_item.get("source_paths"))
+    source_qb_hashes = _strings(finalize_item.get("source_qb_hashes"))
+    required_prefix = str(finalize_item.get("required_target_prefix") or finalize_item.get("strm_target_prefix") or cloud_season_path)
+    stage_outputs = _stage_outputs(finalize_item)
+    commands = _commands(
+        category=category,
+        title=title,
+        tmdbid=tmdbid,
+        season=season,
+        expected_count=expected_count,
+        expected_min=expected_min,
+        expected_max=expected_max,
+        strm_root=strm_root,
+        cloud_season_path=cloud_season_path,
+        cloud_title_path=cloud_title_path,
+        hlink_root=hlink_root,
+        source_paths=source_paths,
+        source_qb_hashes=source_qb_hashes,
+        required_prefix=required_prefix,
+        env_file=env_file,
+        cloud_media_storage=cloud_media_storage,
+        timeout=timeout,
+    )
+    return {
+        "category": category,
+        "next_action": _next_action(category),
+        "title": title,
+        "tmdbid": tmdbid,
+        "season": season,
+        "finalize_status": str(finalize_item.get("status") or review_item.get("finalize_status") or ""),
+        "finalize_last_stage": str(review_item.get("finalize_last_stage") or _last_stage(finalize_item) or ""),
+        "blockers": sorted(set(blockers)),
+        "expected_episode_count": expected_count,
+        "expected_episode_min": expected_min,
+        "expected_episode_max": expected_max,
+        "strm_root": strm_root,
+        "cloud_title_path": cloud_title_path,
+        "cloud_season_path": cloud_season_path,
+        "hlink_root": hlink_root,
+        "source_paths": source_paths,
+        "source_qb_hashes": source_qb_hashes,
+        "stage_outputs": stage_outputs,
+        "commands": commands,
+    }
+
+
+def _commands(
+    *,
+    category: str,
+    title: str,
+    tmdbid: int,
+    season: int,
+    expected_count: int,
+    expected_min: int,
+    expected_max: int,
+    strm_root: str,
+    cloud_season_path: str,
+    cloud_title_path: str,
+    hlink_root: str,
+    source_paths: Sequence[str],
+    source_qb_hashes: Sequence[str],
+    required_prefix: str,
+    env_file: str,
+    cloud_media_storage: str,
+    timeout: int,
+) -> List[JsonDict]:
+    commands: List[JsonDict] = []
+    prefix = _safe_prefix(title, tmdbid, season)
+    env = f"--env-file {_q(env_file)} " if env_file else ""
+    if category == "strm_mismatch":
+        commands.append(
+            {
+                "stage": "strm_verify_readonly",
+                "command": (
+                    "PYTHONPATH=src python3 -m series_cloud_archiver strm-verify "
+                    f"--title {_q(title)} --strm-root {_q(strm_root)} "
+                    f"--expected-episode-count {expected_count} --expected-episode-min {expected_min} --expected-episode-max {expected_max} "
+                    f"--required-target-prefix {_q(required_prefix)} --format json --output {_q(prefix + '-strm-verify.json')}"
+                ),
+            }
+        )
+        commands.append(
+            {
+                "stage": "cloud_duplicate_preview_readonly",
+                "command": (
+                    f"PYTHONPATH=src python3 -m series_cloud_archiver mv3-cloud-duplicate-video-cleanup {env}"
+                    f"--season-path {_q(cloud_season_path)} --strm-root {_q(strm_root)} "
+                    f"--expected-episode-count {expected_count} --storage {_q(cloud_media_storage)} --timeout {timeout} "
+                    f"--format json --output {_q(prefix + '-cloud-duplicate-preview.json')}"
+                ),
+            }
+        )
+        return commands
+    if category == "cloud_path_missing":
+        commands.append(
+            {
+                "stage": "mv3_cloud_browse_title_readonly",
+                "command": (
+                    f"PYTHONPATH=src python3 -m series_cloud_archiver mv3-cloud-browse {env}"
+                    f"--path {_q(cloud_title_path)} --storage {_q(cloud_media_storage)} --timeout {timeout} "
+                    f"--format json --output {_q(prefix + '-cloud-title-browse.json')}"
+                ),
+            }
+        )
+        commands.append(
+            {
+                "stage": "mv3_cloud_search_title_readonly",
+                "command": (
+                    f"PYTHONPATH=src python3 -m series_cloud_archiver mv3-cloud-search {env}"
+                    f"--keyword {_q(title)} --storage {_q(cloud_media_storage)} --timeout {timeout} "
+                    f"--format json --output {_q(prefix + '-cloud-search.json')}"
+                ),
+            }
+        )
+        return commands
+    if category == "cloud_duplicate_delete_review":
+        commands.append(
+            {
+                "stage": "cloud_duplicate_preview_readonly",
+                "command": (
+                    f"PYTHONPATH=src python3 -m series_cloud_archiver mv3-cloud-duplicate-video-cleanup {env}"
+                    f"--season-path {_q(cloud_season_path)} --strm-root {_q(strm_root)} "
+                    f"--expected-episode-count {expected_count} --storage {_q(cloud_media_storage)} --timeout {timeout} "
+                    f"--format json --output {_q(prefix + '-cloud-duplicate-preview.json')}"
+                ),
+            }
+        )
+        commands.append(
+            {
+                "stage": "approval_required_note",
+                "command": "复核 preview 中 duplicate_video_count 和 protected STRM targets 后，另走显式审批删除流程",
+            }
+        )
+        return commands
+    if category == "extra_source_media":
+        commands.append(
+            {
+                "stage": "extra_source_media_plan",
+                "command": "用对应 batch-pipeline 生成的 15-extra-source-media-plan.json 继续，只做 MV3 scan-source 只读识别；不要删除源目录",
+            }
+        )
+        return commands
+    if category == "mp_history_or_qb_mismatch":
+        hash_args = " ".join(f"--expected-qb-hash {_q(value)}" for value in source_qb_hashes)
+        source_args = " ".join(f"--source-root {_q(value)}" for value in source_paths)
+        hlink_args = f"--hlink-root {_q(hlink_root)}" if hlink_root else ""
+        if source_qb_hashes and source_paths and hlink_root:
+            commands.append(
+                {
+                    "stage": "qb_orphan_preview_readonly",
+                    "command": (
+                        f"PYTHONPATH=src python3 -m series_cloud_archiver qb-orphan-torrent-cleanup-preview {env}"
+                        f"--title {_q(title)} --expected-tmdbid {tmdbid} {hash_args} {source_args} {hlink_args} "
+                        f"--strm-root {_q(strm_root)} --expected-episode-count {expected_count} "
+                        f"--expected-episode-min {expected_min} --expected-episode-max {expected_max} "
+                        f"--required-target-prefix {_q(required_prefix)} --cloud-media-path {_q(cloud_title_path)} "
+                        f"--cloud-media-storage {_q(cloud_media_storage)} --timeout {timeout} "
+                        f"--format json --output {_q(prefix + '-qb-orphan-preview.json')}"
+                    ),
+                }
+            )
+        commands.append(
+            {
+                "stage": "mp_cleanup_preview_readonly",
+                "command": (
+                    f"PYTHONPATH=src python3 -m series_cloud_archiver mp-cleanup-preview {env}"
+                    f"--title {_q(title)} --expected-tmdbid {tmdbid} --expected-season {season} "
+                    f"--timeout {timeout} --format json --output {_q(prefix + '-mp-cleanup-preview.json')}"
+                ),
+            }
+        )
+        return commands
+    commands.append(
+        {
+            "stage": "manual_review",
+            "command": "人工查看 finalize stage_outputs、STRM、云盘和本地路径后再决定下一步",
+        }
+    )
+    return commands
+
+
+def _category(status: str, blockers: Sequence[str]) -> str:
+    blocker_set = set(blockers)
+    if status == "failed_strm_verify" or any(blocker.startswith("strm_") for blocker in blocker_set):
+        return "strm_mismatch"
+    if "cloud_duplicate_delete_approval_required" in blocker_set:
+        return "cloud_duplicate_delete_review"
+    if "cloud_season_path_not_found" in blocker_set:
+        return "cloud_path_missing"
+    if "source_root_check_failed" in blocker_set or "source_root_contains_video_files" in blocker_set or "hlink_root_contains_video_files" in blocker_set:
+        return "extra_source_media"
+    if "mp_transfer_history_still_present_use_mp_cleanup" in blocker_set or "qb_torrent_not_found" in blocker_set or "qb_match_required" in blocker_set:
+        return "mp_history_or_qb_mismatch"
+    return "manual_review"
+
+
+def _next_action(category: str) -> str:
+    return {
+        "strm_mismatch": "先重跑 STRM 只读校验并比对云盘季目录，确认缺集/错季后再回到转存或 STRM 修复",
+        "cloud_path_missing": "先浏览/搜索 MV3 云盘目录，确认正确 Season 路径或目录命名，再修复 STRM target 或云盘目录",
+        "cloud_duplicate_delete_review": "先复核云盘重复视频 dry-run 明细，确认 protected STRM target 完整后再单独审批重复视频删除",
+        "extra_source_media": "先处理源目录内 hlink 未覆盖的视频：用 extra-source-media-plan 做 MV3 只读识别或人工排除",
+        "mp_history_or_qb_mismatch": "先分别跑 qB orphan/MP cleanup 只读预览，确认 MP 历史、qB hash、source/hlink 根是否精确匹配",
+        "manual_review": "人工复核 stage 输出后再决定脚本化动作",
+    }.get(category, "人工复核")
+
+
+def _finalize_items_by_identity(reports: Sequence[JsonDict]) -> Dict[Tuple[int, int, str], JsonDict]:
+    rows: Dict[Tuple[int, int, str], JsonDict] = {}
+    for report in reports:
+        for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
+            if isinstance(item, dict):
+                rows[_identity_key(item)] = item
+    return rows
+
+
+def _identity_key(item: JsonDict) -> Tuple[int, int, str]:
+    return (int(item.get("tmdbid") or 0), int(item.get("season") or 0), str(item.get("title") or ""))
+
+
+def _episode_range(review_item: JsonDict, finalize_item: JsonDict, expected_count: int) -> Tuple[int, int]:
+    episodes = _ints(finalize_item.get("expected_episodes")) or _episodes_from_cell(review_item.get("expected_episodes"))
+    if episodes:
+        return min(episodes), max(episodes)
+    return (1 if expected_count else 0, expected_count)
+
+
+def _stage_outputs(finalize_item: JsonDict) -> Dict[str, str]:
+    outputs: Dict[str, str] = {}
+    for stage in finalize_item.get("stages", []) if isinstance(finalize_item.get("stages"), list) else []:
+        if isinstance(stage, dict) and stage.get("stage") and stage.get("output"):
+            outputs[str(stage["stage"])] = str(stage["output"])
+    return outputs
+
+
+def _last_stage(finalize_item: JsonDict) -> str:
+    stages = finalize_item.get("stages") if isinstance(finalize_item.get("stages"), list) else []
+    if stages and isinstance(stages[-1], dict):
+        return str(stages[-1].get("stage") or "")
+    return ""
+
+
+def _cloud_title_path(path: str) -> str:
+    clean = str(path or "").rstrip("/")
+    if re.search(r"(?i)/(?:Season\s*0?\d+|第\s*\d+\s*季)$", clean):
+        return clean.rsplit("/", 1)[0]
+    return clean
+
+
+def _first_cell_value(value: object) -> str:
+    values = _split_paths_cell(value)
+    return values[0] if values else ""
+
+
+def _split_paths_cell(value: object) -> List[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    if isinstance(value, str):
+        return [part.strip() for part in value.split("|") if part.strip()]
+    return []
+
+
+def _split_cell(value: object) -> List[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(";") if part.strip()]
+    return []
+
+
+def _episodes_from_cell(value: object) -> List[int]:
+    if isinstance(value, list):
+        return _ints(value)
+    if not isinstance(value, str):
+        return []
+    numbers: List[int] = []
+    for part in value.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if "-" in token:
+            left, right = token.split("-", 1)
+            if left.strip().isdigit() and right.strip().isdigit():
+                start, end = int(left), int(right)
+                if start <= end:
+                    numbers.extend(range(start, end + 1))
+            continue
+        if token.isdigit():
+            numbers.append(int(token))
+    return sorted(set(numbers))
+
+
+def _strings(value: object) -> List[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    if isinstance(value, str) and value:
+        return [value]
+    return []
+
+
+def _ints(value: object) -> List[int]:
+    if not isinstance(value, list):
+        return []
+    result: List[int] = []
+    for item in value:
+        try:
+            result.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(result))
+
+
+def _safe_prefix(title: str, tmdbid: int, season: int) -> str:
+    slug = re.sub(r"[^0-9A-Za-z一-龥]+", "-", f"{title}-{tmdbid}-s{season:02d}").strip("-")
+    return slug[-120:] or "finalize-remediation"
+
+
+def _q(value: object) -> str:
+    return shlex.quote(str(value))
+
+
+def _render_markdown(report: JsonDict) -> str:
+    lines = [
+        "# Finalize Remediation Plan",
+        "",
+        f"- Planned items: `{report.get('planned_items', 0)}`",
+        f"- Category counts: `{report.get('category_counts', {})}`",
+        "- Safety: readonly plan only; commands are diagnostics/dry-runs and omit write/delete approval flags.",
+        "",
+        "| Category | Status | TMDB | S | Title | Blockers | Next action |",
+        "| --- | --- | ---: | ---: | --- | --- | --- |",
+    ]
+    for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {category} | {status} | {tmdbid} | {season} | {title} | {blockers} | {next_action} |".format(
+                category=_escape_cell(str(item.get("category") or "")),
+                status=_escape_cell(str(item.get("finalize_status") or "")),
+                tmdbid=item.get("tmdbid") or "",
+                season=item.get("season") or "",
+                title=_escape_cell(str(item.get("title") or "")),
+                blockers=_escape_cell("; ".join(_strings(item.get("blockers")))),
+                next_action=_escape_cell(str(item.get("next_action") or "")),
+            )
+        )
+    return "\n".join(lines)
+
+
+def _render_csv(report: JsonDict) -> str:
+    fieldnames = [
+        "category",
+        "next_action",
+        "title",
+        "tmdbid",
+        "season",
+        "finalize_status",
+        "finalize_last_stage",
+        "blockers",
+        "expected_episode_count",
+        "strm_root",
+        "cloud_season_path",
+        "hlink_root",
+        "source_paths",
+        "source_qb_hashes",
+        "stage_outputs",
+        "commands",
+    ]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        writer.writerow(
+            {
+                "category": item.get("category", ""),
+                "next_action": item.get("next_action", ""),
+                "title": item.get("title", ""),
+                "tmdbid": item.get("tmdbid", ""),
+                "season": item.get("season", ""),
+                "finalize_status": item.get("finalize_status", ""),
+                "finalize_last_stage": item.get("finalize_last_stage", ""),
+                "blockers": "; ".join(_strings(item.get("blockers"))),
+                "expected_episode_count": item.get("expected_episode_count", ""),
+                "strm_root": item.get("strm_root", ""),
+                "cloud_season_path": item.get("cloud_season_path", ""),
+                "hlink_root": item.get("hlink_root", ""),
+                "source_paths": " | ".join(_strings(item.get("source_paths"))),
+                "source_qb_hashes": "; ".join(_strings(item.get("source_qb_hashes"))),
+                "stage_outputs": json.dumps(item.get("stage_outputs") or {}, ensure_ascii=False, sort_keys=True),
+                "commands": json.dumps(item.get("commands") or [], ensure_ascii=False),
+            }
+        )
+    return output.getvalue().rstrip("\r\n")
+
+
+def _escape_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ")

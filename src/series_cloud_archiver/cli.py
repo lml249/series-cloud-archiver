@@ -77,6 +77,7 @@ from .identity import (
     resolve_identity_overrides_from_scan_report,
 )
 from .extra_source_media import build_extra_source_media_plan, render_extra_source_media_plan
+from .finalize_remediation import build_finalize_remediation_plan, render_finalize_remediation_plan
 from .moviepilot import (
     execute_mp_cleanup_from_preview_report,
     render_mp_cleanup_execute_report,
@@ -714,6 +715,15 @@ def build_parser() -> argparse.ArgumentParser:
     batch_review_parser.add_argument("--post-cleanup-report", action="append", default=[], help="Optional JSON report from post-cleanup summary or verification; can be repeated")
     batch_review_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     batch_review_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    finalize_remediation_parser = subcommands.add_parser("finalize-remediation-plan", help="Build readonly follow-up commands for rows blocked by finalize gates")
+    finalize_remediation_parser.add_argument("--review-report", required=True, help="JSON report from batch-review-report")
+    finalize_remediation_parser.add_argument("--finalize-run-report", action="append", required=True, help="JSON report from batch-finalize-run; can be repeated")
+    finalize_remediation_parser.add_argument("--env-file", default="", help="Local env file; used only for generated command templates")
+    finalize_remediation_parser.add_argument("--cloud-media-storage", default="115-default", help="MV3 cloud storage slug")
+    finalize_remediation_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in generated command templates")
+    finalize_remediation_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
+    finalize_remediation_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     extra_source_parser = subcommands.add_parser("extra-source-media-plan", help="Build readonly follow-up plan for source videos that blocked cleanup")
     extra_source_parser.add_argument("--finalize-run-report", required=True, help="JSON report from batch-finalize-run")
@@ -2668,6 +2678,31 @@ def main(argv: Optional[List[str]] = None) -> int:
             post_cleanup_reports=post_cleanup_reports,
         )
         rendered = render_batch_review_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "finalize-remediation-plan":
+        review_report = load_optional_json_report(args.review_report)
+        if not isinstance(review_report, dict):
+            parser.error("finalize-remediation-plan requires a valid --review-report JSON report")
+        finalize_run_reports = [
+            report
+            for report in (load_optional_json_report(path) for path in args.finalize_run_report)
+            if isinstance(report, dict)
+        ]
+        if not finalize_run_reports:
+            parser.error("finalize-remediation-plan requires at least one valid --finalize-run-report JSON report")
+        report = build_finalize_remediation_plan(
+            review_report,
+            finalize_run_reports,
+            env_file=args.env_file,
+            cloud_media_storage=args.cloud_media_storage,
+            timeout=args.timeout,
+        )
+        rendered = render_finalize_remediation_plan(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:
