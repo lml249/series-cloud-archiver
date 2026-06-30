@@ -478,7 +478,7 @@ def _run_finalize_item(
     derived_cloud_title_path = _cloud_title_path_from_strm_root(strm_root)
     required_prefix = derived_required_prefix or planned_required_prefix
     cloud_title_path = derived_cloud_title_path or planned_cloud_title_path
-    cloud_season_path = str(item.get("cloud_media_path") or "").rstrip("/") or required_prefix
+    cloud_season_path = derived_required_prefix or str(item.get("cloud_media_path") or "").rstrip("/") or required_prefix
     if cloud_season_path and not _cloud_path_looks_like_season(cloud_season_path):
         cloud_season_path = f"{cloud_season_path}/Season {season}"
     report_prefix = str((item.get("command_context") or {}).get("report_prefix") if isinstance(item.get("command_context"), dict) else "") or _report_prefix(title, tmdbid, season)

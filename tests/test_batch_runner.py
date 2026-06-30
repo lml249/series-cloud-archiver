@@ -730,6 +730,11 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(scrape_call[1]["kwargs"]["strm_path"], "/volume4/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
         self.assertEqual(scrape_call[1]["kwargs"]["mp_path"], "/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
         self.assertNotIn("/已整理", scrape_call[1]["kwargs"]["strm_path"])
+        cloud_duplicate_call = next(call for call in actions.calls if call[0] == "mv3-cloud-duplicate-video-cleanup-result")
+        self.assertEqual(
+            cloud_duplicate_call[1]["kwargs"]["season_path"],
+            "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1",
+        )
         cleanup_call = next(call for call in actions.calls if call[0] == "cloud-hlink-cleanup-preview")
         self.assertEqual(cleanup_call[1]["expected"]["cloud_media_path"], "/已整理/series/折腰 (2025) {tmdbid=296753}")
 
