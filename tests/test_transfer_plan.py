@@ -779,6 +779,7 @@ class TransferPlanTest(unittest.TestCase):
                     "season": 1,
                     "size_bytes": 40 * 1024**3,
                     "expected_count": 40,
+                    "expected_episodes": list(range(1, 41)),
                     "source_paths": ["/example/library-host/hlink/TV/八千里路云和月"],
                 }
             ],
@@ -810,8 +811,49 @@ class TransferPlanTest(unittest.TestCase):
         self.assertEqual(plan["ready_items"], 1)
         recommended = plan["items"][0]["recommended_candidate"]
         self.assertEqual(recommended["search_index"], 1)
+        self.assertEqual(plan["items"][0]["expected_episodes"], list(range(1, 41)))
+        self.assertIn("explicit_episodes_cover_expected", recommended["reasons"])
         self.assertIn("size_similar", recommended["reasons"])
-        self.assertIn("episode_count_covers_expected", recommended["reasons"])
+
+    def test_share_search_plan_blocks_missing_explicit_expected_episodes(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {
+                    "title": "唐朝诡事录",
+                    "tmdbid": 211089,
+                    "season": 1,
+                    "size_bytes": 8 * 1024**3,
+                    "expected_count": 6,
+                    "expected_episodes": [4, 8, 10, 12, 21, 33],
+                    "source_paths": ["/example/library-host/hlink/TV/唐朝诡事录"],
+                }
+            ],
+        }
+        search_reports = {
+            "唐朝诡事录": {
+                "ok": True,
+                "result_count": 1,
+                "items": [
+                    {
+                        "index": 1,
+                        "title": "唐朝诡事录 S01E01-E10",
+                        "size": "8 GiB",
+                        "share_code_available": True,
+                    }
+                ],
+            }
+        }
+
+        plan = plan_mv3_share_search_from_transfer_plan(transfer_plan, search_reports, limit=1)
+        item = plan["items"][0]
+        candidate = item["candidates"][0]
+
+        self.assertEqual(item["expected_episodes"], [4, 8, 10, 12, 21, 33])
+        self.assertEqual(item["recommended_candidate"], {})
+        self.assertIn("missing_expected_episodes", candidate["blockers"])
+        self.assertEqual(candidate["missing_expected_episodes"], [12, 21, 33])
+        self.assertIn("no_candidate_passed_recommendation_gate", item["warnings"])
 
     def test_share_search_plan_can_start_from_offset(self) -> None:
         transfer_plan = {

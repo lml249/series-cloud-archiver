@@ -586,6 +586,7 @@ def _share_search_plan_item(index: int, item: Dict[str, object], search_report: 
         "tmdbid": int(item.get("tmdbid") or 0),
         "season": int(item.get("season") or 0),
         "expected_count": int(item.get("expected_count") or 0),
+        "expected_episodes": _int_list(item.get("expected_episodes")),
         "size_bytes": int(item.get("size_bytes") or 0),
         "source_paths": _string_list(item.get("source_paths")),
         "search_keywords": _search_keywords_for_item(item),
@@ -649,6 +650,7 @@ def _share_search_errors(keyword_reports: List[Dict[str, object]]) -> List[Dict[
 def _share_search_candidate(row: Dict[str, object], transfer_item: Dict[str, object]) -> Dict[str, object]:
     title = str(row.get("title") or "")
     expected_count = int(transfer_item.get("expected_count") or 0)
+    expected_episodes = _int_list(transfer_item.get("expected_episodes"))
     local_size = int(transfer_item.get("size_bytes") or 0)
     remote_size = _share_result_size_bytes(row.get("size"), title)
     score = 0
@@ -671,7 +673,14 @@ def _share_search_candidate(row: Dict[str, object], transfer_item: Dict[str, obj
         blockers.append("title_not_matched")
 
     episodes = _episode_numbers_from_text(title)
-    if expected_count and len(episodes) >= expected_count:
+    missing_expected = [episode for episode in expected_episodes if episode not in episodes] if expected_episodes and episodes else []
+    unexpected_episodes = [episode for episode in episodes if expected_episodes and episode not in expected_episodes]
+    if expected_episodes and episodes and not missing_expected:
+        score += 25
+        reasons.append("explicit_episodes_cover_expected")
+    elif expected_episodes and episodes:
+        blockers.append("missing_expected_episodes")
+    elif expected_count and len(episodes) >= expected_count:
         score += 25
         reasons.append("episode_count_covers_expected")
     elif expected_count and _has_complete_marker(title):
@@ -720,6 +729,9 @@ def _share_search_candidate(row: Dict[str, object], transfer_item: Dict[str, obj
         "score": score,
         "reasons": reasons,
         "blockers": blockers,
+        "episode_numbers": episodes,
+        "missing_expected_episodes": missing_expected,
+        "unexpected_episodes": unexpected_episodes,
         "search_keyword": str(row.get("search_keyword") or ""),
         "share_code_available": bool(row.get("share_code_available")),
     }
@@ -1318,7 +1330,7 @@ def _render_markdown(plan: Dict[str, object]) -> str:
                 size=_human_size(int(item.get("size_bytes") or 0)),
                 tmdbid=item.get("tmdbid") or "",
                 season=item.get("season") or "",
-                expected=item.get("expected_count") or "",
+                expected=_episode_cell(item.get("expected_episodes")) or item.get("expected_count") or "",
                 candidates=item.get("candidate_count") or "",
                 title=_escape_cell(str(item.get("title") or "")),
                 source_title=_escape_cell(_first(item.get("titles"))),
@@ -1406,7 +1418,7 @@ def _append_queue_table(lines: List[str], rows: object) -> None:
                 size=_human_size(int(item.get("size_bytes") or 0)),
                 tmdbid=item.get("tmdbid") or "",
                 season=item.get("season") or "",
-                expected=item.get("expected_count") or "",
+                expected=_episode_cell(item.get("expected_episodes")) or item.get("expected_count") or "",
                 title=_escape_cell(str(item.get("title") or "")),
                 keywords=_escape_cell(", ".join(_string_list(item.get("search_keywords"))[:3])),
                 source_path=_escape_cell(_first(item.get("source_paths"))),
@@ -1459,7 +1471,7 @@ def _render_preview_manifest_markdown(manifest: Dict[str, object]) -> str:
                 size=_human_size(int(item.get("size_bytes") or 0)),
                 tmdbid=item.get("tmdbid") or "",
                 season=item.get("season") or "",
-                expected=item.get("expected_count") or "",
+                expected=_episode_cell(item.get("expected_episodes")) or item.get("expected_count") or "",
                 title=_escape_cell(str(item.get("title") or "")),
                 destination=_escape_cell(str(item.get("proposed_cloud_destination") or "")),
                 preview=_escape_cell(f"{preview_call.get('method', '')} {preview_call.get('path', '')}".strip()),
@@ -1519,7 +1531,7 @@ def _render_offline_manifest_markdown(manifest: Dict[str, object]) -> str:
                 size=_human_size(int(item.get("size_bytes") or 0)),
                 tmdbid=item.get("tmdbid") or "",
                 season=item.get("season") or "",
-                expected=item.get("expected_count") or "",
+                expected=_episode_cell(item.get("expected_episodes")) or item.get("expected_count") or "",
                 matches=item.get("qb_match_count") or 0,
                 magnets=item.get("qb_magnet_available_count") or 0,
                 seed_ok=item.get("qb_seed_age_ok_count") or 0,
@@ -1563,7 +1575,7 @@ def _render_share_search_plan_markdown(plan: Dict[str, object]) -> str:
                 size=_human_size(int(item.get("size_bytes") or 0)),
                 tmdbid=item.get("tmdbid") or "",
                 season=item.get("season") or "",
-                expected=item.get("expected_count") or "",
+                expected=_episode_cell(item.get("expected_episodes")) or item.get("expected_count") or "",
                 title=_escape_cell(str(item.get("title") or "")),
                 candidate=_escape_cell(str(candidate.get("title") or "")),
                 candidate_size=_human_size(int(candidate.get("size_bytes") or 0)) if candidate else "",
@@ -1606,6 +1618,22 @@ def _first(value: object) -> str:
 
 def _escape_cell(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ")
+
+
+def _episode_cell(value: object) -> str:
+    episodes = _int_list(value)
+    if not episodes:
+        return ""
+    ranges: List[str] = []
+    start = previous = episodes[0]
+    for episode in episodes[1:]:
+        if episode == previous + 1:
+            previous = episode
+            continue
+        ranges.append(f"{start}-{previous}" if start != previous else str(start))
+        start = previous = episode
+    ranges.append(f"{start}-{previous}" if start != previous else str(start))
+    return ",".join(ranges)
 
 
 def _human_size(size_bytes: int) -> str:
