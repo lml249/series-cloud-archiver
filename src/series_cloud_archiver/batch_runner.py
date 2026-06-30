@@ -1007,6 +1007,8 @@ def _batch_item(
     share_candidates = share_item.get("candidates") if isinstance(share_item.get("candidates"), list) else []
     candidate_diagnostics = _candidate_diagnostics(share_item, recommended, share_candidates, season, title)
     strm_root = _strm_root_from_cloud_item(cloud_item, host_strm_root)
+    if tmdbid <= 0 and strm_root:
+        tmdbid = _tmdbid_from_text(strm_root)
     cloud_media_path = _cloud_media_path(cloud_root, title, tmdbid, season)
 
     blockers: List[str] = []
@@ -1950,11 +1952,6 @@ def _post_cleanup_status(item: Dict[str, object]) -> str:
     if mode in {"mp-cleanup-verify", "strm-verify", "strm-nfo-language-audit", "emby-refresh-verify", "emby-media-updated"}:
         return f"{mode}_ok" if bool(item.get("ok")) else f"{mode}_failed"
     return str(item.get("status") or "")
-
-
-def _tmdbid_from_text(value: str) -> int:
-    match = re.search(r"\{tmdbid=(\d+)\}", value)
-    return int(match.group(1)) if match else 0
 
 
 def _season_from_text(value: str) -> int:

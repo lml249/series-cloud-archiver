@@ -612,6 +612,34 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(item["cloud_title_path"], "/已整理/series/兄弟连 (2001) {tmdbid=4613}")
         self.assertEqual(item["required_target_prefix"], "/已整理/series/兄弟连 (2001) {tmdbid=4613}/Season 1")
 
+    def test_batch_plan_derives_missing_tmdbid_from_strm_root(self) -> None:
+        cloud_report = {
+            "mode": "readonly-cloud-check",
+            "items": [
+                {
+                    "status": "cloud_strm_complete",
+                    "title": "广告狂人 (2007) Season 07",
+                    "tmdbid": 0,
+                    "season": 7,
+                    "expected_count": 14,
+                    "strm_paths_sample": ["/strm/series/广告狂人 (2007) {tmdbid=1104}/Season 07/广告狂人 - S07E01.strm"],
+                    "source_paths": ["/example/local-tv/广告狂人 (2007)/Season 07"],
+                }
+            ],
+        }
+
+        report = build_batch_plan(
+            cloud_report=cloud_report,
+            host_strm_root="/example/host/strm",
+            cloud_root="/已整理/series",
+        )
+        item = report["items"][0]
+
+        self.assertEqual(item["bucket"], AUTO_CLEANUP)
+        self.assertEqual(item["tmdbid"], 1104)
+        self.assertEqual(item["cloud_media_path"], "/已整理/series/广告狂人 (2007) Season 07 {tmdbid=1104}/Season 07")
+        self.assertIn("--expected-tmdbid 1104", "\n".join(command["command"] for command in item["next_actions"]))
+
     def test_batch_finalize_plan_skips_manual_review_items(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",
