@@ -289,6 +289,307 @@ def render_finalize_expected_update_plan(report: JsonDict, output_format: str) -
     return "\n".join(lines)
 
 
+def build_finalize_cleanup_remediation_plan(
+    finalize_run_report: JsonDict,
+    *,
+    env_file: str = "",
+    cloud_media_storage: str = "115-default",
+    timeout: int = 20,
+) -> JsonDict:
+    """Classify cleanup-preview failures from existing reports only."""
+
+    rows: List[JsonDict] = []
+    for item in finalize_run_report.get("items", []) if isinstance(finalize_run_report.get("items"), list) else []:
+        if not isinstance(item, dict) or item.get("status") != "failed_cleanup_preview":
+            continue
+        cleanup_preview = _cleanup_preview_stage_report(item)
+        rows.append(
+            _cleanup_remediation_row(
+                item,
+                cleanup_preview,
+                env_file=env_file,
+                cloud_media_storage=cloud_media_storage,
+                timeout=timeout,
+            )
+        )
+
+    category_counts = Counter(str(row.get("category") or "") for row in rows)
+    return {
+        "mode": "readonly-finalize-cleanup-remediation-plan",
+        "source_mode": str(finalize_run_report.get("mode") or ""),
+        "ok": True,
+        "planned_items": len(rows),
+        "category_counts": dict(sorted(category_counts.items())),
+        "items": rows,
+        "settings": {
+            "env_file": env_file,
+            "cloud_media_storage": cloud_media_storage,
+            "timeout": timeout,
+        },
+        "safety": (
+            "readonly cleanup remediation plan only; it reads existing finalize and cleanup-preview JSON reports. "
+            "It does not call MoviePilot, MV3, Emby, qBittorrent, write STRM/NFO/JPG, delete cloud files, "
+            "delete qB tasks, delete hlink roots, or delete source files."
+        ),
+    }
+
+
+def render_finalize_cleanup_remediation_plan(report: JsonDict, output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    if output_format == "csv":
+        return _render_cleanup_remediation_csv(report)
+    lines = [
+        "# Finalize Cleanup Remediation Plan",
+        "",
+        f"- Planned items: `{report.get('planned_items', 0)}`",
+        f"- Category counts: `{report.get('category_counts', {})}`",
+        "- Safety: readonly classification only; generated commands omit approval flags.",
+        "",
+        "| Category | TMDB | S | Title | qB Matches | Local Videos | Next action |",
+        "| --- | ---: | ---: | --- | ---: | ---: | --- |",
+    ]
+    for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {category} | {tmdbid} | {season} | {title} | {qb} | {videos} | {next_action} |".format(
+                category=_escape_cell(str(item.get("category") or "")),
+                tmdbid=item.get("tmdbid") or "",
+                season=item.get("season") or "",
+                title=_escape_cell(str(item.get("title") or "")),
+                qb=item.get("qb_match_count", 0),
+                videos=item.get("local_video_count", 0),
+                next_action=_escape_cell(str(item.get("next_action") or "")),
+            )
+        )
+    return "\n".join(lines)
+
+
+def _cleanup_preview_stage_report(item: JsonDict) -> JsonDict:
+    for stage in item.get("stages", []) if isinstance(item.get("stages"), list) else []:
+        if not isinstance(stage, dict) or stage.get("stage") != "cloud_hlink_cleanup_preview":
+            continue
+        output = str(stage.get("output") or "")
+        return _load_command_output(Path(output)) if output else {}
+    return {}
+
+
+def _cleanup_episode_range(item: JsonDict, cleanup_preview: JsonDict, expected_count: int) -> Tuple[int, int]:
+    episodes = _ints(item.get("expected_episodes"))
+    if episodes:
+        return min(episodes), max(episodes)
+    expected_min = int(item.get("expected_episode_min") or _nested_int(cleanup_preview, "expected", "episode_min") or 0)
+    expected_max = int(item.get("expected_episode_max") or _nested_int(cleanup_preview, "expected", "episode_max") or 0)
+    if expected_min or expected_max:
+        return expected_min, expected_max
+    return (1 if expected_count else 0, expected_count)
+
+
+def _cleanup_hlink_root(cleanup_preview: JsonDict) -> str:
+    direct = _nested_str(cleanup_preview, "hlink", "path")
+    if direct:
+        return direct
+    filesystem = cleanup_preview.get("filesystem") if isinstance(cleanup_preview.get("filesystem"), dict) else {}
+    for key in ("hlink_roots", "destination_roots"):
+        rows = filesystem.get(key) if isinstance(filesystem.get(key), list) else []
+        for row in rows:
+            if isinstance(row, dict) and row.get("path"):
+                return str(row.get("path") or "")
+    return ""
+
+
+def _cleanup_source_paths(cleanup_preview: JsonDict) -> List[str]:
+    filesystem = cleanup_preview.get("filesystem") if isinstance(cleanup_preview.get("filesystem"), dict) else {}
+    rows = filesystem.get("source_roots") if isinstance(filesystem.get("source_roots"), list) else []
+    paths: List[str] = []
+    for row in rows:
+        if isinstance(row, dict) and row.get("path"):
+            paths.append(str(row.get("path") or ""))
+    return _unique_strings(paths)
+
+
+def _cleanup_remediation_row(
+    item: JsonDict,
+    cleanup_preview: JsonDict,
+    *,
+    env_file: str,
+    cloud_media_storage: str,
+    timeout: int,
+) -> JsonDict:
+    title = str(item.get("title") or cleanup_preview.get("title") or "")
+    tmdbid = int(item.get("tmdbid") or _nested_int(cleanup_preview, "expected", "tmdbid") or 0)
+    season = int(item.get("season") or 0)
+    expected_count = int(item.get("expected_episode_count") or _nested_int(cleanup_preview, "expected", "episode_count") or 0)
+    expected_min, expected_max = _cleanup_episode_range(item, cleanup_preview, expected_count)
+    strm_root = str(item.get("strm_root") or "")
+    required_prefix = str(item.get("required_target_prefix") or _nested_str(cleanup_preview, "expected", "required_target_prefix") or "")
+    cloud_title_path = str(
+        item.get("cloud_title_path")
+        or item.get("cloud_media_path")
+        or _cloud_title_path(str(item.get("cloud_season_path") or ""))
+        or _nested_str(cleanup_preview, "expected", "cloud_media_path")
+        or ""
+    )
+    hlink_root = str(_cleanup_hlink_root(cleanup_preview) or item.get("hlink_root") or "")
+    source_paths = _unique_strings(_strings(item.get("source_paths")) + _cleanup_source_paths(cleanup_preview))
+    blockers = sorted(set(_strings(item.get("blockers")) + _strings(cleanup_preview.get("blockers"))))
+    warnings = sorted(set(_strings(item.get("warnings")) + _strings(cleanup_preview.get("warnings"))))
+    qb = cleanup_preview.get("qbittorrent") if isinstance(cleanup_preview.get("qbittorrent"), dict) else {}
+    fs = cleanup_preview.get("filesystem") if isinstance(cleanup_preview.get("filesystem"), dict) else {}
+    hlink = cleanup_preview.get("hlink") if isinstance(cleanup_preview.get("hlink"), dict) else {}
+    source_rows = fs.get("source_roots") if isinstance(fs.get("source_roots"), list) else []
+    qb_matches = [match for match in qb.get("matches", []) if isinstance(match, dict)] if isinstance(qb.get("matches"), list) else []
+    qb_hashes = [str(match.get("hash") or "").lower() for match in qb_matches if _looks_like_full_hash(str(match.get("hash") or ""))]
+    local_video_count = _local_video_count(hlink, source_rows)
+    category = _cleanup_remediation_category(cleanup_preview, qb_matches, local_video_count)
+    if category == "qb_orphan_preview_candidate" and (not source_paths or not hlink_root or not strm_root):
+        category = "manual_cleanup_review"
+    commands = _cleanup_remediation_commands(
+        category=category,
+        title=title,
+        tmdbid=tmdbid,
+        season=season,
+        expected_count=expected_count,
+        expected_min=expected_min,
+        expected_max=expected_max,
+        strm_root=strm_root,
+        required_prefix=required_prefix,
+        cloud_title_path=cloud_title_path,
+        hlink_root=hlink_root,
+        source_paths=source_paths,
+        qb_hashes=qb_hashes,
+        qb_matches=qb_matches,
+        env_file=env_file,
+        cloud_media_storage=cloud_media_storage,
+        timeout=timeout,
+    )
+    return {
+        "category": category,
+        "next_action": _cleanup_remediation_next_action(category),
+        "title": title,
+        "tmdbid": tmdbid,
+        "season": season,
+        "finalize_status": str(item.get("status") or ""),
+        "blockers": blockers,
+        "warnings": warnings,
+        "expected_episode_count": expected_count,
+        "expected_episode_min": expected_min,
+        "expected_episode_max": expected_max,
+        "strm_root": strm_root,
+        "required_target_prefix": required_prefix,
+        "cloud_title_path": cloud_title_path,
+        "hlink_root": hlink_root,
+        "source_paths": source_paths,
+        "qb_match_count": len(qb_matches),
+        "qb_hashes": qb_hashes,
+        "qb_match_names": [str(match.get("name") or "") for match in qb_matches],
+        "local_video_count": local_video_count,
+        "hlink": {
+            "exists": bool(hlink.get("exists")),
+            "video_count": int(hlink.get("video_count") or 0),
+            "non_video_count": int(hlink.get("non_video_count") or 0),
+        },
+        "source_roots": [
+            {
+                "path": str(row.get("path") or ""),
+                "exists": bool(row.get("exists")),
+                "video_count": int(row.get("video_count") or 0),
+                "blocked": bool(row.get("blocked")),
+                "reason": str(row.get("reason") or ""),
+            }
+            for row in source_rows
+            if isinstance(row, dict)
+        ],
+        "commands": commands,
+    }
+
+
+def _cleanup_remediation_category(cleanup_preview: JsonDict, qb_matches: Sequence[JsonDict], local_video_count: int) -> str:
+    blockers = set(_strings(cleanup_preview.get("blockers")))
+    hlink = cleanup_preview.get("hlink") if isinstance(cleanup_preview.get("hlink"), dict) else {}
+    if local_video_count > 0:
+        return "source_or_wrong_season_review"
+    if qb_matches and any(_looks_like_full_hash(str(match.get("hash") or "")) for match in qb_matches):
+        return "qb_orphan_preview_candidate"
+    if bool(hlink.get("exists")) and int(hlink.get("video_count") or 0) == 0 and int(hlink.get("non_video_count") or 0) > 0:
+        return "empty_hlink_root_review"
+    if {"hlink_root_missing", "qb_match_required"} & blockers or "qb_torrent_not_found" in blockers:
+        return "local_already_absent_no_qb_match"
+    if "source_root_check_failed" in blockers:
+        return "source_or_wrong_season_review"
+    return "manual_cleanup_review"
+
+
+def _cleanup_remediation_next_action(category: str) -> str:
+    return {
+        "qb_orphan_preview_candidate": "先运行生成的 qB orphan 只读预览；如果 ready_for_execute=true，再单独审批 qB 任务清理，deleteFiles 必须为 false",
+        "empty_hlink_root_review": "只剩非视频 hlink 空根，先运行无审批的 hlink-empty-root-cleanup 复核；删除必须单独加审批",
+        "local_already_absent_no_qb_match": "本地 hlink/source 没有视频且 qB 未匹配；缺少 full qB hash，只能作为 no-op/人工复核候选，不能自动删除",
+        "source_or_wrong_season_review": "本地源目录仍有视频或匹配到错季/错源；必须人工复核，不能自动删除",
+        "manual_cleanup_review": "人工复核 cleanup preview、qB、source/hlink 后再决定下一步",
+    }.get(category, "人工复核")
+
+
+def _cleanup_remediation_commands(
+    *,
+    category: str,
+    title: str,
+    tmdbid: int,
+    season: int,
+    expected_count: int,
+    expected_min: int,
+    expected_max: int,
+    strm_root: str,
+    required_prefix: str,
+    cloud_title_path: str,
+    hlink_root: str,
+    source_paths: Sequence[str],
+    qb_hashes: Sequence[str],
+    qb_matches: Sequence[JsonDict],
+    env_file: str,
+    cloud_media_storage: str,
+    timeout: int,
+) -> List[JsonDict]:
+    prefix = _safe_prefix(title, tmdbid, season)
+    env = f"--env-file {_q(env_file)} " if env_file else ""
+    if category == "qb_orphan_preview_candidate":
+        hash_args = " ".join(f"--expected-qb-hash {_q(value)}" for value in qb_hashes)
+        source_roots = _unique_strings(
+            list(source_paths) + [str(match.get("host_content_root") or match.get("host_content_path") or "") for match in qb_matches]
+        )
+        source_args = " ".join(f"--source-root {_q(value)}" for value in source_roots if value)
+        title_contains = _qb_expected_title_contains(title, qb_matches)
+        if not qb_hashes or not source_args or not hlink_root or not strm_root:
+            return []
+        return [
+            {
+                "stage": "qb_orphan_preview_readonly",
+                "command": (
+                    f"PYTHONPATH=src python3 -m series_cloud_archiver qb-orphan-torrent-cleanup-preview {env}"
+                    f"--title {_q(title)} --expected-tmdbid {tmdbid} {hash_args} {source_args} --hlink-root {_q(hlink_root)} "
+                    f"--strm-root {_q(strm_root)} --expected-episode-count {expected_count} "
+                    f"--expected-episode-min {expected_min} --expected-episode-max {expected_max} "
+                    f"--expected-title-contains {_q(title_contains)} --required-target-prefix {_q(required_prefix)} "
+                    f"--cloud-media-path {_q(cloud_title_path)} --cloud-media-storage {_q(cloud_media_storage)} "
+                    f"--timeout {timeout} --format json --output {_q(prefix + '-qb-orphan-preview.json')}"
+                ),
+            }
+        ]
+    if category == "empty_hlink_root_review" and hlink_root:
+        return [
+            {
+                "stage": "hlink_empty_root_review",
+                "command": (
+                    "PYTHONPATH=src python3 -m series_cloud_archiver hlink-empty-root-cleanup "
+                    f"--title {_q(title)} --expected-tmdbid {tmdbid} --hlink-root {_q(hlink_root)} "
+                    f"--format json --output {_q(prefix + '-hlink-empty-root.json')}"
+                ),
+            }
+        ]
+    return []
+
+
 def _diagnostics_by_identity(reports: Sequence[JsonDict]) -> Dict[Tuple[int, int, str], List[JsonDict]]:
     rows: Dict[Tuple[int, int, str], List[JsonDict]] = {}
     for report in reports:
@@ -1027,6 +1328,17 @@ def _strings(value: object) -> List[str]:
     return []
 
 
+def _unique_strings(values: Sequence[object]) -> List[str]:
+    result: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
+
+
 def _ints(value: object) -> List[int]:
     if not isinstance(value, list):
         return []
@@ -1046,6 +1358,49 @@ def _safe_prefix(title: str, tmdbid: int, season: int) -> str:
 
 def _q(value: object) -> str:
     return shlex.quote(str(value))
+
+
+def _nested_str(mapping: JsonDict, *keys: str) -> str:
+    value: object = mapping
+    for key in keys:
+        if not isinstance(value, dict):
+            return ""
+        value = value.get(key)
+    return str(value or "")
+
+
+def _nested_int(mapping: JsonDict, *keys: str) -> int:
+    try:
+        return int(_nested_str(mapping, *keys) or 0)
+    except ValueError:
+        return 0
+
+
+def _looks_like_full_hash(value: str) -> bool:
+    return bool(re.match(r"^[a-fA-F0-9]{32,64}$", str(value or "")))
+
+
+def _local_video_count(hlink: JsonDict, source_rows: Sequence[object]) -> int:
+    total = int(hlink.get("video_count") or 0) if isinstance(hlink, dict) else 0
+    for row in source_rows:
+        if isinstance(row, dict):
+            total += int(row.get("video_count") or 0)
+    return total
+
+
+def _qb_expected_title_contains(title: str, matches: Sequence[JsonDict]) -> str:
+    folded_title = str(title or "").casefold()
+    for match in matches:
+        name = str(match.get("name") or "")
+        if folded_title and folded_title in name.casefold():
+            return title
+    for match in matches:
+        name = str(match.get("name") or "")
+        found = re.split(r"(?i)(?:[._ -]+S\d{1,2}(?:[E._ -]|\b)|[._ -]+\d{4}[._ -])", name, maxsplit=1)[0]
+        cleaned = found.strip(" ._-")
+        if cleaned:
+            return cleaned
+    return title
 
 
 def _render_markdown(report: JsonDict) -> str:
@@ -1118,6 +1473,62 @@ def _render_csv(report: JsonDict) -> str:
                 "source_paths": " | ".join(_strings(item.get("source_paths"))),
                 "source_qb_hashes": "; ".join(_strings(item.get("source_qb_hashes"))),
                 "stage_outputs": json.dumps(item.get("stage_outputs") or {}, ensure_ascii=False, sort_keys=True),
+                "commands": json.dumps(item.get("commands") or [], ensure_ascii=False),
+            }
+        )
+    return output.getvalue().rstrip("\r\n")
+
+
+def _render_cleanup_remediation_csv(report: JsonDict) -> str:
+    fieldnames = [
+        "category",
+        "next_action",
+        "title",
+        "tmdbid",
+        "season",
+        "finalize_status",
+        "blockers",
+        "warnings",
+        "expected_episode_count",
+        "strm_root",
+        "required_target_prefix",
+        "cloud_title_path",
+        "hlink_root",
+        "source_paths",
+        "qb_match_count",
+        "qb_hashes",
+        "qb_match_names",
+        "local_video_count",
+        "source_roots",
+        "commands",
+    ]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        writer.writerow(
+            {
+                "category": item.get("category", ""),
+                "next_action": item.get("next_action", ""),
+                "title": item.get("title", ""),
+                "tmdbid": item.get("tmdbid", ""),
+                "season": item.get("season", ""),
+                "finalize_status": item.get("finalize_status", ""),
+                "blockers": "; ".join(_strings(item.get("blockers"))),
+                "warnings": "; ".join(_strings(item.get("warnings"))),
+                "expected_episode_count": item.get("expected_episode_count", ""),
+                "strm_root": item.get("strm_root", ""),
+                "required_target_prefix": item.get("required_target_prefix", ""),
+                "cloud_title_path": item.get("cloud_title_path", ""),
+                "hlink_root": item.get("hlink_root", ""),
+                "source_paths": " | ".join(_strings(item.get("source_paths"))),
+                "qb_match_count": item.get("qb_match_count", ""),
+                "qb_hashes": "; ".join(_strings(item.get("qb_hashes"))),
+                "qb_match_names": " | ".join(_strings(item.get("qb_match_names"))),
+                "local_video_count": item.get("local_video_count", ""),
+                "source_roots": json.dumps(item.get("source_roots") or [], ensure_ascii=False, sort_keys=True),
                 "commands": json.dumps(item.get("commands") or [], ensure_ascii=False),
             }
         )

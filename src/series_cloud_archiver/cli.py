@@ -79,8 +79,10 @@ from .identity import (
 )
 from .extra_source_media import build_extra_source_media_plan, render_extra_source_media_plan
 from .finalize_remediation import (
+    build_finalize_cleanup_remediation_plan,
     build_finalize_expected_update_plan,
     build_finalize_remediation_plan,
+    render_finalize_cleanup_remediation_plan,
     render_finalize_expected_update_plan,
     render_finalize_remediation_plan,
     render_finalize_remediation_run,
@@ -732,6 +734,17 @@ def build_parser() -> argparse.ArgumentParser:
     finalize_remediation_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in generated command templates")
     finalize_remediation_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     finalize_remediation_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    finalize_cleanup_remediation_parser = subcommands.add_parser(
+        "finalize-cleanup-remediation-plan",
+        help="Classify failed cleanup-preview rows from a batch-finalize-run report",
+    )
+    finalize_cleanup_remediation_parser.add_argument("--finalize-run-report", required=True, help="JSON report from batch-finalize-run")
+    finalize_cleanup_remediation_parser.add_argument("--env-file", default="", help="Local env file; used only for generated command templates")
+    finalize_cleanup_remediation_parser.add_argument("--cloud-media-storage", default="115-default", help="MV3 cloud storage slug")
+    finalize_cleanup_remediation_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in generated command templates")
+    finalize_cleanup_remediation_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
+    finalize_cleanup_remediation_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     finalize_remediation_run_parser = subcommands.add_parser("finalize-remediation-run", help="Dry-run or execute allowlisted readonly commands from a finalize remediation plan")
     finalize_remediation_run_parser.add_argument("--plan", required=True, help="JSON report from finalize-remediation-plan")
@@ -2777,6 +2790,23 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
         )
         rendered = render_finalize_remediation_plan(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "finalize-cleanup-remediation-plan":
+        finalize_report = load_optional_json_report(args.finalize_run_report)
+        if not isinstance(finalize_report, dict):
+            parser.error("finalize-cleanup-remediation-plan requires a valid --finalize-run-report JSON report")
+        report = build_finalize_cleanup_remediation_plan(
+            finalize_report,
+            env_file=args.env_file,
+            cloud_media_storage=args.cloud_media_storage,
+            timeout=args.timeout,
+        )
+        rendered = render_finalize_cleanup_remediation_plan(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

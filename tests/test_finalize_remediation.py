@@ -7,8 +7,10 @@ from typing import List, Optional
 
 from series_cloud_archiver.cli import main
 from series_cloud_archiver.finalize_remediation import (
+    build_finalize_cleanup_remediation_plan,
     build_finalize_expected_update_plan,
     build_finalize_remediation_plan,
+    render_finalize_cleanup_remediation_plan,
     render_finalize_expected_update_plan,
     render_finalize_remediation_plan,
     render_finalize_remediation_run,
@@ -428,6 +430,101 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
         self.assertEqual(payload["mode"], "readonly-finalize-remediation-expected-update-plan")
         self.assertEqual(payload["ready_items"], 1)
 
+    def test_cleanup_remediation_plan_classifies_failed_cleanup_preview_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            report = build_finalize_cleanup_remediation_plan(
+                self._cleanup_finalize_report(tmp_path),
+                env_file="/safe/.env",
+                cloud_media_storage="115-default",
+            )
+
+        self.assertEqual(report["planned_items"], 4)
+        categories = {item["title"]: item["category"] for item in report["items"]}
+        self.assertEqual(categories["qB孤儿"], "qb_orphan_preview_candidate")
+        self.assertEqual(categories["空壳目录"], "empty_hlink_root_review")
+        self.assertEqual(categories["已消失"], "local_already_absent_no_qb_match")
+        self.assertEqual(categories["错季残留"], "source_or_wrong_season_review")
+
+        commands_by_title = {
+            item["title"]: "\n".join(str(command.get("command", "")) for command in item["commands"])
+            for item in report["items"]
+        }
+        self.assertIn("qb-orphan-torrent-cleanup-preview", commands_by_title["qB孤儿"])
+        self.assertIn("--expected-qb-hash 0123456789abcdef0123456789abcdef01234567", commands_by_title["qB孤儿"])
+        self.assertIn("--source-root /example/source/qb-orphan", commands_by_title["qB孤儿"])
+        self.assertIn("--hlink-root /example/hlink/qb-orphan", commands_by_title["qB孤儿"])
+        self.assertNotIn("--approve-delete", commands_by_title["qB孤儿"])
+        self.assertIn("hlink-empty-root-cleanup", commands_by_title["空壳目录"])
+        self.assertNotIn("--approve-delete", commands_by_title["空壳目录"])
+        self.assertEqual(commands_by_title["已消失"], "")
+        self.assertEqual(commands_by_title["错季残留"], "")
+
+        rendered_csv = render_finalize_cleanup_remediation_plan(report, "csv")
+        self.assertIn("qb_orphan_preview_candidate", rendered_csv)
+        self.assertIn("readonly-finalize-cleanup-remediation-plan", render_finalize_cleanup_remediation_plan(report, "json"))
+
+    def test_cleanup_remediation_plan_does_not_emit_qb_preview_without_required_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            preview = tmp_path / "cleanup.json"
+            preview.write_text(
+                json.dumps(
+                    self._cleanup_preview(
+                        blockers=["hlink_root_missing"],
+                        hlink={"path": "", "exists": False, "video_count": 0, "non_video_count": 0},
+                        source_roots=[],
+                        qb_matches=[{"hash": "f" * 40, "name": "路径不足.S01"}],
+                    ),
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            finalize = {
+                "mode": "batch-finalize-run",
+                "items": [
+                    self._cleanup_finalize_item(
+                        "路径不足",
+                        400005,
+                        1,
+                        str(preview),
+                        hlink_root="",
+                        source_paths=[],
+                    )
+                ],
+            }
+
+            report = build_finalize_cleanup_remediation_plan(finalize, env_file="/safe/.env")
+
+        self.assertEqual(report["items"][0]["category"], "manual_cleanup_review")
+        self.assertEqual(report["items"][0]["commands"], [])
+
+    def test_cli_writes_finalize_cleanup_remediation_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            finalize = tmp_path / "finalize.json"
+            output = tmp_path / "cleanup-remediation.json"
+            finalize.write_text(json.dumps(self._cleanup_finalize_report(tmp_path), ensure_ascii=False), encoding="utf-8")
+
+            exit_code = main(
+                [
+                    "finalize-cleanup-remediation-plan",
+                    "--finalize-run-report",
+                    str(finalize),
+                    "--env-file",
+                    "/safe/.env",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["mode"], "readonly-finalize-cleanup-remediation-plan")
+        self.assertEqual(payload["planned_items"], 4)
+
     def _plan_report(self) -> dict:
         return build_finalize_remediation_plan(
             self._review_report(),
@@ -435,6 +532,119 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
             env_file="/safe/.env",
             cloud_media_storage="115-default",
         )
+
+    def _cleanup_finalize_report(self, tmp_path: Path) -> dict:
+        rows = [
+            (
+                "qB孤儿",
+                400001,
+                1,
+                self._cleanup_preview(
+                    blockers=["hlink_root_missing"],
+                    hlink={"path": "/example/hlink/qb-orphan", "exists": False, "video_count": 0, "non_video_count": 0},
+                    source_roots=[{"path": "/example/source/qb-orphan", "exists": False, "video_count": 0, "blocked": False}],
+                    qb_matches=[{"hash": "0123456789abcdef0123456789abcdef01234567", "name": "qB孤儿.S01"}],
+                ),
+            ),
+            (
+                "空壳目录",
+                400002,
+                1,
+                self._cleanup_preview(
+                    blockers=["qb_match_required"],
+                    hlink={"path": "/example/hlink/empty", "exists": True, "video_count": 0, "non_video_count": 1},
+                    source_roots=[],
+                    qb_matches=[],
+                ),
+            ),
+            (
+                "已消失",
+                400003,
+                1,
+                self._cleanup_preview(
+                    blockers=["hlink_root_missing", "qb_match_required"],
+                    hlink={"path": "/example/hlink/missing", "exists": False, "video_count": 0, "non_video_count": 0},
+                    source_roots=[{"path": "/example/source/missing", "exists": False, "video_count": 0, "blocked": False}],
+                    qb_matches=[],
+                ),
+            ),
+            (
+                "错季残留",
+                400004,
+                4,
+                self._cleanup_preview(
+                    blockers=["source_root_check_failed"],
+                    hlink={"path": "/example/hlink/wrong-season", "exists": True, "video_count": 0, "non_video_count": 0},
+                    source_roots=[
+                        {
+                            "path": "/example/source/wrong-season-s03",
+                            "exists": True,
+                            "video_count": 6,
+                            "blocked": True,
+                            "reason": "source_contains_unlinked_videos",
+                        }
+                    ],
+                    qb_matches=[{"hash": "abcdefabcdefabcdefabcdefabcdefabcdefabcd", "name": "Wrong.Season.S03"}],
+                ),
+            ),
+        ]
+        items = []
+        for title, tmdbid, season, preview_payload in rows:
+            preview = tmp_path / f"{tmdbid}-cleanup.json"
+            preview.write_text(json.dumps(preview_payload, ensure_ascii=False), encoding="utf-8")
+            items.append(self._cleanup_finalize_item(title, tmdbid, season, str(preview)))
+        return {"mode": "batch-finalize-run", "items": items}
+
+    def _cleanup_finalize_item(
+        self,
+        title: str,
+        tmdbid: int,
+        season: int,
+        cleanup_output: str,
+        hlink_root: str = "/example/hlink/default",
+        source_paths: Optional[List[str]] = None,
+    ) -> dict:
+        return {
+            "title": title,
+            "tmdbid": tmdbid,
+            "season": season,
+            "status": "failed_cleanup_preview",
+            "blockers": ["cleanup_preview_failed"],
+            "expected_episode_count": 10,
+            "expected_episodes": list(range(1, 11)),
+            "strm_root": f"/example/host/strm/series/{title} {{tmdbid={tmdbid}}}/Season {season:02d}",
+            "required_target_prefix": f"/已整理/series/{title} {{tmdbid={tmdbid}}}",
+            "cloud_season_path": f"/已整理/series/{title} {{tmdbid={tmdbid}}}/Season {season:02d}",
+            "hlink_root": hlink_root,
+            "source_paths": source_paths if source_paths is not None else [f"/example/source/{title}/Season {season:02d}"],
+            "stages": [{"stage": "cloud_hlink_cleanup_preview", "output": cleanup_output}],
+        }
+
+    def _cleanup_preview(
+        self,
+        *,
+        blockers: List[str],
+        hlink: dict,
+        source_roots: List[dict],
+        qb_matches: List[dict],
+    ) -> dict:
+        return {
+            "mode": "cloud-hlink-cleanup-preview",
+            "title": "cleanup",
+            "expected": {
+                "tmdbid": 1,
+                "episode_count": 10,
+                "episode_min": 1,
+                "episode_max": 10,
+                "required_target_prefix": "/已整理/series/cleanup",
+                "cloud_media_path": "/已整理/series/cleanup",
+            },
+            "hlink": hlink,
+            "filesystem": {"source_roots": source_roots},
+            "qbittorrent": {"matches": qb_matches, "matched_count": len(qb_matches)},
+            "blockers": blockers,
+            "warnings": [],
+        }
 
 
 if __name__ == "__main__":
