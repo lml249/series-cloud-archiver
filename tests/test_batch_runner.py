@@ -1081,6 +1081,56 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("--expected-episode-count 40", command_text)
         self.assertIn("--expected-nfo-count 40", command_text)
 
+    def test_apply_expected_updates_can_apply_cloud_season_and_service_roots(self) -> None:
+        finalize_plan = self._finalize_plan()
+        finalize_plan["settings"] = {"host_strm_root": "/example/host/strm"}
+        finalize_plan["items"][0]["title"] = "主角"
+        finalize_plan["items"][0]["tmdbid"] = 284110
+        finalize_plan["items"][0]["expected_episode_count"] = 4
+        finalize_plan["items"][0]["expected_episodes"] = list(range(1, 5))
+        finalize_plan["items"][0]["strm_root"] = "/example/host/strm/series/主角 (2026) {tmdbid=284110}/Season 01"
+        finalize_plan["items"][0]["mp_strm_root"] = "/example/mp/strm/series/主角 (2026) {tmdbid=284110}/Season 01"
+        finalize_plan["items"][0]["service_strm_root"] = "/example/host/strm/series/主角 (2026) {tmdbid=284110}/Season 01"
+        finalize_plan["items"][0]["cloud_media_path"] = "/已整理/series/主角 {tmdbid=284110}/Season 01"
+        finalize_plan["items"][0]["cloud_title_path"] = "/已整理/series/主角 {tmdbid=284110}"
+        finalize_plan["items"][0]["required_target_prefix"] = "/已整理/series/主角 (2026) {tmdbid=284110}/Season 01"
+        expected_update_plan = {
+            "mode": "readonly-finalize-remediation-expected-update-plan",
+            "items": [
+                {
+                    "status": "ready_for_expected_update",
+                    "title": "主角",
+                    "tmdbid": 284110,
+                    "season": 1,
+                    "old_expected_episode_count": 4,
+                    "new_expected_episode_count": 48,
+                    "new_expected_episodes": list(range(1, 49)),
+                    "cloud_season_path": "/已整理/series/主角 (2026) {tmdbid=284110}/Season 1",
+                    "strm_root": "/example/host/strm/series/主角 (2026) {tmdbid=284110}/Season 01",
+                }
+            ],
+        }
+
+        report = apply_finalize_expected_updates(
+            finalize_plan,
+            expected_update_plan,
+            mp_strm_root="/example/mp/strm",
+            service_strm_root="/example/service/strm",
+        )
+        item = report["items"][0]
+        command_text = "\n".join(str(command.get("command") or "") for command in item["commands"])
+
+        self.assertEqual(item["expected_episode_count"], 48)
+        self.assertEqual(item["cloud_media_path"], "/已整理/series/主角 (2026) {tmdbid=284110}/Season 1")
+        self.assertEqual(item["cloud_title_path"], "/已整理/series/主角 (2026) {tmdbid=284110}")
+        self.assertEqual(item["required_target_prefix"], "/已整理/series/主角 (2026) {tmdbid=284110}/Season 1")
+        self.assertEqual(item["strm_target_prefix"], "/已整理/series/主角 (2026) {tmdbid=284110}/Season 1")
+        self.assertEqual(item["mp_strm_root"], "/example/mp/strm/series/主角 (2026) {tmdbid=284110}/Season 01")
+        self.assertEqual(item["service_strm_root"], "/example/service/strm/series/主角 (2026) {tmdbid=284110}/Season 01")
+        self.assertIn("--required-target-prefix '/已整理/series/主角 (2026) {tmdbid=284110}/Season 1'", command_text)
+        self.assertIn("--updated-path '/example/service/strm/series/主角 (2026) {tmdbid=284110}/Season 01'", command_text)
+        self.assertNotIn("--updated-path '/example/host/strm", command_text)
+
     def test_cli_writes_finalize_plan_with_expected_updates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

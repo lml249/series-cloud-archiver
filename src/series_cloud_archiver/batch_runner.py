@@ -378,6 +378,9 @@ def apply_finalize_expected_updates(
     expected_update_plan: Dict[str, object],
     *,
     limit_to_updates: bool = True,
+    host_strm_root: str = "",
+    mp_strm_root: str = "",
+    service_strm_root: str = "",
 ) -> Dict[str, object]:
     """Return a new finalize plan with reviewed expected episode updates applied.
 
@@ -386,6 +389,8 @@ def apply_finalize_expected_updates(
     """
 
     updates = _ready_expected_updates(expected_update_plan)
+    source_settings = finalize_plan.get("settings") if isinstance(finalize_plan.get("settings"), dict) else {}
+    effective_host_strm_root = host_strm_root or str(source_settings.get("host_strm_root") or "")
     rows: List[Dict[str, object]] = []
     applied = 0
     skipped = 0
@@ -403,7 +408,15 @@ def apply_finalize_expected_updates(
             if not limit_to_updates:
                 rows.append(dict(item))
             continue
-        rows.append(_finalize_item_with_expected_update(item, update))
+        rows.append(
+            _finalize_item_with_expected_update(
+                item,
+                update,
+                host_strm_root=effective_host_strm_root,
+                mp_strm_root=mp_strm_root,
+                service_strm_root=service_strm_root,
+            )
+        )
         applied += 1
 
     status_counts = Counter(str(row.get("status") or "") for row in rows)
@@ -414,6 +427,9 @@ def apply_finalize_expected_updates(
             "limit_to_updates": limit_to_updates,
             "applied_expected_update_items": applied,
             "skipped_expected_update_items": skipped,
+            "expected_update_host_strm_root": effective_host_strm_root,
+            "expected_update_mp_strm_root": mp_strm_root,
+            "expected_update_service_strm_root": service_strm_root,
         }
     )
     return {
@@ -592,7 +608,14 @@ def _finalize_identity_key(item: Dict[str, object]) -> Tuple[int, int]:
     return (int(item.get("tmdbid") or 0), int(item.get("season") or 0))
 
 
-def _finalize_item_with_expected_update(item: Dict[str, object], update: Dict[str, object]) -> Dict[str, object]:
+def _finalize_item_with_expected_update(
+    item: Dict[str, object],
+    update: Dict[str, object],
+    *,
+    host_strm_root: str = "",
+    mp_strm_root: str = "",
+    service_strm_root: str = "",
+) -> Dict[str, object]:
     row = dict(item)
     episodes = _int_list(update.get("new_expected_episodes"))
     expected_count = int(update.get("new_expected_episode_count") or len(episodes))
@@ -607,6 +630,15 @@ def _finalize_item_with_expected_update(item: Dict[str, object], update: Dict[st
         "source_status": str(update.get("status") or ""),
         "method": "finalize_remediation_expected_update",
     }
+    applied_paths = _apply_finalize_update_paths(
+        row,
+        update,
+        host_strm_root=host_strm_root,
+        mp_strm_root=mp_strm_root,
+        service_strm_root=service_strm_root,
+    )
+    if applied_paths:
+        row["expected_episode_update"]["applied_paths"] = applied_paths
     if row.get("status") == "planned_finalize":
         context = row.get("command_context") if isinstance(row.get("command_context"), dict) else {}
         row["commands"] = _finalize_commands(
@@ -629,6 +661,44 @@ def _finalize_item_with_expected_update(item: Dict[str, object], update: Dict[st
             ),
         )
     return row
+
+
+def _apply_finalize_update_paths(
+    row: Dict[str, object],
+    update: Dict[str, object],
+    *,
+    host_strm_root: str = "",
+    mp_strm_root: str = "",
+    service_strm_root: str = "",
+) -> Dict[str, str]:
+    applied: Dict[str, str] = {}
+    cloud_season_path = str(update.get("cloud_season_path") or update.get("cloud_media_path") or "").rstrip("/")
+    if cloud_season_path:
+        row["cloud_media_path"] = cloud_season_path
+        row["strm_target_prefix"] = cloud_season_path
+        row["required_target_prefix"] = cloud_season_path
+        title_path = _cloud_title_path_from_cloud_path(cloud_season_path)
+        if title_path:
+            row["cloud_title_path"] = title_path
+        applied["cloud_season_path"] = cloud_season_path
+
+    update_strm_root = str(update.get("strm_root") or "").rstrip("/")
+    if update_strm_root:
+        row["strm_root"] = update_strm_root
+        applied["strm_root"] = update_strm_root
+
+    effective_host_root = host_strm_root
+    if mp_strm_root:
+        mp_root = _map_strm_root(str(row.get("strm_root") or ""), effective_host_root, mp_strm_root)
+        row["mp_strm_root"] = mp_root
+        applied["mp_strm_root"] = mp_root
+
+    if service_strm_root:
+        service_root = _map_strm_root(str(row.get("strm_root") or ""), effective_host_root, service_strm_root)
+        row["service_strm_root"] = service_root
+        applied["service_strm_root"] = service_root
+
+    return applied
 
 
 def _finalize_exception_row(item: Dict[str, object], output_dir: Path, exc: Exception) -> Dict[str, object]:

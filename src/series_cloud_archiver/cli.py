@@ -852,6 +852,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep finalize rows that do not have an expected update; default outputs only updated rows",
     )
+    batch_finalize_apply_parser.add_argument(
+        "--host-strm-root",
+        default="",
+        help="Host STRM root for remapping updated plan paths; defaults to the source finalize-plan setting",
+    )
+    batch_finalize_apply_parser.add_argument(
+        "--mp-strm-root",
+        default="",
+        help="MoviePilot visible STRM root to write into the updated plan",
+    )
+    batch_finalize_apply_parser.add_argument(
+        "--service-strm-root",
+        default="",
+        help="Emby/service visible STRM root to write into the updated plan",
+    )
     batch_finalize_apply_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     batch_finalize_apply_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
@@ -2945,6 +2960,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             finalize_plan,
             expected_update_plan,
             limit_to_updates=not args.include_unmatched,
+            host_strm_root=args.host_strm_root,
+            mp_strm_root=args.mp_strm_root,
+            service_strm_root=args.service_strm_root,
         )
         rendered = render_batch_finalize_plan(report, args.format)
         if args.output:
