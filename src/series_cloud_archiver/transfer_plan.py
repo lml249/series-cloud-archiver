@@ -671,15 +671,23 @@ def _share_search_candidate(row: Dict[str, object], transfer_item: Dict[str, obj
         reasons.append("title_token_overlap")
     else:
         blockers.append("title_not_matched")
+    if "possible_chinese_subtitle_mismatch" not in blockers and _has_chinese_subtitle_drift(
+        str(transfer_item.get("title") or ""),
+        title,
+    ):
+        blockers.append("possible_chinese_subtitle_mismatch")
 
     episodes = _episode_numbers_from_text(title)
     missing_expected = [episode for episode in expected_episodes if episode not in episodes] if expected_episodes and episodes else []
     unexpected_episodes = [episode for episode in episodes if expected_episodes and episode not in expected_episodes]
-    if expected_episodes and episodes and not missing_expected:
+    if expected_episodes and episodes and not missing_expected and not unexpected_episodes:
         score += 25
         reasons.append("explicit_episodes_cover_expected")
     elif expected_episodes and episodes:
-        blockers.append("missing_expected_episodes")
+        if missing_expected:
+            blockers.append("missing_expected_episodes")
+        if unexpected_episodes:
+            blockers.append("unexpected_episodes")
     elif expected_count and len(episodes) >= expected_count:
         score += 25
         reasons.append("episode_count_covers_expected")
