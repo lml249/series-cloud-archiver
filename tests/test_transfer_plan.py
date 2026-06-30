@@ -151,6 +151,19 @@ class TransferPlanTest(unittest.TestCase):
 
         self.assertEqual(keywords, ["Demo Show"])
 
+    def test_search_keywords_keep_numeric_cjk_titles(self) -> None:
+        keywords = search_keywords_for_item(
+            {
+                "title": "9号秘事",
+                "season": 3,
+                "titles": ["Inside.No.9.S03.1080p.BluRay"],
+                "source_paths": ["/example/library/9号秘事 (2014) {tmdbid=61746}/Season 03"],
+            }
+        )
+
+        self.assertIn("9号秘事", keywords)
+        self.assertNotIn("号秘事", keywords)
+
     def test_renders_markdown_with_safety_note(self) -> None:
         plan = {
             "mode": "readonly-mv3-transfer-plan",

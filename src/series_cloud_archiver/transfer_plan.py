@@ -58,7 +58,7 @@ YEAR_SUFFIX_PATTERN = re.compile(r"\(\d{4}\)")
 YEAR_VALUE_PATTERN = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 SEASON_TOKEN_PATTERN = re.compile(r"(?i)^s\d{1,2}$")
 EPISODE_TOKEN_PATTERN = re.compile(r"(?i)^e\d{1,3}$")
-CJK_TITLE_PATTERN = re.compile(r"[\u4e00-\u9fff]+(?:[·・][\u4e00-\u9fff]+)*")
+CJK_TITLE_PATTERN = re.compile(r"(?:[0-9０-９]+)?[\u4e00-\u9fff]+(?:[0-9０-９]+|[·・][\u4e00-\u9fff]+|[\u4e00-\u9fff]+)*")
 TV_SIGNAL_PATTERN = re.compile(
     r"(?i)(\bS\d{1,2}\b|\bS\d{1,2}\s*[-~_]\s*S?\d{1,2}\b|\bE\d{1,3}\b|第\s*\d{1,3}\s*[季集话話]|全\s*\d{1,4}\s*[集话話]|全集|完结|complete)"
 )
