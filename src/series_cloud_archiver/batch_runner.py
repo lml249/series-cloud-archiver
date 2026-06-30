@@ -541,11 +541,12 @@ def _run_finalize_item(
     planned_required_prefix = str(item.get("required_target_prefix") or "")
     forbidden_prefixes = _string_list(item.get("forbidden_target_prefixes"))
     planned_cloud_title_path = str(item.get("cloud_title_path") or "").rstrip("/")
+    actual_required_prefix = str(item.get("strm_target_prefix") or "").rstrip("/")
     derived_required_prefix = _cloud_target_prefix_from_strm_root(strm_root)
     derived_cloud_title_path = _cloud_title_path_from_strm_root(strm_root)
-    required_prefix = derived_required_prefix or planned_required_prefix
-    cloud_title_path = derived_cloud_title_path or planned_cloud_title_path
-    cloud_season_path = derived_required_prefix or str(item.get("cloud_media_path") or "").rstrip("/") or required_prefix
+    required_prefix = actual_required_prefix or derived_required_prefix or planned_required_prefix
+    cloud_title_path = _cloud_title_path_from_cloud_path(actual_required_prefix) or derived_cloud_title_path or planned_cloud_title_path
+    cloud_season_path = actual_required_prefix or derived_required_prefix or str(item.get("cloud_media_path") or "").rstrip("/") or required_prefix
     if cloud_season_path and not _cloud_path_looks_like_season(cloud_season_path):
         cloud_season_path = f"{cloud_season_path}/Season {season}"
     report_prefix = str((item.get("command_context") or {}).get("report_prefix") if isinstance(item.get("command_context"), dict) else "") or _report_prefix(title, tmdbid, season)
@@ -563,6 +564,7 @@ def _run_finalize_item(
         "cloud_title_path": cloud_title_path,
         "cloud_season_path": cloud_season_path,
         "required_target_prefix": required_prefix,
+        "strm_target_prefix": actual_required_prefix,
         "planned_cloud_title_path": planned_cloud_title_path,
         "planned_required_target_prefix": planned_required_prefix,
         "stages": [],
@@ -1027,7 +1029,8 @@ def _batch_item(
     strm_root = _strm_root_from_cloud_item(cloud_item, host_strm_root)
     if tmdbid <= 0 and strm_root:
         tmdbid = _tmdbid_from_text(strm_root)
-    cloud_media_path = _cloud_media_path(cloud_root, title, tmdbid, season)
+    strm_target_prefix = str(cloud_item.get("strm_target_prefix") or "").rstrip("/")
+    cloud_media_path = strm_target_prefix or _cloud_media_path(cloud_root, title, tmdbid, season)
 
     blockers: List[str] = []
     review_reasons: List[str] = []
@@ -1052,7 +1055,7 @@ def _batch_item(
                 emby_strm_root=_map_strm_root(strm_root, host_strm_root, emby_strm_root),
                 source_paths=source_paths,
                 env_file=env_file,
-                required_target_prefix=required_target_prefix,
+                required_target_prefix=strm_target_prefix or required_target_prefix,
                 forbidden_target_prefixes=forbidden_target_prefixes,
             )
     elif status == "cloud_strm_not_found":
@@ -1128,6 +1131,7 @@ def _batch_item(
         "cleanup_preview_blockers": _string_list(cleanup_preview.get("blockers")) + _string_list(cleanup_preview.get("execution_blockers")) if cleanup_preview else [],
         "strm_root": strm_root,
         "cloud_media_path": cloud_media_path,
+        "strm_target_prefix": strm_target_prefix,
         "review_reasons": sorted(set(review_reasons)),
         "blockers": sorted(set(blockers)),
         "next_actions": next_actions,
@@ -1289,9 +1293,10 @@ def _finalize_plan_row(
     cloud_season_path = str(item.get("cloud_media_path") or "")
     planned_cloud_title_path = _cloud_title_path_from_item(item, cloud_root)
     strm_root = str(item.get("strm_root") or "") or _host_strm_path_from_cloud_title(planned_cloud_title_path, host_strm_root)
+    actual_required_prefix = str(item.get("strm_target_prefix") or "").rstrip("/")
     derived_cloud_season_path = _cloud_target_prefix_from_strm_root(strm_root)
-    cloud_title_path = _cloud_title_path_from_strm_root(strm_root) or planned_cloud_title_path
-    cloud_required_prefix = required_target_prefix or derived_cloud_season_path or cloud_season_path or cloud_title_path
+    cloud_title_path = _cloud_title_path_from_cloud_path(actual_required_prefix) or _cloud_title_path_from_strm_root(strm_root) or planned_cloud_title_path
+    cloud_required_prefix = required_target_prefix or actual_required_prefix or derived_cloud_season_path or cloud_season_path or cloud_title_path
     mp_root = _map_strm_root(strm_root, host_strm_root, mp_strm_root) if mp_strm_root else _map_strm_root(strm_root, host_strm_root, service_strm_root)
     service_root = _map_strm_root(strm_root, host_strm_root, service_strm_root)
 
@@ -1362,6 +1367,7 @@ def _finalize_plan_row(
         "service_strm_root": service_root,
         "cloud_title_path": cloud_title_path,
         "cloud_media_path": cloud_season_path,
+        "strm_target_prefix": actual_required_prefix,
         "required_target_prefix": cloud_required_prefix,
         "forbidden_target_prefixes": list(forbidden_target_prefixes),
         "commands": commands,
@@ -1791,6 +1797,12 @@ def _cloud_target_prefix_from_strm_root(strm_root: str, cloud_root: str = DEFAUL
 
 def _cloud_title_path_from_strm_root(strm_root: str, cloud_root: str = DEFAULT_CLOUD_ROOT) -> str:
     cloud_path = _cloud_target_prefix_from_strm_root(strm_root, cloud_root=cloud_root)
+    if not cloud_path:
+        return ""
+    return _cloud_title_path_from_cloud_path(cloud_path)
+
+
+def _cloud_title_path_from_cloud_path(cloud_path: str) -> str:
     if not cloud_path:
         return ""
     for season_pattern in (r"/Season\s*0?\d+$", r"/S0?\d+$", r"/第\s*\d+\s*季$"):

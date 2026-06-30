@@ -12,6 +12,11 @@ def touch(path: Path) -> None:
     path.write_text("http://example.invalid/redacted", encoding="utf-8")
 
 
+def write_strm(path: Path, target: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(target, encoding="utf-8")
+
+
 def candidate(title: str, tmdbid: int, season: int, episodes: List[int]) -> dict:
     return {
         "title": title,
@@ -69,6 +74,23 @@ class CloudCheckTest(unittest.TestCase):
             self.assertEqual(result.total_candidate_groups, 1)
             self.assertEqual(result.items[0].candidate_count, 2)
             self.assertEqual(result.items[0].status, "cloud_strm_complete")
+
+    def test_records_real_strm_target_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm"
+            for episode in [1, 2]:
+                write_strm(
+                    root / "series" / "西部世界 (2016) {tmdbid=63247}" / "Season 02" / f"Westworld S02E{episode:02d}.strm",
+                    f"https://mv3.example/redirect?path=/organized-root/Westworld%20(2016)/Season%202/Westworld.S02E{episode:02d}.mkv&code=redacted",
+                )
+            report = {"candidates": [candidate("西部世界", 63247, 2, [1, 2])]}
+
+            result = cloud_check_from_scan_report(report, [str(root)])
+
+            item = result.items[0]
+            self.assertEqual(item.status, "cloud_strm_complete")
+            self.assertEqual(item.strm_target_prefix, "/organized-root/Westworld (2016)/Season 2")
+            self.assertEqual(item.strm_target_prefixes, ["/organized-root/Westworld (2016)/Season 2"])
 
     def test_can_use_title_season_match_when_candidate_lacks_tmdb(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

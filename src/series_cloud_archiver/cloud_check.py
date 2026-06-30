@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import urllib.parse
 from collections import Counter
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
@@ -125,9 +126,12 @@ def _build_strm_index(
                 if not tmdbid or not season or not episode:
                     continue
                 key = (tmdbid, season)
-                entry = index.setdefault(key, {"episodes": set(), "paths": [], "tokens": set()})
+                entry = index.setdefault(key, {"episodes": set(), "paths": [], "tokens": set(), "target_prefixes": set()})
                 entry["episodes"].add(episode)
                 entry["tokens"].update(_title_tokens(str(path)))
+                target_prefix = _strm_target_season_prefix(path)
+                if target_prefix:
+                    entry["target_prefixes"].add(target_prefix)
                 paths = entry["paths"]
                 if isinstance(paths, list) and len(paths) < 5:
                     paths.append(str(path))
@@ -206,6 +210,8 @@ def _check_group(
     cloud_entry, match_method = _find_cloud_entry(group, index)
     cloud_episodes = sorted(cloud_entry["episodes"]) if cloud_entry else []
     strm_paths_sample = list(cloud_entry["paths"]) if cloud_entry else []
+    strm_target_prefixes = sorted(cloud_entry.get("target_prefixes", set())) if cloud_entry else []
+    strm_target_prefix = strm_target_prefixes[0] if len(strm_target_prefixes) == 1 else ""
     missing = [episode for episode in expected_episodes if episode not in cloud_episodes]
     extra = [episode for episode in cloud_episodes if expected_episodes and episode not in expected_episodes]
 
@@ -257,6 +263,8 @@ def _check_group(
         source_paths=sorted(path for path in group["source_paths"] if path),
         search_keywords=_merge_keywords([str(group.get("title") or "")], group.get("search_keywords", [])),
         strm_paths_sample=strm_paths_sample,
+        strm_target_prefixes=strm_target_prefixes,
+        strm_target_prefix=strm_target_prefix,
     )
 
 
@@ -491,6 +499,48 @@ def _episode_from_text(text: str) -> int:
         if match:
             return int(match.group("episode"))
     return 0
+
+
+def _strm_target_season_prefix(path: Path) -> str:
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    target = _strm_target_path(content)
+    return _season_prefix_from_target(target)
+
+
+def _strm_target_path(content: str) -> str:
+    parsed = urllib.parse.urlparse(content)
+    if parsed.query:
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        for key in ("path", "file", "target"):
+            values = query.get(key)
+            if values:
+                return _normalize_cloud_target(values[0])
+    if parsed.scheme and parsed.netloc:
+        return _normalize_cloud_target(urllib.parse.unquote(parsed.path))
+    return _normalize_cloud_target(content)
+
+
+def _season_prefix_from_target(target: str) -> str:
+    clean = _normalize_cloud_target(target)
+    if not clean:
+        return ""
+    match = re.search(r"(?i)^(.+/(?:Season\s*0?\d+|S0?\d+|第\s*\d+\s*季))(?:/.*)?$", clean)
+    if match:
+        return _normalize_cloud_target(match.group(1))
+    parent = str(Path(clean).parent)
+    return "" if parent == "." else _normalize_cloud_target(parent)
+
+
+def _normalize_cloud_target(value: str) -> str:
+    text = urllib.parse.unquote(str(value or "")).strip()
+    if not text:
+        return ""
+    text = re.sub(r"\\+", "/", text)
+    text = re.sub(r"/+", "/", text)
+    return text.rstrip("/")
 
 
 def _compact(text: str) -> str:

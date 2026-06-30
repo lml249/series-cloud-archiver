@@ -136,6 +136,8 @@ class CloudCheckItem:
     source_paths: List[str]
     search_keywords: List[str]
     strm_paths_sample: List[str]
+    strm_target_prefixes: List[str] = field(default_factory=list)
+    strm_target_prefix: str = ""
 
 
 @dataclass
