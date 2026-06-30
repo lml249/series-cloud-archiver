@@ -175,8 +175,11 @@ def _run_transfer_item(
         "receive_ok": False,
         "browse_ok": False,
         "organize_ok": False,
+        "organize_request_ok": False,
+        "organize_recovered_after_request_failure": False,
         "post_verify_ok": False,
         "blockers": [],
+        "warnings": [],
         "stage_reports": {},
     }
     blockers = _preflight_blockers(item, target_path, organize_target_dir, strm_dir)
@@ -257,11 +260,7 @@ def _run_transfer_item(
     organize_path = _stage_report_path(output_dir, prefix, "organize-transfer")
     _write_json(organize_path, organize_report)
     row["stage_reports"]["organize_transfer"] = str(organize_path)
-    row["organize_ok"] = bool(organize_report.get("ok"))
-    if not row["organize_ok"]:
-        row["status"] = "failed_organize_transfer"
-        row["blockers"] = _report_blockers(organize_report) or ["organize_transfer_failed"]
-        return row
+    row["organize_request_ok"] = bool(organize_report.get("ok"))
 
     organized_browse, organized_resolution_reports = _browse_organized_season(
         actions,
@@ -304,9 +303,17 @@ def _run_transfer_item(
         expected_max=expected_max,
     )
     row["post_verify_ok"] = not verify_blockers
+    request_blockers = _report_blockers(organize_report)
+    if not row["organize_request_ok"] and not verify_blockers:
+        row["organize_ok"] = True
+        row["organize_recovered_after_request_failure"] = True
+        row["warnings"] = sorted(set(_string_list(row.get("warnings")) + request_blockers))
+    else:
+        row["organize_ok"] = bool(row["organize_request_ok"])
+
     if verify_blockers:
-        row["status"] = "failed_post_organize_verify"
-        row["blockers"] = verify_blockers
+        row["status"] = "failed_post_organize_verify" if row["organize_request_ok"] else "failed_organize_transfer"
+        row["blockers"] = sorted(set((request_blockers or ["organize_transfer_failed"]) + verify_blockers))
         return row
 
     row["status"] = "organized_requires_finalize"

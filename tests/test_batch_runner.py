@@ -133,11 +133,13 @@ class TransferFakeActions:
         duplicate_after_organize: bool = False,
         staging_remains: bool = False,
         organized_title_with_year: bool = False,
+        organize_fails_after_side_effect: bool = False,
     ) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.duplicate_after_organize = duplicate_after_organize
         self.staging_remains = staging_remains
         self.organized_title_with_year = organized_title_with_year
+        self.organize_fails_after_side_effect = organize_fails_after_side_effect
         self.organized = False
 
     def receive_share(self, *args: object, **kwargs: object) -> dict:
@@ -263,6 +265,16 @@ class TransferFakeActions:
     def organize_transfer(self, *args: object, **kwargs: object) -> dict:
         self.calls.append(("organize", {"args": list(args), "kwargs": kwargs}))
         self.organized = True
+        if self.organize_fails_after_side_effect:
+            return {
+                "mode": "mv3-organize-transfer-result",
+                "ok": False,
+                "source_path": "/未整理/折腰",
+                "target_dir": kwargs.get("target_dir"),
+                "strm_dir": kwargs.get("strm_dir"),
+                "blockers": ["mv3_transfer_request_failed"],
+                "warnings": ["mv3_transfer_request_failed:timeout:timed out"],
+            }
         return {
             "mode": "mv3-organize-transfer-result",
             "ok": True,
@@ -395,6 +407,37 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(actions.calls[4][1]["kwargs"]["path"], "/未整理/折腰")
         self.assertEqual(report["items"][0]["status"], "organized_requires_finalize")
         self.assertEqual(len(stage_files), 5)
+
+    def test_batch_transfer_run_recovers_when_organize_times_out_but_post_verify_passes(self) -> None:
+        actions = TransferFakeActions(organize_fails_after_side_effect=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            preview = Path(tmp) / "preview.json"
+            preview.write_text(
+                json.dumps({"ok": True, "episodes": list(range(1, 37)), "video_file_count": 36}),
+                encoding="utf-8",
+            )
+            report = run_batch_transfer(
+                self._receive_plan(str(preview)),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(),
+                approve_receive=True,
+                approve_transfer=True,
+                actions=BatchTransferActions(
+                    receive_share=actions.receive_share,
+                    browse_cloud=actions.browse_cloud,
+                    organize_transfer=actions.organize_transfer,
+                ),
+            )
+
+        item = report["items"][0]
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["organized_items"], 1)
+        self.assertEqual(item["status"], "organized_requires_finalize")
+        self.assertFalse(item["organize_request_ok"])
+        self.assertTrue(item["organize_ok"])
+        self.assertTrue(item["organize_recovered_after_request_failure"])
+        self.assertTrue(item["post_verify_ok"])
+        self.assertIn("mv3_transfer_request_failed", item["warnings"])
 
     def test_batch_transfer_run_resolves_organized_folder_by_tmdbid_when_year_is_added(self) -> None:
         actions = TransferFakeActions(organized_title_with_year=True)
