@@ -1177,6 +1177,46 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertNotIn("emby-media-updated", [call[0] for call in actions.calls])
         self.assertNotIn("cloud-hlink-cleanup-execute", [call[0] for call in actions.calls])
 
+    def test_batch_finalize_run_captures_item_exception_and_continues(self) -> None:
+        plan = self._finalize_plan()
+        second = json.loads(json.dumps(plan["items"][0]))
+        second["season"] = 2
+        second["command_context"] = {"report_prefix": "zheyao-296753-s02"}
+        plan["items"].append(second)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            batch_actions = _batch_finalize_actions(actions)
+            calls = {"count": 0}
+
+            def flaky_cloud_duplicate(*args: object, **kwargs: object) -> dict:
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise TimeoutError("timed out")
+                return actions.cloud_duplicate_cleanup(*args, **kwargs)
+
+            batch_actions.cloud_duplicate_cleanup = flaky_cloud_duplicate
+            report = run_batch_finalize(
+                plan,
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=False,
+                continue_on_error=True,
+                actions=batch_actions,
+            )
+            exception_report = Path(tmp) / "zheyao-296753-s01-00-finalize-exception.json"
+            self.assertFalse(report["ok"])
+            self.assertFalse(report["halted"])
+            self.assertEqual(report["processed_items"], 2)
+            self.assertEqual(report["status_counts"]["failed_finalize_exception"], 1)
+            self.assertEqual(report["status_counts"]["cleanup_waiting_for_approval"], 1)
+            self.assertEqual(report["items"][0]["status"], "failed_finalize_exception")
+            self.assertEqual(report["items"][0]["stages"][0]["stage"], "finalize_item_exception")
+            self.assertIn("finalize_item_exception", report["items"][0]["blockers"])
+            self.assertEqual(report["items"][1]["status"], "cleanup_waiting_for_approval")
+            self.assertTrue(exception_report.exists())
+
     def test_batch_finalize_run_continues_after_moviepilot_scrape_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             actions = FinalizeFakeActions()

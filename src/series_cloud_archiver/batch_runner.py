@@ -399,22 +399,25 @@ def run_batch_finalize(
     rows: List[Dict[str, object]] = []
     halted = False
     for item in candidates:
-        row = _run_finalize_item(
-            item,
-            output_dir=output_path,
-            config=config,
-            execute_scrape=execute_scrape,
-            approve_cloud_duplicate_delete=approve_cloud_duplicate_delete,
-            approve_emby_stale_delete=approve_emby_stale_delete,
-            approve_delete=approve_delete,
-            min_seed_days=min_seed_days,
-            cloud_media_storage=cloud_media_storage,
-            timeout=timeout,
-            scrape_timeout=scrape_timeout,
-            nfo_min_chinese_ratio=nfo_min_chinese_ratio,
-            nfo_sample_limit=nfo_sample_limit,
-            actions=actions,
-        )
+        try:
+            row = _run_finalize_item(
+                item,
+                output_dir=output_path,
+                config=config,
+                execute_scrape=execute_scrape,
+                approve_cloud_duplicate_delete=approve_cloud_duplicate_delete,
+                approve_emby_stale_delete=approve_emby_stale_delete,
+                approve_delete=approve_delete,
+                min_seed_days=min_seed_days,
+                cloud_media_storage=cloud_media_storage,
+                timeout=timeout,
+                scrape_timeout=scrape_timeout,
+                nfo_min_chinese_ratio=nfo_min_chinese_ratio,
+                nfo_sample_limit=nfo_sample_limit,
+                actions=actions,
+            )
+        except Exception as exc:  # pragma: no cover - exact exception classes depend on external services
+            row = _finalize_exception_row(item, output_path, exc)
         rows.append(row)
         if row.get("status") not in {"cleanup_executed", "cleanup_waiting_for_approval", "already_cleaned_noop"} and not continue_on_error:
             halted = True
@@ -495,6 +498,58 @@ def render_batch_finalize_run(report: Dict[str, object], output_format: str) -> 
             )
         )
     return "\n".join(lines)
+
+
+def _finalize_exception_row(item: Dict[str, object], output_dir: Path, exc: Exception) -> Dict[str, object]:
+    title = str(item.get("title") or "")
+    tmdbid = int(item.get("tmdbid") or 0)
+    season = int(item.get("season") or 0)
+    context = item.get("command_context") if isinstance(item.get("command_context"), dict) else {}
+    report_prefix = str(context.get("report_prefix") or "") or _report_prefix(title, tmdbid, season)
+    error_type = type(exc).__name__
+    message = str(exc)
+    report = {
+        "mode": "batch-finalize-item-exception",
+        "ok": False,
+        "title": title,
+        "tmdbid": tmdbid,
+        "season": season,
+        "error_type": error_type,
+        "message": message,
+        "blockers": ["finalize_item_exception"],
+        "warnings": [f"{error_type}: {message}" if message else error_type],
+        "safety": "exception captured as a per-item finalize failure; no qBittorrent action or filesystem deletion is performed",
+    }
+    output_path = _stage_report_path(output_dir, report_prefix, "00-finalize-exception")
+    _write_json(output_path, report)
+    return {
+        "status": "failed_finalize_exception",
+        "title": title,
+        "tmdbid": tmdbid,
+        "season": season,
+        "expected_episode_count": int(item.get("expected_episode_count") or 0),
+        "source_paths": _string_list(item.get("source_paths")),
+        "source_qb_hashes": _string_list(item.get("source_qb_hashes")),
+        "hlink_root": str(item.get("hlink_root") or ""),
+        "strm_root": str(item.get("strm_root") or ""),
+        "mp_strm_root": str(item.get("mp_strm_root") or item.get("service_strm_root") or item.get("strm_root") or ""),
+        "service_strm_root": str(item.get("service_strm_root") or item.get("strm_root") or ""),
+        "cloud_title_path": str(item.get("cloud_title_path") or ""),
+        "cloud_season_path": str(item.get("cloud_media_path") or item.get("strm_target_prefix") or ""),
+        "required_target_prefix": str(item.get("strm_target_prefix") or item.get("required_target_prefix") or ""),
+        "blockers": ["finalize_item_exception"],
+        "warnings": [f"{error_type}: {message}" if message else error_type],
+        "stages": [
+            {
+                "stage": "finalize_item_exception",
+                "ok": False,
+                "output": str(output_path),
+                "mode": report["mode"],
+                "blockers": report["blockers"],
+                "warnings": report["warnings"],
+            }
+        ],
+    }
 
 
 def _finalize_run_candidates(finalize_plan: Dict[str, object], title_filters: Sequence[str]) -> List[Dict[str, object]]:
