@@ -300,6 +300,37 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
         self.assertEqual(summary["items"][0]["local_path_existing_count"], 1)
         self.assertIn("local_source_exists_but_mv3_scan_empty", render_extra_source_media_summary(summary, "csv"))
 
+    def test_local_path_summary_detects_cross_season_extra_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "Demo.S03E01.mkv"
+            source.write_text("video", encoding="utf-8")
+            run = {
+                "mode": "readonly-extra-source-media-run",
+                "selected_items": 1,
+                "executed_commands": 1,
+                "items": [
+                    {
+                        "status": "executed",
+                        "executed": True,
+                        "title": "示例剧",
+                        "tmdbid": 123,
+                        "main_season": 1,
+                        "suggested_season": 3,
+                        "episode": 1,
+                        "source_path": str(source),
+                        "diagnostic_summary": {"total": 0, "candidate": 0, "in_library": 0},
+                        "diagnostic_warnings": ["no_scan_items_found"],
+                    }
+                ],
+            }
+
+            summary = build_extra_source_media_local_path_summary([run])
+
+        self.assertEqual(summary["items"][0]["status"], "extra_source_belongs_to_other_season")
+        self.assertEqual(summary["items"][0]["cleanup_gate"], "blocked")
+        self.assertEqual(summary["items"][0]["cross_season_item_count"], 1)
+        self.assertIn("其它 season", summary["items"][0]["next_action"])
+
     def test_summary_clears_when_all_scan_candidates_are_in_library(self) -> None:
         run = {
             "mode": "readonly-extra-source-media-run",
@@ -378,7 +409,7 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["mode"], "readonly-extra-source-media-local-path-summary")
-        self.assertEqual(payload["items"][0]["status"], "local_source_exists_but_mv3_scan_empty")
+        self.assertEqual(payload["items"][0]["status"], "extra_source_belongs_to_other_season")
         self.assertEqual(payload["items"][0]["suggested_seasons"], "2")
         self.assertEqual(payload["items"][0]["episodes"], "3")
 
