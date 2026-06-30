@@ -460,9 +460,13 @@ def _run_finalize_item(
     hlink_root = str(item.get("hlink_root") or "").rstrip("/")
     strm_root = str(item.get("strm_root") or "").rstrip("/")
     service_root = str(item.get("service_strm_root") or strm_root).rstrip("/")
-    required_prefix = str(item.get("required_target_prefix") or "")
+    planned_required_prefix = str(item.get("required_target_prefix") or "")
     forbidden_prefixes = _string_list(item.get("forbidden_target_prefixes"))
-    cloud_title_path = str(item.get("cloud_title_path") or "").rstrip("/")
+    planned_cloud_title_path = str(item.get("cloud_title_path") or "").rstrip("/")
+    derived_required_prefix = _cloud_target_prefix_from_strm_root(strm_root)
+    derived_cloud_title_path = _cloud_title_path_from_strm_root(strm_root)
+    required_prefix = derived_required_prefix or planned_required_prefix
+    cloud_title_path = derived_cloud_title_path or planned_cloud_title_path
     report_prefix = str((item.get("command_context") or {}).get("report_prefix") if isinstance(item.get("command_context"), dict) else "") or _report_prefix(title, tmdbid, season)
 
     row: Dict[str, object] = {
@@ -476,6 +480,8 @@ def _run_finalize_item(
         "service_strm_root": service_root,
         "cloud_title_path": cloud_title_path,
         "required_target_prefix": required_prefix,
+        "planned_cloud_title_path": planned_cloud_title_path,
+        "planned_required_target_prefix": planned_required_prefix,
         "stages": [],
         "blockers": [],
         "warnings": [],
@@ -950,10 +956,12 @@ def _finalize_plan_row(
     expected_count = int(item.get("expected_episode_count") or item.get("expected_count") or 0)
     expected_episodes = _int_list(item.get("expected_episodes"))
     hlink_root = _first_hlink_path(_string_list(item.get("source_paths")))
-    cloud_title_path = _cloud_title_path_from_item(item, cloud_root)
     cloud_season_path = str(item.get("cloud_media_path") or "")
-    cloud_required_prefix = required_target_prefix or cloud_season_path or cloud_title_path
-    strm_root = str(item.get("strm_root") or "") or _host_strm_path_from_cloud_title(cloud_title_path, host_strm_root)
+    planned_cloud_title_path = _cloud_title_path_from_item(item, cloud_root)
+    strm_root = str(item.get("strm_root") or "") or _host_strm_path_from_cloud_title(planned_cloud_title_path, host_strm_root)
+    derived_cloud_season_path = _cloud_target_prefix_from_strm_root(strm_root)
+    cloud_title_path = _cloud_title_path_from_strm_root(strm_root) or planned_cloud_title_path
+    cloud_required_prefix = required_target_prefix or derived_cloud_season_path or cloud_season_path or cloud_title_path
     service_root = _map_strm_root(strm_root, host_strm_root, service_strm_root)
 
     blockers: List[str] = []
@@ -1370,6 +1378,34 @@ def _cloud_title_path_from_item(item: Dict[str, object], cloud_root: str) -> str
     clean_title = _strip_identity_suffix(title).strip() or title or "unknown"
     suffix = f" {{tmdbid={tmdbid}}}" if tmdbid else ""
     return f"{root}/{clean_title}{suffix}" if root else ""
+
+
+def _cloud_target_prefix_from_strm_root(strm_root: str, cloud_root: str = DEFAULT_CLOUD_ROOT) -> str:
+    if not strm_root:
+        return ""
+    normalized = str(strm_root).rstrip("/")
+    marker = "/strm/"
+    if marker not in normalized:
+        return ""
+    suffix = normalized.split(marker, 1)[1].strip("/")
+    if not suffix:
+        return ""
+    root_name = PurePosixPath(cloud_root.rstrip("/") or "/").name
+    if root_name and suffix == root_name:
+        suffix = ""
+    elif root_name and suffix.startswith(root_name + "/"):
+        suffix = suffix[len(root_name) + 1 :]
+    return f"{cloud_root.rstrip('/')}/{suffix}"
+
+
+def _cloud_title_path_from_strm_root(strm_root: str, cloud_root: str = DEFAULT_CLOUD_ROOT) -> str:
+    cloud_path = _cloud_target_prefix_from_strm_root(strm_root, cloud_root=cloud_root)
+    if not cloud_path:
+        return ""
+    for season_pattern in (r"/Season\s*0?\d+$", r"/S0?\d+$", r"/第\s*\d+\s*季$"):
+        if re.search(season_pattern, cloud_path, flags=re.IGNORECASE):
+            return re.sub(season_pattern, "", cloud_path, flags=re.IGNORECASE)
+    return str(PurePosixPath(cloud_path).parent)
 
 
 def _host_strm_path_from_cloud(cloud_media_path: str, mv3_strm_root: str) -> str:

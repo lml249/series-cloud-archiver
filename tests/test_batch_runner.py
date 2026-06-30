@@ -162,6 +162,34 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("Batch Finalize Plan", rendered)
         self.assertIn("折腰", rendered)
 
+    def test_batch_finalize_plan_prefers_strm_derived_cloud_prefix(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "settings": {
+                "cloud_root": "/已整理/series",
+                "host_strm_root": "/volume4/volume4/mv3/strm",
+                "emby_strm_root": "/volume4/mv3/strm",
+            },
+            "items": [
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "兄弟连",
+                    "tmdbid": 4613,
+                    "season": 1,
+                    "expected_episode_count": 10,
+                    "source_paths": ["/volume3/volume3/hlink/TV/兄弟连 (2001) {tmdbid=4613}/Season 01"],
+                    "cloud_media_path": "/已整理/series/兄弟连 {tmdbid=4613}/Season 01",
+                    "strm_root": "/volume4/volume4/mv3/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 1",
+                }
+            ],
+        }
+
+        report = build_batch_finalize_plan(batch_plan, env_file="/safe/.env")
+        item = report["items"][0]
+
+        self.assertEqual(item["cloud_title_path"], "/已整理/series/兄弟连 (2001) {tmdbid=4613}")
+        self.assertEqual(item["required_target_prefix"], "/已整理/series/兄弟连 (2001) {tmdbid=4613}/Season 1")
+
     def test_cli_writes_batch_finalize_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -313,6 +341,40 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertNotIn("/已整理", scrape_call[1]["kwargs"]["strm_path"])
         cleanup_call = next(call for call in actions.calls if call[0] == "cloud-hlink-cleanup-preview")
         self.assertEqual(cleanup_call[1]["expected"]["cloud_media_path"], "/已整理/series/折腰 (2025) {tmdbid=296753}")
+
+    def test_batch_finalize_run_prefers_strm_derived_prefix_over_stale_plan_prefix(self) -> None:
+        plan = self._finalize_plan()
+        plan["items"][0]["title"] = "兄弟连"
+        plan["items"][0]["tmdbid"] = 4613
+        plan["items"][0]["expected_episode_count"] = 10
+        plan["items"][0]["expected_episodes"] = list(range(1, 11))
+        plan["items"][0]["strm_root"] = "/volume4/volume4/mv3/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 1"
+        plan["items"][0]["service_strm_root"] = "/volume4/mv3/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 1"
+        plan["items"][0]["cloud_title_path"] = "/已整理/series/兄弟连 {tmdbid=4613}"
+        plan["items"][0]["required_target_prefix"] = "/已整理/series/兄弟连 {tmdbid=4613}/Season 01"
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            report = run_batch_finalize(
+                plan,
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=False,
+                actions=BatchFinalizeActions(
+                    verify_strm=actions.verify_strm,
+                    scrape_mp_strm=actions.scrape_mp_strm,
+                    audit_nfo_language=actions.audit_nfo_language,
+                    emby_media_updated=actions.emby_media_updated,
+                    cleanup_preview=actions.cleanup_preview,
+                    cleanup_execute=actions.cleanup_execute,
+                ),
+            )
+
+        verify_call = next(call for call in actions.calls if call[0] == "strm-verify")
+        cleanup_call = next(call for call in actions.calls if call[0] == "cloud-hlink-cleanup-preview")
+        self.assertEqual(report["items"][0]["status"], "cleanup_waiting_for_approval")
+        self.assertEqual(verify_call[1]["expected"]["required_target_prefix"], "/已整理/series/兄弟连 (2001) {tmdbid=4613}/Season 1")
+        self.assertEqual(cleanup_call[1]["expected"]["cloud_media_path"], "/已整理/series/兄弟连 (2001) {tmdbid=4613}")
 
     def test_cli_writes_batch_finalize_run_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
