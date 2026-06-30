@@ -288,6 +288,7 @@ def build_batch_finalize_plan(
     rows: List[Dict[str, object]] = []
 
     ready_seen = 0
+    windowed_ready_only = offset > 0 or limit > 0
     for index, item in enumerate(batch_plan.get("items", []), start=1):
         if not isinstance(item, dict):
             continue
@@ -307,6 +308,8 @@ def build_batch_finalize_plan(
                 ready_seen += 1
                 continue
             ready_seen += 1
+        elif windowed_ready_only:
+            continue
         rows.append(row)
         if limit > 0 and sum(1 for candidate in rows if candidate.get("status") == "planned_finalize") >= limit:
             break

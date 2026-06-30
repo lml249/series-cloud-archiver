@@ -1109,6 +1109,55 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(report["processed_items"], 1)
         self.assertEqual(report["items"][0]["title"], "第三部")
 
+    def test_batch_finalize_plan_offset_limit_does_not_append_non_ready_rows(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "title": "第一部",
+                    "tmdbid": 1001,
+                    "season": 1,
+                    "expected_episode_count": 1,
+                    "source_paths": ["/example/local-tv/第一部/Season 1"],
+                    "strm_root": "/example/host/strm/series/第一部 {tmdbid=1001}/Season 1",
+                    "cloud_media_path": "/已整理/series/第一部/Season 1",
+                },
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "title": "第二部",
+                    "tmdbid": 1002,
+                    "season": 1,
+                    "expected_episode_count": 1,
+                    "source_paths": ["/example/local-tv/第二部/Season 1"],
+                    "strm_root": "/example/host/strm/series/第二部 {tmdbid=1002}/Season 1",
+                    "cloud_media_path": "/已整理/series/第二部/Season 1",
+                },
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "待人工复核",
+                    "tmdbid": 2001,
+                    "season": 1,
+                    "expected_episode_count": 1,
+                    "source_paths": ["/example/local-tv/待人工复核/Season 1"],
+                    "strm_root": "/example/host/strm/series/待人工复核 {tmdbid=2001}/Season 1",
+                    "cloud_media_path": "/已整理/series/待人工复核/Season 1",
+                },
+            ],
+        }
+
+        report = build_batch_finalize_plan(
+            batch_plan,
+            host_strm_root="/example/host/strm",
+            service_strm_root="/example/service/strm",
+            offset=1,
+            limit=10,
+        )
+
+        self.assertEqual(report["planned_items"], 1)
+        self.assertEqual(report["finalize_ready_items"], 1)
+        self.assertEqual([(item["title"], item["status"]) for item in report["items"]], [("第二部", "planned_finalize")])
+
     def test_batch_finalize_run_default_waits_for_delete_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             actions = FinalizeFakeActions()
