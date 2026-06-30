@@ -207,12 +207,14 @@ def build_batch_review_report(
     share_preview_reports: Optional[Sequence[Dict[str, object]]] = None,
     transfer_run_reports: Optional[Sequence[Dict[str, object]]] = None,
     finalize_run_reports: Optional[Sequence[Dict[str, object]]] = None,
+    post_cleanup_reports: Optional[Sequence[Dict[str, object]]] = None,
 ) -> Dict[str, object]:
     """Build a readonly human-review report from batch state and run reports."""
 
     preview_by_key = _review_preview_by_identity(share_preview_reports or [])
     transfer_by_key = _review_transfer_by_identity(transfer_run_reports or [])
     finalize_by_key = _review_finalize_by_identity(finalize_run_reports or [])
+    post_cleanup_by_key = _review_post_cleanup_by_identity(post_cleanup_reports or [])
     rows: List[Dict[str, object]] = []
 
     for index, item in enumerate(batch_plan.get("items", []), start=1):
@@ -226,6 +228,7 @@ def build_batch_review_report(
                 preview_by_key.get(key, {}),
                 transfer_by_key.get(key, {}),
                 finalize_by_key.get(key, {}),
+                post_cleanup_by_key.get(key, {}),
             )
         )
 
@@ -241,6 +244,7 @@ def build_batch_review_report(
             "share_preview": len(share_preview_reports or []),
             "transfer_run": len(transfer_run_reports or []),
             "finalize_run": len(finalize_run_reports or []),
+            "post_cleanup": len(post_cleanup_reports or []),
         },
         "items": rows,
         "safety": (
@@ -1899,17 +1903,118 @@ def _review_finalize_rank(item: Dict[str, object]) -> Tuple[int, int, int]:
     return status_rank, ok_stages, -int(item.get("finalize_report_index") or 0)
 
 
+def _review_post_cleanup_by_identity(reports: Sequence[Dict[str, object]]) -> Dict[Tuple[int, int], Dict[str, object]]:
+    result: Dict[Tuple[int, int], Dict[str, object]] = {}
+    for report_index, report in enumerate(reports, start=1):
+        if not isinstance(report, dict):
+            continue
+        for item in _review_post_cleanup_items(report):
+            key = _review_identity_key(item)
+            if key == (0, 0):
+                continue
+            enriched = dict(item)
+            enriched["post_cleanup_report_index"] = report_index
+            existing = result.get(key)
+            if existing is None or _review_post_cleanup_rank(enriched) > _review_post_cleanup_rank(existing):
+                result[key] = enriched
+    return result
+
+
+def _review_post_cleanup_items(report: Dict[str, object]) -> List[Dict[str, object]]:
+    raw_items = report.get("items")
+    if isinstance(raw_items, list):
+        return [_normalize_post_cleanup_item(item) for item in raw_items if isinstance(item, dict)]
+    return [_normalize_post_cleanup_item(report)]
+
+
+def _normalize_post_cleanup_item(item: Dict[str, object]) -> Dict[str, object]:
+    normalized = dict(item)
+    title = str(normalized.get("title") or "")
+    title_tmdb = _tmdbid_from_text(title)
+    title_season = _season_from_text(title)
+    if not int(normalized.get("tmdbid") or 0) and title_tmdb:
+        normalized["tmdbid"] = title_tmdb
+    if not int(normalized.get("season") or normalized.get("season_number") or 0) and title_season:
+        normalized["season"] = title_season
+    if not normalized.get("season") and normalized.get("season_number"):
+        normalized["season"] = normalized.get("season_number")
+    if not normalized.get("status"):
+        normalized["status"] = _post_cleanup_status(normalized)
+    return normalized
+
+
+def _post_cleanup_status(item: Dict[str, object]) -> str:
+    mode = str(item.get("mode") or "")
+    if mode == "cloud-hlink-cleanup-execute":
+        return "cleanup_executed_verified" if bool(item.get("ok")) else "cleanup_execute_failed"
+    if mode in {"mp-cleanup-verify", "strm-verify", "strm-nfo-language-audit", "emby-refresh-verify", "emby-media-updated"}:
+        return f"{mode}_ok" if bool(item.get("ok")) else f"{mode}_failed"
+    return str(item.get("status") or "")
+
+
+def _tmdbid_from_text(value: str) -> int:
+    match = re.search(r"\{tmdbid=(\d+)\}", value)
+    return int(match.group(1)) if match else 0
+
+
+def _season_from_text(value: str) -> int:
+    match = re.search(r"\bSeason\s*0?(\d+)\b", value, flags=re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"\bS0?(\d+)\b", value, flags=re.IGNORECASE)
+    return int(match.group(1)) if match else 0
+
+
+def _review_post_cleanup_rank(item: Dict[str, object]) -> Tuple[int, int, int]:
+    status = str(item.get("status") or "")
+    status_rank = {
+        "cleanup_executed_verified": 6,
+        "cleanup_executed": 5,
+        "manual_review_required": 4,
+    }.get(status, 2 if bool(item.get("ok")) else 1)
+    gate_score = sum(
+        1
+        for key, expected in (
+            ("qb_remaining", "0"),
+            ("hlink_exists", "false"),
+            ("source_exists", "false"),
+            ("strm_ok", "true"),
+            ("nfo_ok", "true"),
+            ("emby_ok", "true"),
+        )
+        if str(item.get(key) or "").lower() == expected
+    )
+    return status_rank, gate_score, -int(item.get("post_cleanup_report_index") or 0)
+
+
+def _post_cleanup_verified(item: Dict[str, object]) -> bool:
+    if not item:
+        return False
+    if str(item.get("status") or "") != "cleanup_executed_verified":
+        return False
+    expected_values = {
+        "qb_remaining": "0",
+        "hlink_exists": "false",
+        "source_exists": "false",
+        "strm_ok": "true",
+        "nfo_ok": "true",
+        "emby_ok": "true",
+    }
+    return all(str(item.get(key) or "").lower() == expected for key, expected in expected_values.items())
+
+
 def _batch_review_row(
     source_index: int,
     item: Dict[str, object],
     preview_item: Dict[str, object],
     transfer_item: Dict[str, object],
     finalize_item: Dict[str, object],
+    post_cleanup_item: Dict[str, object],
 ) -> Dict[str, object]:
     diagnostics = item.get("candidate_diagnostics") if isinstance(item.get("candidate_diagnostics"), dict) else {}
     best_candidate = diagnostics.get("best_candidate") if isinstance(diagnostics.get("best_candidate"), dict) else {}
     recommended = item.get("recommended_candidate") if isinstance(item.get("recommended_candidate"), dict) else {}
-    decision = _review_decision(item, preview_item, transfer_item, finalize_item)
+    decision = _review_decision(item, preview_item, transfer_item, finalize_item, post_cleanup_item)
     reasons = sorted(
         set(
             _string_list(item.get("review_reasons"))
@@ -1917,6 +2022,7 @@ def _batch_review_row(
             + _string_list(item.get("cleanup_preview_blockers"))
             + _string_list(transfer_item.get("blockers"))
             + _string_list(finalize_item.get("blockers"))
+            + _review_post_cleanup_reasons(post_cleanup_item)
             + _review_preview_reasons(preview_item, decision)
             + _review_transfer_reasons(transfer_item)
         )
@@ -1963,6 +2069,9 @@ def _batch_review_row(
         "finalize_blockers": "; ".join(_string_list(finalize_item.get("blockers"))) if finalize_item else "",
         "finalize_cleanup_unlinked_videos": " | ".join(_string_list(finalize_item.get("cleanup_unlinked_video_sample"))) if finalize_item else "",
         "finalize_cleanup_blocked_source_roots": _blocked_source_roots_cell(finalize_item.get("cleanup_blocked_source_roots")) if finalize_item else "",
+        "post_cleanup_status": post_cleanup_item.get("status", "") if post_cleanup_item else "",
+        "post_cleanup_result": post_cleanup_item.get("result_zh", "") if post_cleanup_item else "",
+        "post_cleanup_reports": post_cleanup_item.get("reports", "") if post_cleanup_item else "",
         "cloud_media_path": item.get("cloud_media_path", ""),
         "strm_root": item.get("strm_root", ""),
         "source_paths": " | ".join(_string_list(item.get("source_paths"))),
@@ -1974,7 +2083,11 @@ def _review_decision(
     preview_item: Dict[str, object],
     transfer_item: Dict[str, object],
     finalize_item: Dict[str, object],
+    post_cleanup_item: Dict[str, object],
 ) -> str:
+    if _post_cleanup_verified(post_cleanup_item):
+        return "done_cleanup_verified"
+
     finalize_status = str(finalize_item.get("status") or "")
     if finalize_status == "cleanup_executed":
         return "done_cleanup_executed"
@@ -2030,7 +2143,22 @@ def _review_transfer_reasons(transfer_item: Dict[str, object]) -> List[str]:
     return reasons
 
 
+def _review_post_cleanup_reasons(post_cleanup_item: Dict[str, object]) -> List[str]:
+    if not post_cleanup_item:
+        return []
+    reasons = _string_list(post_cleanup_item.get("blockers"))
+    result = str(post_cleanup_item.get("result_zh") or "")
+    if result:
+        reasons.append(result)
+    status = str(post_cleanup_item.get("status") or "")
+    if status and status != "cleanup_executed_verified":
+        reasons.append(status)
+    return reasons
+
+
 def _review_next_action(decision: str, reasons: Sequence[str]) -> str:
+    if decision == "done_cleanup_verified":
+        return "已完成并复核清理，保留报告归档"
     if decision == "done_cleanup_executed":
         return "已完成清理，保留报告归档"
     if decision == "ready_for_cleanup_approval":
@@ -2378,6 +2506,9 @@ def _render_review_csv(report: Dict[str, object]) -> str:
         "finalize_blockers",
         "finalize_cleanup_unlinked_videos",
         "finalize_cleanup_blocked_source_roots",
+        "post_cleanup_status",
+        "post_cleanup_result",
+        "post_cleanup_reports",
         "cloud_media_path",
         "strm_root",
         "source_paths",

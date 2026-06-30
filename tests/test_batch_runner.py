@@ -1670,12 +1670,77 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("manual_review_transfer_failed", rendered)
         self.assertIn("ywzc-share-receive", rendered)
 
+    def test_batch_review_report_uses_post_cleanup_summary_as_verified_done(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "state": "planned_validation_then_cleanup",
+                    "title": "爱情怎么翻译？ (2026) {tmdbid=229891} Season 01",
+                    "tmdbid": 229891,
+                    "season": 1,
+                    "cloud_status": "cloud_strm_complete",
+                    "expected_episode_count": 12,
+                }
+            ],
+        }
+        finalize_report = {
+            "mode": "batch-finalize-run",
+            "items": [
+                {
+                    "status": "cleanup_waiting_for_approval",
+                    "title": "爱情怎么翻译？ (2026) {tmdbid=229891} Season 01",
+                    "tmdbid": 229891,
+                    "season": 1,
+                    "stages": [{"stage": "cloud_hlink_cleanup_preview", "ok": True}],
+                }
+            ],
+        }
+        post_cleanup_report = {
+            "mode": "cleanup-summary-20260630",
+            "items": [
+                {
+                    "title": "爱情怎么翻译？ (2026) {tmdbid=229891} Season 01",
+                    "status": "cleanup_executed_verified",
+                    "result_zh": "已完成清理：qB 种子不存在；本地 hlink/source 均不存在；STRM 12/12 完整；NFO 中文审计通过；Emby 验证通过",
+                    "qb_remaining": "0",
+                    "hlink_exists": "false",
+                    "source_exists": "false",
+                    "strm_ok": "true",
+                    "nfo_ok": "true",
+                    "emby_ok": "true",
+                    "reports": "cloud-hlink-cleanup-execute-love.json; post-cleanup-emby-love.json",
+                }
+            ],
+        }
+
+        report = build_batch_review_report(
+            batch_plan,
+            finalize_run_reports=[finalize_report],
+            post_cleanup_reports=[post_cleanup_report],
+        )
+
+        self.assertEqual(report["input_report_counts"]["post_cleanup"], 1)
+        self.assertEqual(report["decision_counts"]["done_cleanup_verified"], 1)
+        item = report["items"][0]
+        self.assertEqual(item["decision"], "done_cleanup_verified")
+        self.assertEqual(item["finalize_status"], "cleanup_waiting_for_approval")
+        self.assertEqual(item["post_cleanup_status"], "cleanup_executed_verified")
+        self.assertIn("本地 hlink/source 均不存在", item["post_cleanup_result"])
+        self.assertIn("post-cleanup-emby-love", item["post_cleanup_reports"])
+        self.assertIn("已完成并复核清理", item["next_action"])
+        rendered = render_batch_review_report(report, "csv")
+        self.assertIn("done_cleanup_verified", rendered)
+        self.assertIn("post_cleanup_status", rendered.splitlines()[0])
+
     def test_cli_writes_batch_review_report_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             batch = tmp_path / "batch.json"
             finalize = tmp_path / "finalize.json"
             transfer = tmp_path / "transfer.json"
+            post_cleanup = tmp_path / "post-cleanup.json"
             output = tmp_path / "review.csv"
             batch.write_text(
                 json.dumps(
@@ -1730,6 +1795,27 @@ class BatchRunnerTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            post_cleanup.write_text(
+                json.dumps(
+                    {
+                        "mode": "cleanup-summary-20260630",
+                        "items": [
+                            {
+                                "title": "兄弟连 (2001) {tmdbid=4613} Season 01",
+                                "status": "manual_review_required",
+                                "result_zh": "未清理：source root 有未覆盖视频",
+                                "qb_remaining": "unknown",
+                                "hlink_exists": "true",
+                                "source_exists": "true_with_extra_sp",
+                                "strm_ok": "true",
+                                "nfo_ok": "true",
+                                "emby_ok": "true",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             exit_code = main(
                 [
@@ -1740,6 +1826,8 @@ class BatchRunnerTest(unittest.TestCase):
                     str(transfer),
                     "--finalize-run-report",
                     str(finalize),
+                    "--post-cleanup-report",
+                    str(post_cleanup),
                     "--format",
                     "csv",
                     "--output",
@@ -1751,6 +1839,7 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("blocked_after_finalize_gates", rendered)
         self.assertIn("source_root_check_failed", rendered)
+        self.assertIn("manual_review_required", rendered)
 
     def test_cli_writes_batch_plan_from_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
