@@ -32,6 +32,20 @@ scan_files() {
   fi
 }
 
+tracked_private_files() {
+  if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git ls-files | grep -E '(^|/)\.env(\..*)?$|(^|/)cookies\.txt$|(^|/)manual-completions.*\.json$|^(data|logs|outputs|reports|artifacts|backups|secrets)/|.*\.(sqlite|sqlite3|db|log)$' \
+      | grep -Ev '^\.env\.example$|^examples/manual-completions\.example\.json$' || true
+  fi
+}
+
+tracked_private="$(tracked_private_files)"
+if [[ -n "$tracked_private" ]]; then
+  echo "$tracked_private"
+  echo "Private runtime files are tracked by git. Remove them from the public repository before pushing." >&2
+  exit 1
+fi
+
 if scan_files | xargs grep -InE '[0-9]{1,3}(\.[0-9]{1,3}){3}'; then
   echo "IP address-like value found. Use .local placeholders instead." >&2
   exit 1
