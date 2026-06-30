@@ -35,10 +35,12 @@ from .cleanup_verify import (
     audit_strm_nfo_language,
     cleanup_duplicate_strm_root,
     render_duplicate_strm_cleanup,
+    render_strm_root_relocate,
     render_strm_target_rewrite,
     render_mp_cleanup_verification,
     render_strm_nfo_language_audit,
     render_strm_verification,
+    relocate_strm_root,
     rewrite_strm_targets,
     verify_mp_cleanup_from_services,
     verify_strm_paths,
@@ -580,6 +582,19 @@ def build_parser() -> argparse.ArgumentParser:
     strm_target_rewrite_parser.add_argument("--approve-write", action="store_true", help="Required: actually rewrite STRM file contents")
     strm_target_rewrite_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     strm_target_rewrite_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    strm_relocate_parser = subcommands.add_parser("strm-root-relocate", help="Dry-run or move one verified STRM-side root to a new STRM category path")
+    strm_relocate_parser.add_argument("--title", required=True, help="Series title for reporting")
+    strm_relocate_parser.add_argument("--source-root", required=True, help="Existing STRM-side title/season root to move")
+    strm_relocate_parser.add_argument("--target-root", required=True, help="New STRM-side title/season root")
+    strm_relocate_parser.add_argument("--expected-episode-count", type=int, default=0, help="Expected distinct STRM episode count")
+    strm_relocate_parser.add_argument("--expected-episode-min", type=int, default=0, help="Expected first STRM episode number")
+    strm_relocate_parser.add_argument("--expected-episode-max", type=int, default=0, help="Expected last STRM episode number")
+    strm_relocate_parser.add_argument("--required-target-prefix", default="", help="Every STRM target must start with this cloud prefix")
+    strm_relocate_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
+    strm_relocate_parser.add_argument("--approve-move", action="store_true", help="Required: actually move the STRM root")
+    strm_relocate_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    strm_relocate_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     strm_duplicate_cleanup_parser = subcommands.add_parser("strm-duplicate-cleanup", help="Delete an approved duplicate STRM root after verification")
     strm_duplicate_cleanup_parser.add_argument("--title", required=True, help="Series title for reporting")
@@ -2546,6 +2561,25 @@ def main(argv: Optional[List[str]] = None) -> int:
             approve_write=args.approve_write,
         )
         rendered = render_strm_target_rewrite(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "strm-root-relocate":
+        report = relocate_strm_root(
+            title=args.title,
+            source_root=args.source_root,
+            target_root=args.target_root,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            required_target_prefix=args.required_target_prefix,
+            forbidden_target_prefixes=args.forbidden_target_prefix,
+            approve_move=args.approve_move,
+        )
+        rendered = render_strm_root_relocate(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

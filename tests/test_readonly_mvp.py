@@ -13,10 +13,12 @@ from series_cloud_archiver.cleanup_verify import (
     build_mp_cleanup_verification,
     cleanup_duplicate_strm_root,
     render_duplicate_strm_cleanup,
+    render_strm_root_relocate,
     render_mp_cleanup_verification,
     render_strm_nfo_language_audit,
     render_strm_target_rewrite,
     render_strm_verification,
+    relocate_strm_root,
     rewrite_strm_targets,
     verify_strm_paths,
 )
@@ -3473,6 +3475,137 @@ class MoviePilotEvidenceTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertTrue(payload["dry_run"])
             self.assertEqual(payload["summary"]["rewritable_count"], 1)
+
+    def test_strm_root_relocate_dry_run_does_not_move(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            title = "真相捕捉 (2019) {tmdbid=93166}"
+            source = Path(tmp) / "mv3" / "strm" / "未识别" / title / "Season 3"
+            target = Path(tmp) / "mv3" / "strm" / "series" / title / "Season 03"
+            source.mkdir(parents=True)
+            for episode in (1, 2):
+                (source / f"真相捕捉 - S03E{episode:02d}.strm").write_text(
+                    f"/已整理/series/{title}/Season 03/真相捕捉 - S03E{episode:02d}.mkv",
+                    encoding="utf-8",
+                )
+
+            report = relocate_strm_root(
+                "真相捕捉",
+                str(source),
+                str(target),
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+                required_target_prefix=f"/已整理/series/{title}/Season 03",
+            )
+            rendered = render_strm_root_relocate(report, "markdown")
+
+            self.assertTrue(report["ok"])
+            self.assertTrue(report["dry_run"])
+            self.assertFalse(report["move_executed"])
+            self.assertTrue(source.exists())
+            self.assertFalse(target.exists())
+            self.assertIn("STRM Root Relocate", rendered)
+
+    def test_strm_root_relocate_moves_after_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            title = "真相捕捉 (2019) {tmdbid=93166}"
+            source = Path(tmp) / "mv3" / "strm" / "未识别" / title / "Season 3"
+            target = Path(tmp) / "mv3" / "strm" / "series" / title / "Season 03"
+            source.mkdir(parents=True)
+            for episode in (1, 2):
+                (source / f"真相捕捉 - S03E{episode:02d}.strm").write_text(
+                    f"/已整理/series/{title}/Season 03/真相捕捉 - S03E{episode:02d}.mkv",
+                    encoding="utf-8",
+                )
+            (source / "season.nfo").write_text("<tvshow><title>真相捕捉</title><plot>已经在 STRM 侧刮削。</plot></tvshow>", encoding="utf-8")
+
+            report = relocate_strm_root(
+                "真相捕捉",
+                str(source),
+                str(target),
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+                required_target_prefix=f"/已整理/series/{title}/Season 03",
+                approve_move=True,
+            )
+
+            self.assertTrue(report["ok"], report["blockers"])
+            self.assertTrue(report["move_executed"])
+            self.assertFalse(source.exists())
+            self.assertTrue((target / "真相捕捉 - S03E01.strm").exists())
+            self.assertTrue((target / "season.nfo").exists())
+            self.assertTrue(report["post_verify"]["target"]["verify"]["ok"])
+
+    def test_strm_root_relocate_blocks_video_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            title = "真相捕捉 (2019) {tmdbid=93166}"
+            source = Path(tmp) / "mv3" / "strm" / "未识别" / title / "Season 3"
+            target = Path(tmp) / "mv3" / "strm" / "series" / title / "Season 03"
+            source.mkdir(parents=True)
+            (source / "真相捕捉 - S03E01.strm").write_text(
+                f"/已整理/series/{title}/Season 03/真相捕捉 - S03E01.mkv",
+                encoding="utf-8",
+            )
+            (source / "unexpected.mkv").write_text("not a strm sidecar", encoding="utf-8")
+
+            report = relocate_strm_root(
+                "真相捕捉",
+                str(source),
+                str(target),
+                expected_episode_count=1,
+                expected_episode_min=1,
+                expected_episode_max=1,
+                required_target_prefix=f"/已整理/series/{title}/Season 03",
+                approve_move=True,
+            )
+
+            self.assertFalse(report["ok"])
+            self.assertFalse(report["move_executed"])
+            self.assertIn("source_root_contains_video_files", report["blockers"])
+            self.assertTrue(source.exists())
+
+    def test_cli_writes_strm_root_relocate_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            title = "真相捕捉 (2019) {tmdbid=93166}"
+            source = tmp_path / "mv3" / "strm" / "未识别" / title / "Season 3"
+            target = tmp_path / "mv3" / "strm" / "series" / title / "Season 03"
+            source.mkdir(parents=True)
+            (source / "真相捕捉 - S03E01.strm").write_text(
+                f"/已整理/series/{title}/Season 03/真相捕捉 - S03E01.mkv",
+                encoding="utf-8",
+            )
+            output = tmp_path / "relocate.json"
+
+            code = main(
+                [
+                    "strm-root-relocate",
+                    "--title",
+                    "真相捕捉",
+                    "--source-root",
+                    str(source),
+                    "--target-root",
+                    str(target),
+                    "--expected-episode-count",
+                    "1",
+                    "--expected-episode-min",
+                    "1",
+                    "--expected-episode-max",
+                    "1",
+                    "--required-target-prefix",
+                    f"/已整理/series/{title}/Season 03",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["dry_run"])
+            self.assertEqual(payload["precheck"]["source"]["file_count"], 1)
 
     def test_strm_nfo_language_audit_accepts_chinese_nfo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

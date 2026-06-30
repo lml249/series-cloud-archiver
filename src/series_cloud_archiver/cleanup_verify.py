@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import shutil
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -11,6 +12,24 @@ from .episode import episode_signal
 from .moviepilot import MPTransferHistoryRecord, MoviePilotClient, transfer_record_season_numbers
 from .path_safety import cloud_media_paths, non_strm_side_paths
 from .qbittorrent import fetch_qb_torrents
+
+STRM_RELOCATE_BLOCKED_VIDEO_EXTENSIONS = {
+    ".3gp",
+    ".avi",
+    ".flv",
+    ".m2ts",
+    ".m4v",
+    ".mkv",
+    ".mov",
+    ".mp4",
+    ".mpeg",
+    ".mpg",
+    ".mts",
+    ".rmvb",
+    ".ts",
+    ".webm",
+    ".wmv",
+}
 
 
 def verify_strm_paths(
@@ -434,6 +453,172 @@ def render_strm_target_rewrite(report: Dict[str, object], output_format: str) ->
                     target=_escape(str(item.get("new_target") or "")),
                 )
             )
+    return "\n".join(lines)
+
+
+def relocate_strm_root(
+    title: str,
+    source_root: str,
+    target_root: str,
+    expected_episode_count: int = 0,
+    expected_episode_min: int = 0,
+    expected_episode_max: int = 0,
+    required_target_prefix: str = "",
+    forbidden_target_prefixes: Optional[Sequence[str]] = None,
+    approve_move: bool = False,
+) -> Dict[str, object]:
+    blockers: List[str] = []
+    warnings: List[str] = []
+    forbidden_target_prefixes = list(forbidden_target_prefixes or [])
+    source_path = Path(source_root)
+    target_path = Path(target_root)
+
+    if not source_root:
+        blockers.append("source_root_required")
+    if not target_root:
+        blockers.append("target_root_required")
+    for label, value in (("source", source_root), ("target", target_root)):
+        if value and value in cloud_media_paths([value]):
+            blockers.append(f"{label}_root_must_not_be_cloud_media_path")
+        if value and value in non_strm_side_paths([value]):
+            blockers.append(f"{label}_root_must_be_strm_side")
+    if source_root and target_root:
+        try:
+            if source_path.resolve() == target_path.resolve():
+                blockers.append("source_target_roots_must_differ")
+        except OSError:
+            blockers.append("strm_root_resolution_failed")
+    if not source_path.exists():
+        blockers.append("source_root_missing")
+    elif not source_path.is_dir():
+        blockers.append("source_root_must_be_directory")
+    if target_path.exists() and not target_path.is_dir():
+        blockers.append("target_root_must_be_directory")
+
+    source = _strm_root_row(source_root, required_target_prefix, forbidden_target_prefixes)
+    target_before = _strm_root_row(target_root, required_target_prefix, forbidden_target_prefixes)
+    if source.get("exists"):
+        if not source.get("file_count"):
+            blockers.append("source_strm_files_missing")
+        if source.get("target_prefix_mismatch_count"):
+            blockers.append("source_strm_target_prefix_mismatch")
+        if source.get("forbidden_target_count"):
+            blockers.append("source_strm_forbidden_target_prefix")
+        episodes = [episode for episode in source.get("episodes", []) if isinstance(episode, int)]
+        if expected_episode_count and len(episodes) != expected_episode_count:
+            blockers.append("source_strm_episode_count_mismatch")
+        if expected_episode_min and (not episodes or min(episodes) != expected_episode_min):
+            blockers.append("source_strm_episode_min_mismatch")
+        if expected_episode_max and (not episodes or max(episodes) != expected_episode_max):
+            blockers.append("source_strm_episode_max_mismatch")
+        if source.get("missing_in_range"):
+            blockers.append("source_strm_episode_gap_detected")
+        if source.get("duplicate_episodes"):
+            warnings.append("source_strm_duplicate_episode_files")
+
+    target_file_count = int(target_before.get("file_count") or 0)
+    target_extra_files = _all_files(target_path) if target_path.exists() else []
+    if target_file_count or target_extra_files:
+        blockers.append("target_root_not_empty")
+    source_video_files = _video_files(source_path) if source_path.exists() else []
+    if source_video_files:
+        blockers.append("source_root_contains_video_files")
+
+    moved_files: List[Dict[str, object]] = []
+    move_executed = False
+    if not blockers and approve_move:
+        try:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source_path), str(target_path))
+            move_executed = True
+            moved_files = [
+                {"path": str(item), "size_bytes": item.stat().st_size}
+                for item in sorted(target_path.rglob("*"))
+                if item.is_file()
+            ][:200]
+        except OSError as exc:
+            blockers.append("strm_root_move_failed")
+            warnings.append(f"strm_root_move_failed:{exc.__class__.__name__}:{exc}")
+
+    post_target: Dict[str, object] = {"skipped": True}
+    post_source: Dict[str, object] = {"skipped": True}
+    if move_executed:
+        post_target = _strm_root_row(target_root, required_target_prefix, forbidden_target_prefixes)
+        post_source = _path_exists_row(source_root)
+        post_verify = verify_strm_paths(
+            title,
+            [target_root],
+            expected_episode_count=expected_episode_count,
+            expected_episode_min=expected_episode_min,
+            expected_episode_max=expected_episode_max,
+            required_target_prefix=required_target_prefix,
+            forbidden_target_prefixes=forbidden_target_prefixes,
+        )
+        post_target["verify"] = post_verify
+        if post_source.get("exists"):
+            blockers.append("post_move_source_root_still_exists")
+        if not post_verify.get("ok"):
+            blockers.append("post_move_strm_verify_failed")
+
+    return {
+        "mode": "strm-root-relocate",
+        "title": title,
+        "ok": not blockers and (not approve_move or move_executed),
+        "dry_run": not approve_move,
+        "move_executed": move_executed,
+        "source_root": str(source_path),
+        "target_root": str(target_path),
+        "expected": {
+            "episode_count": expected_episode_count,
+            "episode_min": expected_episode_min,
+            "episode_max": expected_episode_max,
+            "required_target_prefix": required_target_prefix,
+            "forbidden_target_prefixes": forbidden_target_prefixes,
+        },
+        "precheck": {
+            "source": source,
+            "target": target_before,
+            "target_existing_files": target_extra_files[:20],
+            "source_video_files": source_video_files[:20],
+        },
+        "moved_files": moved_files,
+        "post_verify": {
+            "source": post_source,
+            "target": post_target,
+        },
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "safety": "default dry-run; with approval this moves one STRM-side filesystem root after verifying episode coverage and target prefixes. It does not rewrite STRM content, scrape metadata, call MV3/MoviePilot/Emby/qBittorrent, delete hlink/source files, or touch cloud media directories",
+    }
+
+
+def render_strm_root_relocate(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    precheck = report.get("precheck") if isinstance(report.get("precheck"), dict) else {}
+    source = precheck.get("source") if isinstance(precheck.get("source"), dict) else {}
+    target = precheck.get("target") if isinstance(precheck.get("target"), dict) else {}
+    lines = [
+        "# STRM Root Relocate",
+        "",
+        f"- Title: `{report.get('title', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Dry run: `{bool(report.get('dry_run'))}`",
+        f"- Move executed: `{bool(report.get('move_executed'))}`",
+        f"- Source root: `{report.get('source_root', '')}`",
+        f"- Target root: `{report.get('target_root', '')}`",
+        f"- Source STRM files: `{source.get('file_count', 0)}`",
+        f"- Target existing files: `{target.get('file_count', 0)}`",
+        "- Safety: moves only one verified STRM-side root after explicit approval.",
+    ]
+    blockers = report.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        lines.extend(["", "## Blockers", ""])
+        lines.extend(f"- `{blocker}`" for blocker in blockers)
+    warnings = report.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- `{warning}`" for warning in warnings)
     return "\n".join(lines)
 
 
@@ -918,6 +1103,22 @@ def _non_strm_files(root: Path) -> List[str]:
     if not root.exists():
         return []
     return sorted(str(item) for item in root.rglob("*") if item.is_file() and item.suffix.lower() != ".strm")
+
+
+def _all_files(root: Path) -> List[str]:
+    if not root.exists():
+        return []
+    return sorted(str(item) for item in root.rglob("*") if item.is_file())
+
+
+def _video_files(root: Path) -> List[str]:
+    if not root.exists():
+        return []
+    return sorted(
+        str(item)
+        for item in root.rglob("*")
+        if item.is_file() and item.suffix.lower() in STRM_RELOCATE_BLOCKED_VIDEO_EXTENSIONS
+    )
 
 
 def _remove_empty_dirs(root: Path) -> List[str]:
