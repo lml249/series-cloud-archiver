@@ -94,10 +94,97 @@ def cloud_check_from_scan_report(
     )
 
 
+def cloud_check_from_owner_plan(
+    owner_plan: Dict[str, object],
+    strm_roots: Iterable[str],
+    top: int = 0,
+) -> CloudCheckReport:
+    scan_report = owner_season_scan_report(owner_plan)
+    report = cloud_check_from_scan_report(scan_report, strm_roots, top=top)
+    report.mode = "readonly-owner-season-cloud-check"
+    report.warnings.extend(_owner_plan_cloud_warnings(owner_plan, scan_report))
+    return report
+
+
+def owner_season_scan_report(owner_plan: Dict[str, object]) -> Dict[str, object]:
+    candidates: List[Dict[str, object]] = []
+    skipped: List[Dict[str, object]] = []
+    for item in owner_plan.get("items", []) if isinstance(owner_plan.get("items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "")
+        if status != "owner_season_cloud_strm_check_required":
+            skipped.append(
+                {
+                    "status": status,
+                    "title": str(item.get("title") or ""),
+                    "tmdbid": item.get("tmdbid") or "",
+                    "season": item.get("owner_season") or "",
+                    "action_group": str(item.get("action_group") or ""),
+                }
+            )
+            continue
+        candidate = _owner_plan_candidate(item)
+        if candidate:
+            candidates.append(candidate)
+        else:
+            skipped.append(
+                {
+                    "status": "owner_season_identity_incomplete",
+                    "title": str(item.get("title") or ""),
+                    "tmdbid": item.get("tmdbid") or "",
+                    "season": item.get("owner_season") or "",
+                    "action_group": str(item.get("action_group") or ""),
+                }
+            )
+    return {
+        "mode": "readonly-owner-season-scan-report",
+        "source_mode": str(owner_plan.get("mode") or ""),
+        "total_owner_items": len(owner_plan.get("items", [])) if isinstance(owner_plan.get("items"), list) else 0,
+        "candidate_count": len(candidates),
+        "skipped_count": len(skipped),
+        "candidates": candidates,
+        "skipped_owner_items": skipped,
+        "safety": (
+            "readonly adapter report only; it converts owner-season extra-source evidence into cloud-check candidates "
+            "and does not call MV3/MoviePilot/Emby/qBittorrent, transfer media, write STRM/NFO/JPG, or delete files."
+        ),
+    }
+
+
 def render_cloud_check_report(report: CloudCheckReport, output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
     return _render_markdown(report)
+
+
+def render_owner_season_scan_report(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# Owner Season Scan Adapter",
+        "",
+        f"- Source mode: `{report.get('source_mode', '')}`",
+        f"- Candidate count: `{report.get('candidate_count', 0)}`",
+        f"- Skipped count: `{report.get('skipped_count', 0)}`",
+        "- Safety: readonly adapter only; no transfer, scraping, Emby refresh, qB action, or deletion is performed.",
+        "",
+        "| TMDB | Season | Episodes | Title | Source paths |",
+        "| ---: | ---: | --- | --- | ---: |",
+    ]
+    for item in report.get("candidates", []) if isinstance(report.get("candidates"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {tmdbid} | {season} | {episodes} | {title} | {paths} |".format(
+                tmdbid=((item.get("manual_completion") or {}).get("tmdbid") if isinstance(item.get("manual_completion"), dict) else item.get("tmdbid")) or "",
+                season=((item.get("manual_completion") or {}).get("season") if isinstance(item.get("manual_completion"), dict) else ""),
+                episodes=_range_text(_int_set(item.get("episode_numbers"))),
+                title=str(item.get("title") or "").replace("|", "\\|"),
+                paths=len(item.get("source_paths", [])) if isinstance(item.get("source_paths"), list) else 0,
+            )
+        )
+    return "\n".join(lines)
 
 
 def _build_strm_index(
@@ -136,6 +223,85 @@ def _build_strm_index(
                 if isinstance(paths, list) and len(paths) < 5:
                     paths.append(str(path))
     return index
+
+
+def _owner_plan_candidate(item: Dict[str, object]) -> Dict[str, object]:
+    title = str(item.get("title") or "").strip()
+    tmdbid = _safe_int(item.get("tmdbid"))
+    season = _safe_int(item.get("owner_season"))
+    episodes = _owner_expected_episodes(item)
+    if not title or tmdbid <= 0 or season <= 0 or not episodes:
+        return {}
+    source_paths = _string_list(item.get("source_paths"))
+    size_bytes = sum(Path(path).stat().st_size for path in source_paths if Path(path).exists())
+    candidate: Dict[str, object] = {
+        "title": _owner_candidate_title(title, tmdbid, season),
+        "status": "candidate_for_cloud_check",
+        "path": source_paths[0] if source_paths else "",
+        "source_paths": source_paths,
+        "size_bytes": size_bytes,
+        "video_count": len(episodes),
+        "episode_numbers": episodes,
+        "episode_sample": episodes[:20],
+        "seasons": [season],
+        "manual_completion": {
+            "title": title,
+            "tmdbid": tmdbid,
+            "season": season,
+            "matched": True,
+            "note": "derived_from_extra_source_owner_season_plan",
+        },
+        "owner_season": {
+            "source_status": str(item.get("status") or ""),
+            "action_group": str(item.get("action_group") or ""),
+            "source_reference_count": _safe_int(item.get("source_reference_count")),
+            "unique_source_path_count": _safe_int(item.get("unique_source_path_count")),
+            "duplicate_reference_count": _safe_int(item.get("duplicate_reference_count")),
+            "referenced_main_seasons": str(item.get("referenced_main_seasons") or ""),
+            "media_kinds": _string_list(item.get("media_kinds")),
+            "report_indexes": _int_list(item.get("report_indexes")),
+        },
+    }
+    return candidate
+
+
+def _owner_expected_episodes(item: Dict[str, object]) -> List[int]:
+    explicit = _int_list(item.get("expected_episodes"))
+    if explicit:
+        return explicit
+    episodes = _episodes_from_text(str(item.get("episodes") or ""))
+    if episodes:
+        return episodes
+    count = _safe_int(item.get("episode_count"))
+    if count > 0:
+        return list(range(1, count + 1))
+    return []
+
+
+def _owner_candidate_title(title: str, tmdbid: int, season: int) -> str:
+    suffix = f" {{tmdbid={tmdbid}}}" if tmdbid and f"{{tmdbid={tmdbid}}}" not in title else ""
+    return f"{title}{suffix} Season {season:02d}"
+
+
+def _owner_plan_cloud_warnings(owner_plan: Dict[str, object], scan_report: Dict[str, object]) -> List[str]:
+    warnings = [
+        "owner_season_cloud_check_is_readonly",
+        "owner_season_cloud_check_only_verifies_strm_filename_coverage",
+    ]
+    skipped = int(scan_report.get("skipped_count") or 0)
+    if skipped:
+        warnings.append(f"owner_season_items_skipped:{skipped}")
+    for item in scan_report.get("skipped_owner_items", []) if isinstance(scan_report.get("skipped_owner_items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "")
+        title = str(item.get("title") or "")
+        season = str(item.get("season") or "")
+        if status:
+            warnings.append(f"owner_season_skipped:{status}:{title}:S{season}")
+    if str(owner_plan.get("mode") or "") != "readonly-extra-source-owner-season-plan":
+        warnings.append("owner_plan_mode_unexpected")
+    return warnings
 
 
 def _candidate_groups(
@@ -177,6 +343,8 @@ def _candidate_groups(
         path_value = str(candidate.get("path") or "")
         if path_value:
             group["source_paths"].add(path_value)
+        for source_path in _string_list(candidate.get("source_paths")):
+            group["source_paths"].add(source_path)
         qb_hash = str((candidate.get("qb") or {}).get("hash") or "") if isinstance(candidate.get("qb"), dict) else ""
         if qb_hash:
             group["source_qb_hashes"].add(qb_hash.lower())
@@ -346,6 +514,54 @@ def _int_set(source: object) -> Set[int]:
     if not isinstance(source, list):
         return set()
     return {int(value) for value in source if isinstance(value, int) or str(value).isdigit()}
+
+
+def _int_list(source: object) -> List[int]:
+    return sorted(_int_set(source))
+
+
+def _safe_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _string_list(source: object) -> List[str]:
+    if isinstance(source, list):
+        return [str(value) for value in source if str(value)]
+    if isinstance(source, str) and source:
+        return [source]
+    return []
+
+
+def _episodes_from_text(value: str) -> List[int]:
+    episodes: Set[int] = set()
+    for part in re.split(r"[,;，；\s]+", value or ""):
+        token = part.strip()
+        if not token:
+            continue
+        range_match = re.fullmatch(r"(\d{1,3})-(\d{1,3})", token)
+        if range_match:
+            start = int(range_match.group(1))
+            end = int(range_match.group(2))
+            if 0 < start <= end <= 999:
+                episodes.update(range(start, end + 1))
+            continue
+        if token.isdigit() and int(token) > 0:
+            episodes.add(int(token))
+    return sorted(episodes)
+
+
+def _range_text(values: Iterable[int]) -> str:
+    clean = sorted({int(value) for value in values if int(value) > 0})
+    if not clean:
+        return ""
+    if len(clean) == 1:
+        return str(clean[0])
+    if clean == list(range(clean[0], clean[-1] + 1)):
+        return f"{clean[0]}-{clean[-1]}"
+    return ",".join(str(value) for value in clean)
 
 
 def _candidate_search_keywords(candidate: Dict[str, object], identity: Optional[Dict[str, object]] = None) -> List[str]:

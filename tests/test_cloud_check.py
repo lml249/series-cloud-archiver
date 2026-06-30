@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 from typing import List
 
-from series_cloud_archiver.cloud_check import cloud_check_from_scan_report
+from series_cloud_archiver.cli import main
+from series_cloud_archiver.cloud_check import cloud_check_from_owner_plan, cloud_check_from_scan_report, owner_season_scan_report
 
 
 def touch(path: Path) -> None:
@@ -343,6 +344,123 @@ class CloudCheckTest(unittest.TestCase):
             self.assertEqual(result.items[0].expected_count, 36)
             self.assertEqual(result.items[0].expected_episodes, list(range(1, 37)))
             self.assertEqual(result.items[0].missing_episodes, [])
+
+    def test_owner_season_plan_can_be_checked_against_strm_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm"
+            for episode in [1, 2]:
+                touch(root / "series" / "9号秘事 (2014) {tmdbid=61746}" / "Season 03" / f"Inside No 9 S03E{episode:02d}.strm")
+            owner_plan = {
+                "mode": "readonly-extra-source-owner-season-plan",
+                "items": [
+                    {
+                        "status": "owner_season_cloud_strm_check_required",
+                        "title": "9号秘事",
+                        "tmdbid": 61746,
+                        "owner_season": 3,
+                        "episodes": "1-2",
+                        "episode_count": 2,
+                        "source_paths": [
+                            "/volume-example/source-tv/Inside.No.9.S03E01.mkv",
+                            "/volume-example/source-tv/Inside.No.9.S03E02.mkv",
+                        ],
+                        "source_reference_count": 6,
+                        "unique_source_path_count": 2,
+                        "duplicate_reference_count": 4,
+                        "referenced_main_seasons": "1,2,4",
+                    },
+                    {
+                        "status": "special_mapping_required",
+                        "title": "兄弟连",
+                        "tmdbid": 4613,
+                        "owner_season": 0,
+                        "episodes": "1",
+                    },
+                ],
+            }
+
+            adapter = owner_season_scan_report(owner_plan)
+            result = cloud_check_from_owner_plan(owner_plan, [str(root)])
+
+        self.assertEqual(adapter["candidate_count"], 1)
+        self.assertEqual(adapter["skipped_count"], 1)
+        self.assertEqual(adapter["candidates"][0]["episode_numbers"], [1, 2])
+        self.assertEqual(adapter["candidates"][0]["video_count"], 2)
+        self.assertEqual(result.mode, "readonly-owner-season-cloud-check")
+        self.assertEqual(result.status_counts, {"cloud_strm_complete": 1})
+        self.assertEqual(result.items[0].status, "cloud_strm_complete")
+        self.assertEqual(result.items[0].source_paths, sorted(owner_plan["items"][0]["source_paths"]))
+        self.assertIn("owner_season_items_skipped:1", result.warnings)
+
+    def test_owner_season_plan_cloud_check_marks_missing_strm_for_transfer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm"
+            root.mkdir()
+            owner_plan = {
+                "mode": "readonly-extra-source-owner-season-plan",
+                "items": [
+                    {
+                        "status": "owner_season_cloud_strm_check_required",
+                        "title": "怪奇物语",
+                        "tmdbid": 66732,
+                        "owner_season": 1,
+                        "episodes": "1-8",
+                        "source_paths": ["/volume-example/source-tv/Stranger.Things.S01E01.mkv"],
+                    }
+                ],
+            }
+
+            result = cloud_check_from_owner_plan(owner_plan, [str(root)])
+
+        self.assertEqual(result.status_counts, {"cloud_strm_not_found": 1})
+        self.assertEqual(result.items[0].expected_episodes, list(range(1, 9)))
+        self.assertIn("no_matching_strm_tmdb_season", result.items[0].blockers)
+
+    def test_cli_writes_owner_season_cloud_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            root = tmp_path / "strm"
+            touch(root / "series" / "示例剧 (2026) {tmdbid=123}" / "Season 02" / "Demo S02E01.strm")
+            owner = tmp_path / "owner.json"
+            output = tmp_path / "cloud.json"
+            owner.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-extra-source-owner-season-plan",
+                        "items": [
+                            {
+                                "status": "owner_season_cloud_strm_check_required",
+                                "title": "示例剧",
+                                "tmdbid": 123,
+                                "owner_season": 2,
+                                "episodes": "1",
+                                "source_paths": ["/volume-example/source-tv/Demo.S02E01.mkv"],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code = main(
+                [
+                    "cloud-check-owner-seasons",
+                    "--owner-plan",
+                    str(owner),
+                    "--strm-root",
+                    str(root),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["mode"], "readonly-owner-season-cloud-check")
+        self.assertEqual(payload["status_counts"], {"cloud_strm_complete": 1})
 
 
 if __name__ == "__main__":

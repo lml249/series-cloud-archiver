@@ -24,7 +24,7 @@ from .batch_runner import (
     run_batch_finalize,
 )
 from .batch_transfer import render_batch_transfer_run, run_batch_transfer
-from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
+from .cloud_check import cloud_check_from_owner_plan, cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
 from .cloud_cleanup import (
     execute_cloud_complete_cleanup_plan,
     plan_cloud_complete_cleanup,
@@ -709,6 +709,14 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_parser.add_argument("--format", choices=["markdown", "json"], default=None)
     cloud_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
     cloud_parser.add_argument("--top", type=int, default=None, help="Maximum rows in report")
+
+    owner_cloud_parser = subcommands.add_parser("cloud-check-owner-seasons", help="Readonly STRM coverage check for extra-source owner-season plans")
+    owner_cloud_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
+    owner_cloud_parser.add_argument("--owner-plan", required=True, help="JSON report from extra-source-owner-season-plan")
+    owner_cloud_parser.add_argument("--strm-root", action="append", default=[], help="STRM root to scan; can be repeated")
+    owner_cloud_parser.add_argument("--format", choices=["markdown", "json"], default=None)
+    owner_cloud_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+    owner_cloud_parser.add_argument("--top", type=int, default=None, help="Maximum rows in report")
 
     identity_parser = subcommands.add_parser("identity-resolve", help="Resolve missing candidate TMDB identities through MoviePilot")
     identity_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
@@ -2754,6 +2762,27 @@ def main(argv: Optional[List[str]] = None) -> int:
             top = config.top
         identity_file = args.identity_file if args.identity_file is not None else config.identity_file
         report = cloud_check_from_scan_report(load_scan_report(args.scan_report), roots, top=top, identity_file=identity_file)
+        rendered = render_cloud_check_report(report, output_format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "cloud-check-owner-seasons":
+        config = config_from_env(args.env_file, [])
+        roots = args.strm_root or config.strm_roots
+        output_format = args.format or config.output_format
+        if args.top is not None:
+            top = args.top
+        elif output_format == "json":
+            top = 0
+        else:
+            top = config.top
+        owner_plan = load_optional_json_report(args.owner_plan)
+        if not isinstance(owner_plan, dict):
+            parser.error("cloud-check-owner-seasons requires a valid --owner-plan JSON report")
+        report = cloud_check_from_owner_plan(owner_plan, roots, top=top)
         rendered = render_cloud_check_report(report, output_format)
         if args.output:
             _write_text_output(args.output, rendered)
