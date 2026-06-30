@@ -4588,10 +4588,12 @@ def _strm_title_summary(
         except OSError:
             target = ""
         decoded_target = urllib.parse.unquote(target)
-        if normalized_wrong and (normalized_wrong in target or normalized_wrong in decoded_target):
+        target_path = _cloud_path_from_strm_content(target)
+        decoded_candidates = [decoded_target, target_path]
+        if normalized_wrong and any(normalized_wrong in candidate for candidate in decoded_candidates):
             wrong_target_count += 1
-        wrong_target_present = bool(normalized_wrong and (normalized_wrong in target or normalized_wrong in decoded_target))
-        correct_target_present = bool(normalized_correct and (normalized_correct in target or normalized_correct in decoded_target))
+        wrong_target_present = bool(normalized_wrong and any(normalized_wrong in candidate for candidate in decoded_candidates))
+        correct_target_present = bool(normalized_correct and any(normalized_correct in candidate for candidate in decoded_candidates))
         if correct_target_present and not wrong_target_present:
             correct_target_count += 1
         if "/series/" in decoded_target and "/已整理/series/" not in decoded_target:

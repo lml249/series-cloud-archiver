@@ -352,6 +352,32 @@ class MV3WrongRootRepairTest(unittest.TestCase):
             self.assertEqual(report["items"][0]["strm"]["total_strm"], 2)
             self.assertFalse(any("/api/v1/files/115/move" in url for _method, url, _body in calls))
 
+    def test_wrong_root_repair_direct_season_counts_url_path_strm_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            title = "广告狂人 (2007) {tmdbid=1104}"
+            strm_title_root = Path(tmp) / "strm" / "series" / title
+            season_dir = strm_title_root / "Season 07"
+            season_dir.mkdir(parents=True)
+            for episode in (1, 2):
+                encoded = urllib.parse.quote(f"/已整理/series/广告狂人 (2007) {{tmdbid=1104}}/Season 07/E{episode:02d}.mkv")
+                (season_dir / f"广告狂人 - S07E{episode:02d}.strm").write_text(
+                    f"http://mv3.example/redirect?path={encoded}&pickcode=secret",
+                    encoding="utf-8",
+                )
+
+            with patch("urllib.request.urlopen", lambda request, timeout: _fake_mv3_direct_season_wrong_root_response(request, moved=False)):
+                report = repair_mv3_wrong_root(
+                    "http://mv3.example",
+                    "token",
+                    "/已整理/series/美剧【广告狂人】1-7季全 1080P中字【373G】",
+                    "/已整理/series/广告狂人 (2007) {tmdbid=1104}",
+                    str(strm_title_root),
+                    storage="115-default",
+                )
+
+            self.assertEqual(report["items"][0]["strm"]["correct_target_count"], 2)
+            self.assertEqual(report["items"][0]["strm"]["wrong_target_count"], 0)
+
     def test_wrong_root_repair_direct_season_root_moves_with_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             title = "广告狂人 (2007) {tmdbid=1104}"
