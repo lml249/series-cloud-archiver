@@ -42,8 +42,14 @@ def preview_cloud_hlink_cleanup(
         blockers.append("hlink_root_missing")
     if hlink_check.get("non_video_count"):
         warnings.append("hlink_root_contains_non_video_files")
-    if hlink_check.get("video_count") != expected_episode_count and expected_episode_count:
-        blockers.append("hlink_video_count_mismatch")
+    hlink_episode_coverage = _single_season_hlink_episode_coverage(
+        hlink_root,
+        expected_episode_count,
+        expected_episode_min,
+        expected_episode_max,
+    )
+    blockers.extend(str(blocker) for blocker in hlink_episode_coverage.get("blockers", []) if blocker)
+    warnings.extend(str(warning) for warning in hlink_episode_coverage.get("warnings", []) if warning)
 
     strm_report = verify_strm_paths(
         title,
@@ -150,6 +156,7 @@ def preview_cloud_hlink_cleanup(
         "filesystem": {
             "source_roots": source_checks,
             "hlink_coverage": hlink_coverage,
+            "hlink_episode_coverage": hlink_episode_coverage,
         },
         "blockers": sorted(set(blockers)),
         "warnings": sorted(set(warnings)),
@@ -185,8 +192,14 @@ def preview_cloud_hlink_orphan_cleanup(
         blockers.append("hlink_root_missing")
     if hlink_check.get("non_video_count"):
         warnings.append("hlink_root_contains_non_video_files")
-    if hlink_check.get("video_count") != expected_episode_count and expected_episode_count:
-        blockers.append("hlink_video_count_mismatch")
+    hlink_episode_coverage = _single_season_hlink_episode_coverage(
+        hlink_root,
+        expected_episode_count,
+        expected_episode_min,
+        expected_episode_max,
+    )
+    blockers.extend(str(blocker) for blocker in hlink_episode_coverage.get("blockers", []) if blocker)
+    warnings.extend(str(warning) for warning in hlink_episode_coverage.get("warnings", []) if warning)
 
     strm_report = verify_strm_paths(
         title,
@@ -271,6 +284,7 @@ def preview_cloud_hlink_orphan_cleanup(
         "filesystem": {
             "source_roots": source_checks,
             "hlink_coverage": hlink_coverage,
+            "hlink_episode_coverage": hlink_episode_coverage,
         },
         "blockers": sorted(set(blockers)),
         "warnings": sorted(set(warnings)),
@@ -1138,6 +1152,61 @@ def _normalize_multiseason_specs(season_specs: Sequence[Dict[str, object]]) -> T
         )
         seen.add(season)
     return rows, sorted(set(blockers))
+
+
+def _single_season_hlink_episode_coverage(
+    hlink_root: str,
+    expected_episode_count: int,
+    expected_episode_min: int,
+    expected_episode_max: int,
+) -> Dict[str, object]:
+    expected: Set[int] = set()
+    if expected_episode_min and expected_episode_max and expected_episode_min <= expected_episode_max:
+        expected = set(range(expected_episode_min, expected_episode_max + 1))
+    elif expected_episode_count:
+        expected = set(range(1, expected_episode_count + 1))
+
+    hlink_episodes = _hlink_episode_map(hlink_root)
+    rows = hlink_episodes.get("rows") if isinstance(hlink_episodes.get("rows"), list) else []
+    episodes = sorted({int(row.get("episode") or 0) for row in rows if isinstance(row, dict) and int(row.get("episode") or 0) > 0})
+    seasons = sorted({int(row.get("season") or 0) for row in rows if isinstance(row, dict) and int(row.get("season") or 0) > 0})
+    duplicate_pairs = hlink_episodes.get("duplicate_episode_pairs") if isinstance(hlink_episodes.get("duplicate_episode_pairs"), list) else []
+
+    blockers: List[str] = []
+    warnings: List[str] = []
+    if expected_episode_count and not rows:
+        blockers.append("hlink_episode_signal_missing")
+    if hlink_episodes.get("unmatched_count"):
+        blockers.append("hlink_episode_signal_missing")
+    if len(seasons) > 1:
+        blockers.append("hlink_multiple_seasons_detected")
+
+    missing = [episode for episode in sorted(expected) if episode not in episodes]
+    unexpected = [episode for episode in episodes if expected and episode not in expected]
+    if missing:
+        blockers.append("hlink_expected_episodes_missing")
+    if unexpected:
+        blockers.append("hlink_unexpected_episodes_present")
+    if expected_episode_count and not expected and len(episodes) != expected_episode_count:
+        blockers.append("hlink_episode_count_mismatch")
+    if duplicate_pairs:
+        warnings.append("hlink_duplicate_episode_files")
+
+    return {
+        "complete": bool(expected) and not blockers and set(episodes) == expected,
+        "expected_episodes": sorted(expected),
+        "episodes": episodes,
+        "seasons": seasons,
+        "video_count": int(hlink_episodes.get("row_count") or 0),
+        "episode_count": len(episodes),
+        "missing_episodes": missing,
+        "unexpected_episodes": unexpected,
+        "unmatched_count": int(hlink_episodes.get("unmatched_count") or 0),
+        "unmatched_sample": hlink_episodes.get("unmatched_sample", []) if isinstance(hlink_episodes.get("unmatched_sample"), list) else [],
+        "duplicate_episode_pairs": duplicate_pairs,
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+    }
 
 
 def _hlink_episode_map(hlink_root: str) -> Dict[str, object]:
