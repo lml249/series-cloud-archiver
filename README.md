@@ -294,6 +294,18 @@ PYTHONPATH=src python3 -m series_cloud_archiver finalize-remediation-run \
 
 确认只读计划后，才加 `--execute-readonly` 批量执行允许列表里的诊断命令。runner 只接受 `strm-verify`、`mv3-cloud-duplicate-video-cleanup` dry-run、`mv3-cloud-browse`、`mv3-cloud-search`、`qb-orphan-torrent-cleanup-preview`、`mp-cleanup-preview` 这类只读/预览命令；它会把每条命令的输出强制写到 `--output-dir`，并阻断任何 `--approve-*` 审批参数。它不会转存、整理、生成 STRM、刮削、刷新 Emby、删除云盘文件、删除 qB、删除 hlink 或删除 source。
 
+如果 `strm_mismatch` 的诊断显示“不是缺集，而是 STRM 和云盘实际集数都比旧预期更多”，不要手工改 finalize 计划。先让项目从诊断目录生成只读的预期集数修正建议：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver finalize-remediation-expected-update-plan \
+  --plan reports/finalize-remediation-plan.json \
+  --diagnostic-dir reports/finalize-remediation-diagnostics \
+  --format json \
+  --output reports/finalize-remediation-expected-update-plan.json
+```
+
+只有当输出行是 `ready_for_expected_update`，才说明 STRM 和 MV3 云盘季目录集数一致、连续、无缺口、无重复、STRM target 前缀正确，可以把报告里的 `identity_overrides` 作为新的预期集数证据，重新生成 cloud/batch/finalize 计划并重跑门禁。这个命令本身只读，不会改原计划，不会调用 MV3/MP/Emby/qB，也不会删除任何文件。
+
 下面保留的散命令仍然可用，主要用于调试单个阶段、修复异常项，或者在 pipeline 缺少某个能力时作为构件使用。
 
 ## 批量状态计划 dry-run

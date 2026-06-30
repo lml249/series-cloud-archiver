@@ -224,6 +224,304 @@ def render_finalize_remediation_run(report: JsonDict, output_format: str) -> str
     return "\n".join(lines)
 
 
+def build_finalize_expected_update_plan(
+    plan_report: JsonDict,
+    diagnostic_reports: Sequence[JsonDict],
+) -> JsonDict:
+    """Build a readonly plan for stale expected episode counts."""
+
+    diagnostics_by_key = _diagnostics_by_identity(diagnostic_reports)
+    rows: List[JsonDict] = []
+    for item in plan_report.get("items", []) if isinstance(plan_report.get("items"), list) else []:
+        if not isinstance(item, dict) or item.get("category") != "strm_mismatch":
+            continue
+        rows.append(_expected_update_row(item, _diagnostics_for_item(diagnostics_by_key, item)))
+
+    status_counts = Counter(str(row.get("status") or "") for row in rows)
+    identity_overrides = [row["identity_override"] for row in rows if isinstance(row.get("identity_override"), dict)]
+    return {
+        "mode": "readonly-finalize-remediation-expected-update-plan",
+        "source_mode": str(plan_report.get("mode") or ""),
+        "ok": True,
+        "planned_items": len(rows),
+        "ready_items": sum(1 for row in rows if row.get("status") == "ready_for_expected_update"),
+        "manual_review_items": sum(1 for row in rows if row.get("status") != "ready_for_expected_update"),
+        "status_counts": dict(sorted(status_counts.items())),
+        "items": rows,
+        "identity_overrides": identity_overrides,
+        "safety": (
+            "readonly expected-episode update plan only; it reads existing diagnostic JSON and emits suggested "
+            "identity overrides. It does not rewrite batch plans, call MV3/MoviePilot/Emby/qBittorrent, "
+            "write STRM/NFO/JPG, delete cloud media, or delete local files."
+        ),
+    }
+
+
+def render_finalize_expected_update_plan(report: JsonDict, output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    if output_format == "csv":
+        return _render_expected_update_csv(report)
+    lines = [
+        "# Finalize Expected Episode Update Plan",
+        "",
+        f"- Ready: `{report.get('ready_items', 0)}` / `{report.get('planned_items', 0)}`",
+        f"- Status counts: `{report.get('status_counts', {})}`",
+        "- Safety: readonly evidence report only; regenerate upstream plans before cleanup.",
+        "",
+        "| Status | TMDB | S | Title | Old | New | Blockers |",
+        "| --- | ---: | ---: | --- | ---: | ---: | --- |",
+    ]
+    for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "| {status} | {tmdbid} | {season} | {title} | {old} | {new} | {blockers} |".format(
+                status=_escape_cell(str(item.get("status") or "")),
+                tmdbid=item.get("tmdbid") or "",
+                season=item.get("season") or "",
+                title=_escape_cell(str(item.get("title") or "")),
+                old=item.get("old_expected_episode_count") or "",
+                new=item.get("new_expected_episode_count") or "",
+                blockers=_escape_cell("; ".join(_strings(item.get("blockers")))),
+            )
+        )
+    return "\n".join(lines)
+
+
+def _diagnostics_by_identity(reports: Sequence[JsonDict]) -> Dict[Tuple[int, int, str], List[JsonDict]]:
+    rows: Dict[Tuple[int, int, str], List[JsonDict]] = {}
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        identity_path = _diagnostic_identity_path(report)
+        title = str(report.get("title") or _title_from_path(identity_path) or "")
+        tmdbid = int(report.get("tmdbid") or report.get("tmdb_id") or _tmdbid_from_text(identity_path) or 0)
+        season = int(report.get("season") or _season_from_text(identity_path) or 0)
+        if not title or tmdbid <= 0 or season <= 0:
+            continue
+        rows.setdefault((tmdbid, season, title), []).append(report)
+    return rows
+
+
+def _diagnostics_for_item(
+    diagnostics_by_key: Dict[Tuple[int, int, str], List[JsonDict]],
+    item: JsonDict,
+) -> Dict[str, JsonDict]:
+    title = str(item.get("title") or "")
+    tmdbid = int(item.get("tmdbid") or _tmdbid_from_text(str(item.get("strm_root") or item.get("cloud_season_path") or "")) or 0)
+    season = int(item.get("season") or 0)
+    diagnostics = diagnostics_by_key.get((tmdbid, season, title), [])
+    if not diagnostics:
+        normalized_title = _normalize_title_key(title)
+        for (candidate_tmdbid, candidate_season, candidate_title), candidate_reports in diagnostics_by_key.items():
+            if candidate_tmdbid == tmdbid and candidate_season == season and _normalize_title_key(candidate_title) == normalized_title:
+                diagnostics = candidate_reports
+                break
+    if not diagnostics:
+        for (candidate_tmdbid, candidate_season, _candidate_title), candidate_reports in diagnostics_by_key.items():
+            if candidate_tmdbid == tmdbid and candidate_season == season:
+                diagnostics = candidate_reports
+                break
+    by_mode: Dict[str, JsonDict] = {}
+    for report in diagnostics:
+        mode = str(report.get("mode") or "")
+        if mode == "strm-verify":
+            by_mode["strm"] = report
+        elif mode == "mv3-cloud-duplicate-video-cleanup-result":
+            by_mode["cloud"] = report
+    return by_mode
+
+
+def _expected_update_row(item: JsonDict, diagnostics: Dict[str, JsonDict]) -> JsonDict:
+    title = str(item.get("title") or "")
+    tmdbid = int(item.get("tmdbid") or _tmdbid_from_text(str(item.get("strm_root") or item.get("cloud_season_path") or "")) or 0)
+    season = int(item.get("season") or 0)
+    old_count = int(item.get("expected_episode_count") or 0)
+    old_min = int(item.get("expected_episode_min") or 0)
+    old_max = int(item.get("expected_episode_max") or 0)
+    strm_report = diagnostics.get("strm") if isinstance(diagnostics.get("strm"), dict) else {}
+    cloud_report = diagnostics.get("cloud") if isinstance(diagnostics.get("cloud"), dict) else {}
+    strm_episodes = _diagnostic_strm_episodes(strm_report)
+    cloud_episodes = _diagnostic_cloud_episodes(cloud_report)
+    blockers: List[str] = []
+    warnings: List[str] = []
+
+    if not strm_report:
+        blockers.append("strm_diagnostic_missing")
+    if not cloud_report:
+        blockers.append("cloud_diagnostic_missing")
+    if not strm_episodes:
+        blockers.append("strm_episode_evidence_missing")
+    if not cloud_episodes:
+        blockers.append("cloud_episode_evidence_missing")
+    if strm_episodes and not _is_contiguous(strm_episodes):
+        blockers.append("strm_episodes_not_contiguous")
+    if cloud_episodes and not _is_contiguous(cloud_episodes):
+        blockers.append("cloud_episodes_not_contiguous")
+    if strm_episodes and cloud_episodes and strm_episodes != cloud_episodes:
+        blockers.append("strm_cloud_episode_sets_differ")
+    blockers.extend(_strm_prefix_blockers(strm_report))
+    blockers.extend(_cloud_duplicate_preview_blockers(cloud_report))
+
+    new_episodes = strm_episodes if strm_episodes and strm_episodes == cloud_episodes else []
+    new_count = len(new_episodes)
+    if new_count and old_count and new_count <= old_count:
+        blockers.append("new_episode_count_not_greater_than_old_expected")
+    if new_episodes and old_min and min(new_episodes) != old_min:
+        warnings.append("episode_min_changed")
+    if old_max and new_episodes and max(new_episodes) < old_max:
+        blockers.append("new_episode_max_less_than_old_expected_max")
+
+    status = "ready_for_expected_update" if not blockers and new_episodes else "manual_review_required"
+    row: JsonDict = {
+        "status": status,
+        "title": title,
+        "tmdbid": tmdbid,
+        "season": season,
+        "old_expected_episode_count": old_count,
+        "old_expected_episode_min": old_min,
+        "old_expected_episode_max": old_max,
+        "old_expected_episodes": list(range(old_min, old_max + 1)) if old_min and old_max and old_min <= old_max else [],
+        "new_expected_episode_count": new_count,
+        "new_expected_episode_min": min(new_episodes) if new_episodes else 0,
+        "new_expected_episode_max": max(new_episodes) if new_episodes else 0,
+        "new_expected_episodes": new_episodes,
+        "strm_episode_count": len(strm_episodes),
+        "cloud_episode_count": len(cloud_episodes),
+        "strm_episodes": strm_episodes,
+        "cloud_episodes": cloud_episodes,
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "strm_root": str(item.get("strm_root") or ""),
+        "cloud_season_path": str(item.get("cloud_season_path") or ""),
+        "evidence": _expected_update_evidence(strm_report, cloud_report),
+        "next_action": (
+            "把 identity/cloud 预期集数更新为当前 STRM/cloud 连续集数后，重新生成 batch/finalize plan 并重跑 finalize gates"
+            if status == "ready_for_expected_update"
+            else "人工复核 STRM/cloud 诊断报告，确认是否错季、错剧、缺集或旧预期来源错误"
+        ),
+    }
+    if status == "ready_for_expected_update":
+        row["identity_override"] = {
+            "match_title": title,
+            "title": title,
+            "tmdbid": tmdbid,
+            "season": season,
+            "expected_episodes": new_episodes,
+            "method": "finalize_remediation_expected_update",
+            "confidence": "needs_regenerated_finalize_validation",
+            "note": "STRM and MV3 cloud diagnostics agree on a newer contiguous episode set; rerun gates before cleanup.",
+        }
+    return row
+
+
+def _diagnostic_strm_episodes(report: JsonDict) -> List[int]:
+    strm = report.get("strm") if isinstance(report.get("strm"), dict) else {}
+    combined = strm.get("combined") if isinstance(strm.get("combined"), dict) else {}
+    return _ints(combined.get("episodes"))
+
+
+def _diagnostic_cloud_episodes(report: JsonDict) -> List[int]:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    return _ints(summary.get("episodes"))
+
+
+def _is_contiguous(episodes: Sequence[int]) -> bool:
+    values = sorted({int(item) for item in episodes})
+    return bool(values) and values == list(range(min(values), max(values) + 1))
+
+
+def _strm_prefix_blockers(report: JsonDict) -> List[str]:
+    blockers: List[str] = []
+    strm = report.get("strm") if isinstance(report.get("strm"), dict) else {}
+    for root in strm.get("roots", []) if isinstance(strm.get("roots"), list) else []:
+        if not isinstance(root, dict):
+            continue
+        if int(root.get("target_prefix_mismatch_count") or 0) > 0:
+            blockers.append("strm_target_prefix_mismatch")
+        if int(root.get("forbidden_target_count") or 0) > 0:
+            blockers.append("strm_forbidden_target_prefix")
+        if _ints(root.get("duplicate_episodes")):
+            blockers.append("strm_duplicate_episodes")
+        if _ints(root.get("missing_in_range")):
+            blockers.append("strm_missing_in_range")
+    return blockers
+
+
+def _cloud_duplicate_preview_blockers(report: JsonDict) -> List[str]:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    delete_plan = report.get("delete_plan") if isinstance(report.get("delete_plan"), dict) else {}
+    blockers: List[str] = []
+    if _ints(summary.get("duplicate_episodes")):
+        blockers.append("cloud_duplicate_episodes")
+    if _ints(summary.get("missing_in_range")):
+        blockers.append("cloud_missing_in_range")
+    if int(delete_plan.get("duplicate_video_count") or 0) > 0:
+        blockers.append("cloud_duplicate_videos_require_separate_review")
+    if int(summary.get("episode_count") or 0) != int(summary.get("protected_strm_target_count") or 0):
+        blockers.append("cloud_protected_strm_target_count_mismatch")
+    if int(summary.get("episode_count") or 0) != int(summary.get("strm_file_count") or 0):
+        blockers.append("cloud_strm_file_count_mismatch")
+    return blockers
+
+
+def _expected_update_evidence(strm_report: JsonDict, cloud_report: JsonDict) -> JsonDict:
+    summary = cloud_report.get("summary") if isinstance(cloud_report.get("summary"), dict) else {}
+    strm = strm_report.get("strm") if isinstance(strm_report.get("strm"), dict) else {}
+    combined = strm.get("combined") if isinstance(strm.get("combined"), dict) else {}
+    return {
+        "strm_episode_count": combined.get("episode_count"),
+        "strm_episode_min": combined.get("episode_min"),
+        "strm_episode_max": combined.get("episode_max"),
+        "cloud_episode_count": summary.get("episode_count"),
+        "cloud_video_file_count": summary.get("video_file_count"),
+        "cloud_protected_strm_target_count": summary.get("protected_strm_target_count"),
+        "cloud_strm_file_count": summary.get("strm_file_count"),
+    }
+
+
+def _title_from_path(value: str) -> str:
+    clean = str(value or "").rstrip("/")
+    parts = [part for part in clean.split("/") if part]
+    for part in reversed(parts):
+        if "tmdbid=" in part:
+            return re.sub(r"(?:\s*\(\d{4}\))?\s*\{tmdbid=\d+\}.*$", "", part).strip()
+    return ""
+
+
+def _diagnostic_identity_path(report: JsonDict) -> str:
+    for key in ("strm_root", "season_path"):
+        value = str(report.get(key) or "")
+        if value:
+            return value
+    strm = report.get("strm") if isinstance(report.get("strm"), dict) else {}
+    roots = strm.get("roots") if isinstance(strm.get("roots"), list) else []
+    for root in roots:
+        if isinstance(root, dict) and root.get("path"):
+            return str(root.get("path") or "")
+    targets = report.get("protected_strm_targets") if isinstance(report.get("protected_strm_targets"), dict) else {}
+    return str(targets.get("root") or "")
+
+
+def _normalize_title_key(value: str) -> str:
+    return re.sub(r"(?:\s*\(\d{4}\))?\s*\{tmdbid=\d+\}.*$", "", str(value or "")).strip().casefold()
+
+
+def _tmdbid_from_text(text: str) -> int:
+    match = re.search(r"\{tmdbid=(\d+)\}", str(text or ""), re.IGNORECASE)
+    return int(match.group(1)) if match else 0
+
+
+def _season_from_text(text: str) -> int:
+    matches = re.findall(r"(?i)(?:Season\s*0?(\d+)|S(\d{1,2})(?:E\d{1,3})?)", str(text or ""))
+    for left, right in reversed(matches):
+        value = left or right
+        if value:
+            return int(value)
+    return 0
+
+
 def _remediation_row(
     review_item: JsonDict,
     finalize_item: JsonDict,
@@ -871,6 +1169,58 @@ def _render_run_csv(report: JsonDict) -> str:
                 "runner_error": item.get("runner_error", ""),
                 "safety_blockers": "; ".join(_strings(item.get("safety_blockers"))),
                 "command": item.get("command", ""),
+            }
+        )
+    return output.getvalue().rstrip("\r\n")
+
+
+def _render_expected_update_csv(report: JsonDict) -> str:
+    fieldnames = [
+        "status",
+        "title",
+        "tmdbid",
+        "season",
+        "old_expected_episode_count",
+        "old_expected_episode_min",
+        "old_expected_episode_max",
+        "new_expected_episode_count",
+        "new_expected_episode_min",
+        "new_expected_episode_max",
+        "new_expected_episodes",
+        "strm_episode_count",
+        "cloud_episode_count",
+        "blockers",
+        "warnings",
+        "strm_root",
+        "cloud_season_path",
+        "next_action",
+    ]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        writer.writerow(
+            {
+                "status": item.get("status", ""),
+                "title": item.get("title", ""),
+                "tmdbid": item.get("tmdbid", ""),
+                "season": item.get("season", ""),
+                "old_expected_episode_count": item.get("old_expected_episode_count", ""),
+                "old_expected_episode_min": item.get("old_expected_episode_min", ""),
+                "old_expected_episode_max": item.get("old_expected_episode_max", ""),
+                "new_expected_episode_count": item.get("new_expected_episode_count", ""),
+                "new_expected_episode_min": item.get("new_expected_episode_min", ""),
+                "new_expected_episode_max": item.get("new_expected_episode_max", ""),
+                "new_expected_episodes": ",".join(str(value) for value in _ints(item.get("new_expected_episodes"))),
+                "strm_episode_count": item.get("strm_episode_count", ""),
+                "cloud_episode_count": item.get("cloud_episode_count", ""),
+                "blockers": "; ".join(_strings(item.get("blockers"))),
+                "warnings": "; ".join(_strings(item.get("warnings"))),
+                "strm_root": item.get("strm_root", ""),
+                "cloud_season_path": item.get("cloud_season_path", ""),
+                "next_action": item.get("next_action", ""),
             }
         )
     return output.getvalue().rstrip("\r\n")

@@ -78,7 +78,9 @@ from .identity import (
 )
 from .extra_source_media import build_extra_source_media_plan, render_extra_source_media_plan
 from .finalize_remediation import (
+    build_finalize_expected_update_plan,
     build_finalize_remediation_plan,
+    render_finalize_expected_update_plan,
     render_finalize_remediation_plan,
     render_finalize_remediation_run,
     run_finalize_remediation_plan,
@@ -742,6 +744,26 @@ def build_parser() -> argparse.ArgumentParser:
     finalize_remediation_run_parser.add_argument("--process-timeout", type=int, default=300, help="Per-command process timeout in seconds")
     finalize_remediation_run_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     finalize_remediation_run_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    finalize_expected_parser = subcommands.add_parser(
+        "finalize-remediation-expected-update-plan",
+        help="Build readonly expected-episode update suggestions from remediation diagnostics",
+    )
+    finalize_expected_parser.add_argument("--plan", required=True, help="JSON report from finalize-remediation-plan")
+    finalize_expected_parser.add_argument(
+        "--diagnostic-report",
+        action="append",
+        default=[],
+        help="Diagnostic JSON report from finalize-remediation-run; can be repeated",
+    )
+    finalize_expected_parser.add_argument(
+        "--diagnostic-dir",
+        action="append",
+        default=[],
+        help="Directory containing diagnostic JSON reports; can be repeated",
+    )
+    finalize_expected_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
+    finalize_expected_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     extra_source_parser = subcommands.add_parser("extra-source-media-plan", help="Build readonly follow-up plan for source videos that blocked cleanup")
     extra_source_parser.add_argument("--finalize-run-report", required=True, help="JSON report from batch-finalize-run")
@@ -2748,6 +2770,28 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
+
+    if args.command == "finalize-remediation-expected-update-plan":
+        plan_report = load_optional_json_report(args.plan)
+        if not isinstance(plan_report, dict):
+            parser.error("finalize-remediation-expected-update-plan requires a valid --plan JSON report")
+        diagnostic_paths: List[str] = list(args.diagnostic_report or [])
+        for directory in args.diagnostic_dir or []:
+            diagnostic_paths.extend(str(path) for path in sorted(Path(directory).glob("*.json")) if path.is_file())
+        diagnostic_reports = [
+            report
+            for report in (load_optional_json_report(path) for path in diagnostic_paths)
+            if isinstance(report, dict)
+        ]
+        if not diagnostic_reports:
+            parser.error("finalize-remediation-expected-update-plan requires diagnostic reports or directories")
+        report = build_finalize_expected_update_plan(plan_report, diagnostic_reports)
+        rendered = render_finalize_expected_update_plan(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
 
     if args.command == "extra-source-media-plan":
         finalize_report = load_optional_json_report(args.finalize_run_report)

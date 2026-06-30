@@ -7,7 +7,9 @@ from typing import List, Optional
 
 from series_cloud_archiver.cli import main
 from series_cloud_archiver.finalize_remediation import (
+    build_finalize_expected_update_plan,
     build_finalize_remediation_plan,
+    render_finalize_expected_update_plan,
     render_finalize_remediation_plan,
     render_finalize_remediation_run,
     run_finalize_remediation_plan,
@@ -285,6 +287,146 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
         self.assertEqual(payload["mode"], "readonly-finalize-remediation-run")
         self.assertEqual(payload["planned_commands"], 2)
         self.assertEqual(payload["executed_commands"], 0)
+
+    def test_expected_update_plan_promotes_contiguous_strm_cloud_evidence(self) -> None:
+        plan = self._plan_report()
+        strm_report = {
+            "mode": "strm-verify",
+            "title": "罚罪2",
+            "ok": False,
+            "expected": {
+                "episode_count": 10,
+                "episode_min": 1,
+                "episode_max": 10,
+            },
+            "strm": {
+                "roots": [
+                    {
+                        "path": "/example/host/strm/series/罚罪2 {tmdbid=301001}/Season 01",
+                        "episode_count": 12,
+                        "episodes": list(range(1, 13)),
+                        "missing_in_range": [],
+                        "duplicate_episodes": [],
+                        "target_prefix_mismatch_count": 0,
+                        "forbidden_target_count": 0,
+                    }
+                ],
+                "combined": {
+                    "episode_count": 12,
+                    "episode_min": 1,
+                    "episode_max": 12,
+                    "missing_in_range": [],
+                    "episodes": list(range(1, 13)),
+                },
+            },
+            "blockers": ["strm_episode_count_mismatch"],
+        }
+        cloud_report = {
+            "mode": "mv3-cloud-duplicate-video-cleanup-result",
+            "season_path": "/已整理/series/罚罪2 {tmdbid=301001}/Season 01",
+            "strm_root": "/example/host/strm/series/罚罪2 {tmdbid=301001}/Season 01",
+            "summary": {
+                "episode_count": 12,
+                "episodes": list(range(1, 13)),
+                "missing_in_range": [],
+                "duplicate_episodes": [],
+                "protected_strm_target_count": 12,
+                "strm_file_count": 12,
+            },
+            "delete_plan": {"duplicate_video_count": 0},
+        }
+
+        report = build_finalize_expected_update_plan(plan, [strm_report, cloud_report])
+        ready = [item for item in report["items"] if item["title"] == "罚罪2"][0]
+
+        self.assertEqual(report["ready_items"], 1)
+        self.assertEqual(ready["status"], "ready_for_expected_update")
+        self.assertEqual(ready["new_expected_episode_count"], 12)
+        self.assertEqual(ready["new_expected_episodes"], list(range(1, 13)))
+        self.assertEqual(ready["identity_override"]["expected_episodes"], list(range(1, 13)))
+        self.assertIn("ready_for_expected_update", render_finalize_expected_update_plan(report, "csv"))
+
+    def test_expected_update_plan_requires_cloud_evidence(self) -> None:
+        plan = self._plan_report()
+        strm_report = {
+            "mode": "strm-verify",
+            "title": "罚罪2",
+            "strm": {
+                "roots": [{"episode_count": 12, "episodes": list(range(1, 13))}],
+                "combined": {"episode_count": 12, "episodes": list(range(1, 13))},
+            },
+        }
+
+        report = build_finalize_expected_update_plan(plan, [strm_report])
+        row = [item for item in report["items"] if item["title"] == "罚罪2"][0]
+
+        self.assertEqual(row["status"], "manual_review_required")
+        self.assertIn("cloud_diagnostic_missing", row["blockers"])
+
+    def test_cli_writes_finalize_expected_update_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            plan_path = tmp_path / "plan.json"
+            diagnostics = tmp_path / "diagnostics"
+            diagnostics.mkdir()
+            output = tmp_path / "expected.json"
+            plan_path.write_text(json.dumps(self._plan_report(), ensure_ascii=False), encoding="utf-8")
+            (diagnostics / "strm.json").write_text(
+                json.dumps(
+                    {
+                        "mode": "strm-verify",
+                        "title": "罚罪2",
+                        "strm": {
+                            "roots": [
+                                {
+                                    "path": "/example/host/strm/series/罚罪2 {tmdbid=301001}/Season 01",
+                                    "episode_count": 12,
+                                    "episodes": list(range(1, 13)),
+                                }
+                            ],
+                            "combined": {"episode_count": 12, "episodes": list(range(1, 13))},
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (diagnostics / "cloud.json").write_text(
+                json.dumps(
+                    {
+                        "mode": "mv3-cloud-duplicate-video-cleanup-result",
+                        "season_path": "/已整理/series/罚罪2 {tmdbid=301001}/Season 01",
+                        "summary": {
+                            "episode_count": 12,
+                            "episodes": list(range(1, 13)),
+                            "protected_strm_target_count": 12,
+                            "strm_file_count": 12,
+                        },
+                        "delete_plan": {"duplicate_video_count": 0},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code = main(
+                [
+                    "finalize-remediation-expected-update-plan",
+                    "--plan",
+                    str(plan_path),
+                    "--diagnostic-dir",
+                    str(diagnostics),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["mode"], "readonly-finalize-remediation-expected-update-plan")
+        self.assertEqual(payload["ready_items"], 1)
 
     def _plan_report(self) -> dict:
         return build_finalize_remediation_plan(
