@@ -3,15 +3,21 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from series_cloud_archiver.identity import resolve_identity_overrides_from_scan_report
+from series_cloud_archiver.identity import (
+    resolve_identity_overrides_from_cloud_report,
+    resolve_identity_overrides_from_scan_report,
+)
 
 
 class FakeMoviePilotClient:
+    calls = []
+
     def __init__(self, base_url, token):
         self.base_url = base_url
         self.token = token
 
     def recognize_file(self, path):
+        self.__class__.calls.append(path)
         return {
             "meta_info": {
                 "type": "电视剧",
@@ -31,6 +37,9 @@ class FakeMoviePilotClient:
 
 
 class IdentityResolveTest(unittest.TestCase):
+    def setUp(self) -> None:
+        FakeMoviePilotClient.calls = []
+
     def test_resolves_missing_candidate_identity(self) -> None:
         report = {
             "candidates": [
@@ -56,6 +65,73 @@ class IdentityResolveTest(unittest.TestCase):
         self.assertEqual(record["tmdbid"], 93740)
         self.assertEqual(record["season"], 1)
         self.assertEqual(record["expected_episodes"], [1, 2, 3])
+
+    def test_scan_report_skips_title_with_tmdbid_and_single_season(self) -> None:
+        report = {
+            "candidates": [
+                {
+                    "title": "法证先锋 (2006) {tmdbid=286997} Season 02",
+                    "path": "/volume3/hlink/TV/法证先锋 (2006) {tmdbid=286997}/Season 02",
+                    "status": "candidate_for_cloud_check",
+                    "video_count": 30,
+                    "seasons": [2],
+                },
+                {
+                    "title": "Foundation.S01.2021",
+                    "status": "candidate_for_cloud_check",
+                    "video_count": 3,
+                },
+            ]
+        }
+
+        import series_cloud_archiver.identity as identity_module
+
+        original = identity_module.MoviePilotClient
+        identity_module.MoviePilotClient = FakeMoviePilotClient
+        try:
+            payload = resolve_identity_overrides_from_scan_report(report, "http://example.invalid", "token")
+        finally:
+            identity_module.MoviePilotClient = original
+
+        self.assertEqual(payload["summary"]["input_candidates"], 1)
+        self.assertEqual(FakeMoviePilotClient.calls, ["Foundation.S01.2021"])
+
+    def test_cloud_report_resolves_only_identity_review_rows(self) -> None:
+        report = {
+            "items": [
+                {
+                    "status": "needs_identity_review",
+                    "title": "Foundation.S01.2021",
+                    "season": 1,
+                    "expected_count": 3,
+                    "expected_episodes": [1, 2, 3],
+                    "source_paths": ["/volume3/hlink/TV/Foundation/Season 1"],
+                },
+                {
+                    "status": "cloud_strm_not_found",
+                    "title": "Already Known",
+                    "tmdbid": 123,
+                    "season": 1,
+                    "expected_count": 3,
+                },
+            ]
+        }
+
+        import series_cloud_archiver.identity as identity_module
+
+        original = identity_module.MoviePilotClient
+        identity_module.MoviePilotClient = FakeMoviePilotClient
+        try:
+            payload = resolve_identity_overrides_from_cloud_report(report, "http://example.invalid", "token")
+        finally:
+            identity_module.MoviePilotClient = original
+
+        self.assertEqual(payload["summary"], {"input_candidates": 1, "attempted": 1, "resolved": 1})
+        record = payload["identity_overrides"][0]
+        self.assertEqual(record["match_path"], "/volume3/hlink/TV/Foundation/Season 1")
+        self.assertEqual(record["tmdbid"], 93740)
+        self.assertEqual(record["season"], 1)
+        self.assertEqual(FakeMoviePilotClient.calls, ["Foundation.S01.2021"])
 
     def test_keeps_multi_season_pack_for_review(self) -> None:
         report = {

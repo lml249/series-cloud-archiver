@@ -8,6 +8,9 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 from .moviepilot import MoviePilotClient
 
 
+TMDBID_PATTERN = re.compile(r"\{tmdbid=(?P<tmdbid>\d+)\}", re.IGNORECASE)
+
+
 def load_identity_overrides(path: str) -> Dict[Tuple[str, str], Dict[str, object]]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     records = payload.get("identity_overrides", payload) if isinstance(payload, dict) else payload
@@ -64,10 +67,45 @@ def resolve_identity_overrides_from_scan_report(
     output_path: str = "",
     progress: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, object]:
+    return _resolve_identity_overrides_from_candidates(
+        _candidate_titles_missing_identity(scan_report),
+        mp_base_url,
+        mp_token,
+        top=top,
+        output_path=output_path,
+        progress=progress,
+    )
+
+
+def resolve_identity_overrides_from_cloud_report(
+    cloud_report: Dict[str, object],
+    mp_base_url: str,
+    mp_token: str,
+    top: int = 0,
+    output_path: str = "",
+    progress: Optional[Callable[[str], None]] = None,
+) -> Dict[str, object]:
+    return _resolve_identity_overrides_from_candidates(
+        _candidates_from_cloud_identity_review(cloud_report),
+        mp_base_url,
+        mp_token,
+        top=top,
+        output_path=output_path,
+        progress=progress,
+    )
+
+
+def _resolve_identity_overrides_from_candidates(
+    candidates: List[Dict[str, object]],
+    mp_base_url: str,
+    mp_token: str,
+    top: int = 0,
+    output_path: str = "",
+    progress: Optional[Callable[[str], None]] = None,
+) -> Dict[str, object]:
     client = MoviePilotClient(mp_base_url, mp_token)
     records: List[Dict[str, object]] = []
     warnings: List[str] = []
-    candidates = _candidate_titles_missing_identity(scan_report)
     if top > 0:
         candidates = candidates[:top]
 
@@ -145,12 +183,61 @@ def _candidate_titles_missing_identity(scan_report: Dict[str, object]) -> List[D
     return candidates
 
 
+def _candidates_from_cloud_identity_review(cloud_report: Dict[str, object]) -> List[Dict[str, object]]:
+    seen: Set[Tuple[str, str]] = set()
+    candidates: List[Dict[str, object]] = []
+    for item in cloud_report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") != "needs_identity_review":
+            continue
+        source_paths = item.get("source_paths") if isinstance(item.get("source_paths"), list) else []
+        path_value = str(source_paths[0]) if source_paths else ""
+        title = str(item.get("title") or "")
+        key = (title, path_value)
+        if not title or key in seen:
+            continue
+        seen.add(key)
+        season = int(item.get("season") or 0)
+        candidate = {
+            "title": title,
+            "path": path_value,
+            "status": "candidate_for_cloud_check",
+            "video_count": int(item.get("expected_count") or 0),
+            "episode_numbers": item.get("expected_episodes") if isinstance(item.get("expected_episodes"), list) else [],
+            "seasons": [season] if season else [],
+        }
+        candidates.append(candidate)
+    return candidates
+
+
 def _candidate_has_identity(candidate: Dict[str, object]) -> bool:
     for key in ("manual_completion", "mp"):
         value = candidate.get(key)
         if isinstance(value, dict) and int(value.get("tmdbid") or 0) and int(value.get("season") or 0):
             return True
+    tmdbid = _tmdbid_from_text(str(candidate.get("title") or "") + " " + str(candidate.get("path") or ""))
+    season = _season_from_candidate(candidate)
+    if tmdbid and season:
+        return True
     return False
+
+
+def _tmdbid_from_text(text: str) -> int:
+    match = TMDBID_PATTERN.search(text or "")
+    return int(match.group("tmdbid")) if match else 0
+
+
+def _season_from_candidate(candidate: Dict[str, object]) -> int:
+    title_season = _season_from_text(str(candidate.get("title") or ""))
+    if title_season:
+        return title_season
+    seasons = candidate.get("seasons")
+    if isinstance(seasons, list):
+        season_values = sorted({int(value) for value in seasons if isinstance(value, int) or str(value).isdigit()})
+        if len(season_values) == 1:
+            return season_values[0]
+    return 0
 
 
 def _override_from_recognition(candidate: Dict[str, object], payload: object) -> Optional[Dict[str, object]]:

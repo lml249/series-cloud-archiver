@@ -68,7 +68,11 @@ from .hlink_cleanup import (
     preview_cloud_source_orphan_cleanup,
     render_cloud_hlink_cleanup,
 )
-from .identity import render_identity_overrides, resolve_identity_overrides_from_scan_report
+from .identity import (
+    render_identity_overrides,
+    resolve_identity_overrides_from_cloud_report,
+    resolve_identity_overrides_from_scan_report,
+)
 from .moviepilot import (
     execute_mp_cleanup_from_preview_report,
     render_mp_cleanup_execute_report,
@@ -630,7 +634,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     identity_parser = subcommands.add_parser("identity-resolve", help="Resolve missing candidate TMDB identities through MoviePilot")
     identity_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
-    identity_parser.add_argument("--scan-report", required=True, help="JSON report from scan/evaluate")
+    identity_parser.add_argument("--scan-report", default="", help="JSON report from scan/evaluate")
+    identity_parser.add_argument("--cloud-report", default="", help="Optional JSON report from cloud-check; resolves only needs_identity_review rows")
     identity_parser.add_argument("--output", required=True, help="Write identity override JSON to file")
     identity_parser.add_argument("--top", type=int, default=None, help="Maximum missing-identity candidates to resolve")
 
@@ -2271,15 +2276,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         config = config_from_env(args.env_file, [])
         if not config.mp_base_url or not config.mp_token:
             parser.error("identity-resolve requires MP_BASE_URL and MP_API_TOKEN")
+        if not args.scan_report and not args.cloud_report:
+            parser.error("identity-resolve requires --scan-report or --cloud-report")
         top = args.top if args.top is not None else 0
-        payload = resolve_identity_overrides_from_scan_report(
-            load_scan_report(args.scan_report),
-            config.mp_base_url,
-            config.mp_token,
-            top=top,
-            output_path=args.output,
-            progress=print,
-        )
+        if args.cloud_report:
+            payload = resolve_identity_overrides_from_cloud_report(
+                load_optional_json_report(args.cloud_report),
+                config.mp_base_url,
+                config.mp_token,
+                top=top,
+                output_path=args.output,
+                progress=print,
+            )
+        else:
+            payload = resolve_identity_overrides_from_scan_report(
+                load_scan_report(args.scan_report),
+                config.mp_base_url,
+                config.mp_token,
+                top=top,
+                output_path=args.output,
+                progress=print,
+            )
         print(render_identity_overrides({"summary": payload["summary"], "warnings": payload["warnings"]}))
         return 0
 
