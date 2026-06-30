@@ -849,6 +849,8 @@ def _append_stage(
     ok = bool(report.get(ok_key))
     blockers = _string_list(report.get("blockers"))
     warnings = _string_list(report.get("warnings"))
+    if stage == "cloud_hlink_cleanup_preview":
+        _append_cleanup_preview_diagnostics(row, report)
     row.setdefault("stages", []).append(
         {
             "stage": stage,
@@ -862,6 +864,32 @@ def _append_stage(
     row["blockers"] = sorted(set(_string_list(row.get("blockers")) + blockers))
     row["warnings"] = sorted(set(_string_list(row.get("warnings")) + warnings))
     return ok
+
+
+def _append_cleanup_preview_diagnostics(row: Dict[str, object], report: Dict[str, object]) -> None:
+    filesystem = report.get("filesystem") if isinstance(report.get("filesystem"), dict) else {}
+    source_roots = filesystem.get("source_roots") if isinstance(filesystem.get("source_roots"), list) else []
+    samples: List[str] = []
+    blocked_roots: List[Dict[str, object]] = []
+    for source_root in source_roots:
+        if not isinstance(source_root, dict):
+            continue
+        sample = _string_list(source_root.get("unlinked_video_sample"))
+        if sample:
+            samples.extend(sample)
+        if bool(source_root.get("blocked")):
+            blocked_roots.append(
+                {
+                    "path": str(source_root.get("path") or ""),
+                    "video_count": int(source_root.get("video_count") or 0),
+                    "linked_hlink_video_count": int(source_root.get("linked_hlink_video_count") or 0),
+                    "unlinked_video_sample": sample,
+                }
+            )
+    if samples:
+        row["cleanup_unlinked_video_sample"] = sorted(set(samples))
+    if blocked_roots:
+        row["cleanup_blocked_source_roots"] = blocked_roots
 
 
 def _finish_missing_credentials(row: Dict[str, object], blocker: str, status: str) -> Dict[str, object]:
@@ -1860,6 +1888,8 @@ def _batch_review_row(
         "finalize_status": finalize_item.get("status", "") if finalize_item else "",
         "finalize_last_stage": _review_last_stage(finalize_item),
         "finalize_blockers": "; ".join(_string_list(finalize_item.get("blockers"))) if finalize_item else "",
+        "finalize_cleanup_unlinked_videos": " | ".join(_string_list(finalize_item.get("cleanup_unlinked_video_sample"))) if finalize_item else "",
+        "finalize_cleanup_blocked_source_roots": _blocked_source_roots_cell(finalize_item.get("cleanup_blocked_source_roots")) if finalize_item else "",
         "cloud_media_path": item.get("cloud_media_path", ""),
         "strm_root": item.get("strm_root", ""),
         "source_paths": " | ".join(_string_list(item.get("source_paths"))),
@@ -1954,6 +1984,21 @@ def _episode_cell(value: object) -> str:
     ranges.append(f"{start}-{previous}" if start != previous else str(start))
     suffix = f" ({len(episodes)}集)" if len(episodes) > 20 else ""
     return ",".join(ranges) + suffix
+
+
+def _blocked_source_roots_cell(value: object) -> str:
+    if not isinstance(value, list):
+        return ""
+    parts: List[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "")
+        video_count = int(item.get("video_count") or 0)
+        linked_count = int(item.get("linked_hlink_video_count") or 0)
+        if path:
+            parts.append(f"{path} ({linked_count}/{video_count} linked)")
+    return " | ".join(parts)
 
 
 def _strip_identity_suffix(value: str) -> str:
@@ -2199,6 +2244,8 @@ def _render_review_csv(report: Dict[str, object]) -> str:
         "finalize_status",
         "finalize_last_stage",
         "finalize_blockers",
+        "finalize_cleanup_unlinked_videos",
+        "finalize_cleanup_blocked_source_roots",
         "cloud_media_path",
         "strm_root",
         "source_paths",

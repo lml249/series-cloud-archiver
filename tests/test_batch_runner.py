@@ -716,6 +716,51 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(report["items"][0]["status"], "cleanup_executed")
         self.assertIn("cloud-hlink-cleanup-execute", [call[0] for call in actions.calls])
 
+    def test_batch_finalize_run_carries_cleanup_unlinked_video_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+
+            def blocked_cleanup_preview(**kwargs: object) -> dict:
+                return {
+                    "mode": "cloud-hlink-cleanup-preview",
+                    "ok": False,
+                    "ready_for_execute": False,
+                    "blockers": ["source_root_check_failed"],
+                    "warnings": [],
+                    "filesystem": {
+                        "source_roots": [
+                            {
+                                "path": "/source/Band.of.Brothers",
+                                "blocked": True,
+                                "video_count": 12,
+                                "linked_hlink_video_count": 10,
+                                "unlinked_video_sample": [
+                                    "/source/Band.of.Brothers.SP1.We.Stand.Alone.mkv",
+                                    "/source/Band.of.Brothers.SP2.The.Making.mkv",
+                                ],
+                            }
+                        ]
+                    },
+                }
+
+            batch_actions = _batch_finalize_actions(actions)
+            batch_actions.cleanup_preview = blocked_cleanup_preview
+            report = run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=False,
+                actions=batch_actions,
+            )
+
+        item = report["items"][0]
+        self.assertEqual(item["status"], "failed_cleanup_preview")
+        self.assertIn("source_root_check_failed", item["blockers"])
+        self.assertIn("SP1.We.Stand.Alone", " ".join(item["cleanup_unlinked_video_sample"]))
+        self.assertEqual(item["cleanup_blocked_source_roots"][0]["linked_hlink_video_count"], 10)
+        self.assertEqual(item["cleanup_blocked_source_roots"][0]["video_count"], 12)
+
     def test_batch_finalize_run_uses_strm_paths_for_scrape_and_cloud_path_only_for_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             actions = FinalizeFakeActions()
@@ -1383,6 +1428,21 @@ class BatchRunnerTest(unittest.TestCase):
                     "tmdbid": 4613,
                     "season": 1,
                     "blockers": ["source_root_check_failed"],
+                    "cleanup_unlinked_video_sample": [
+                        "/source/Band.of.Brothers.SP1.We.Stand.Alone.mkv",
+                        "/source/Band.of.Brothers.SP2.The.Making.mkv",
+                    ],
+                    "cleanup_blocked_source_roots": [
+                        {
+                            "path": "/source/Band.of.Brothers",
+                            "video_count": 12,
+                            "linked_hlink_video_count": 10,
+                            "unlinked_video_sample": [
+                                "/source/Band.of.Brothers.SP1.We.Stand.Alone.mkv",
+                                "/source/Band.of.Brothers.SP2.The.Making.mkv",
+                            ],
+                        }
+                    ],
                     "stages": [{"stage": "cloud_hlink_cleanup_preview", "ok": False}],
                 }
             ],
@@ -1401,6 +1461,8 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(brother["decision"], "blocked_after_finalize_gates")
         self.assertIn("source_root_check_failed", brother["reason_summary"])
         self.assertEqual(brother["finalize_last_stage"], "cloud_hlink_cleanup_preview")
+        self.assertIn("SP1.We.Stand.Alone", brother["finalize_cleanup_unlinked_videos"])
+        self.assertIn("/source/Band.of.Brothers (10/12 linked)", brother["finalize_cleanup_blocked_source_roots"])
         self.assertEqual(changan["decision"], "manual_review_preview_blocked")
         self.assertIn("15-28", changan["preview_missing_expected"])
         rendered = render_batch_review_report(report, "csv")
@@ -1408,6 +1470,7 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("blocked_after_finalize_gates", rendered)
         self.assertIn("manual_review_preview_blocked", rendered)
         self.assertIn("source_root_check_failed", rendered)
+        self.assertIn("SP2.The.Making", rendered)
 
     def test_cli_writes_batch_review_report_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
