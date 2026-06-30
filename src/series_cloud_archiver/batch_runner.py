@@ -698,8 +698,11 @@ def _run_finalize_item(
             "safety": "MoviePilot scrape skipped because execute_scrape was not requested",
         }
     if not _append_stage(row, _stage_report_path(output_dir, report_prefix, "02-mp-scrape-strm"), "mp_scrape_strm", scrape_report):
-        row["status"] = "failed_mp_scrape"
-        return row
+        if not _mp_scrape_timeout_report(scrape_report):
+            row["status"] = "failed_mp_scrape"
+            return row
+        _remove_row_blockers(row, _string_list(scrape_report.get("blockers")))
+        row["warnings"] = sorted(set(_string_list(row.get("warnings")) + ["mp_scrape_timeout_continuing_to_nfo_audit"]))
 
     if not _append_stage(
         row,
@@ -894,6 +897,21 @@ def _append_stage(
     row["blockers"] = sorted(set(_string_list(row.get("blockers")) + blockers))
     row["warnings"] = sorted(set(_string_list(row.get("warnings")) + warnings))
     return ok
+
+
+def _mp_scrape_timeout_report(report: Dict[str, object]) -> bool:
+    scrape = report.get("scrape") if isinstance(report.get("scrape"), dict) else {}
+    if str(scrape.get("error_type") or "") == "TimeoutError":
+        return True
+    response = scrape.get("response") if isinstance(scrape.get("response"), dict) else {}
+    return "timed out" in str(response.get("message") or "").lower()
+
+
+def _remove_row_blockers(row: Dict[str, object], blockers: List[str]) -> None:
+    if not blockers:
+        return
+    removable = set(blockers)
+    row["blockers"] = [blocker for blocker in _string_list(row.get("blockers")) if blocker not in removable]
 
 
 def _append_cleanup_preview_diagnostics(row: Dict[str, object], report: Dict[str, object]) -> None:

@@ -54,6 +54,7 @@ class FinalizeFakeActions:
         self.fail_stage = fail_stage
         self.calls: list[tuple[str, dict]] = []
         self.cloud_duplicate_count = 0
+        self.mp_scrape_timeout = False
 
     def _ok(self, stage: str, **extra: object) -> dict:
         self.calls.append((stage, dict(extra)))
@@ -90,6 +91,26 @@ class FinalizeFakeActions:
         return report
 
     def scrape_mp_strm(self, *args: object, **kwargs: object) -> dict:
+        if self.mp_scrape_timeout:
+            self.calls.append(("mp-scrape-strm-result", {"args": list(args), "kwargs": kwargs}))
+            return {
+                "mode": "mp-scrape-strm-result",
+                "ok": False,
+                "strm_path": kwargs.get("strm_path", ""),
+                "mp_path": kwargs.get("mp_path", ""),
+                "storage": kwargs.get("storage", ""),
+                "item_type": kwargs.get("item_type", ""),
+                "scrape": {
+                    "http_status": 0,
+                    "ok": False,
+                    "request": {"path": kwargs.get("mp_path", ""), "storage": kwargs.get("storage", ""), "type": kwargs.get("item_type", "")},
+                    "error_type": "TimeoutError",
+                    "response": {"message": "timed out"},
+                    "api_success": False,
+                },
+                "blockers": ["mp_scrape_request_failed"],
+                "warnings": [],
+            }
         return self._ok("mp-scrape-strm-result", args=list(args), kwargs=kwargs)
 
     def audit_nfo_language(self, **kwargs: object) -> dict:
@@ -854,6 +875,76 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(report["items"][0]["status"], "failed_nfo_language")
         self.assertNotIn("emby-media-updated", [call[0] for call in actions.calls])
         self.assertNotIn("cloud-hlink-cleanup-execute", [call[0] for call in actions.calls])
+
+    def test_batch_finalize_run_continues_after_moviepilot_scrape_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            actions.mp_scrape_timeout = True
+            report = run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=False,
+                actions=_batch_finalize_actions(actions),
+            )
+
+        item = report["items"][0]
+        stage_map = {stage["stage"]: stage for stage in item["stages"]}
+        self.assertTrue(report["ok"])
+        self.assertFalse(report["halted"])
+        self.assertEqual(item["status"], "cleanup_waiting_for_approval")
+        self.assertFalse(stage_map["mp_scrape_strm"]["ok"])
+        self.assertTrue(stage_map["strm_nfo_language_audit"]["ok"])
+        self.assertTrue(stage_map["emby_media_updated_verify"]["ok"])
+        self.assertIn("mp_scrape_timeout_continuing_to_nfo_audit", item["warnings"])
+        self.assertNotIn("mp_scrape_request_failed", item["blockers"])
+        call_names = [call[0] for call in actions.calls]
+        self.assertIn("strm-nfo-language-audit", call_names)
+        self.assertIn("emby-media-updated", call_names)
+        self.assertIn("cloud-hlink-cleanup-preview", call_names)
+
+    def test_batch_finalize_run_moviepilot_timeout_still_stops_on_nfo_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions(fail_stage="strm-nfo-language-audit")
+            actions.mp_scrape_timeout = True
+            report = run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=False,
+                actions=_batch_finalize_actions(actions),
+            )
+
+        item = report["items"][0]
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["halted"])
+        self.assertEqual(item["status"], "failed_nfo_language")
+        self.assertIn("mp_scrape_timeout_continuing_to_nfo_audit", item["warnings"])
+        self.assertIn("strm-nfo-language-audit_failed", item["blockers"])
+        self.assertNotIn("emby-media-updated", [call[0] for call in actions.calls])
+        self.assertNotIn("cloud-hlink-cleanup-preview", [call[0] for call in actions.calls])
+
+    def test_batch_finalize_run_non_timeout_moviepilot_failure_stops_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions(fail_stage="mp-scrape-strm-result")
+            report = run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=False,
+                actions=_batch_finalize_actions(actions),
+            )
+
+        item = report["items"][0]
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["halted"])
+        self.assertEqual(item["status"], "failed_mp_scrape")
+        self.assertIn("mp-scrape-strm-result_failed", item["blockers"])
+        self.assertNotIn("strm-nfo-language-audit", [call[0] for call in actions.calls])
+        self.assertNotIn("emby-media-updated", [call[0] for call in actions.calls])
 
     def test_batch_finalize_run_requires_delete_approval_to_execute_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
