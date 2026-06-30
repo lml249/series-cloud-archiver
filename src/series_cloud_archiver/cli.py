@@ -1234,6 +1234,7 @@ def build_parser() -> argparse.ArgumentParser:
     wrong_root_parser.add_argument("--strm-root", required=True, help="Local/DSM STRM series root used for target verification")
     wrong_root_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
     wrong_root_parser.add_argument("--title-filter", default="", help="Optional substring filter for one title")
+    wrong_root_parser.add_argument("--season", type=int, default=None, help="Optional season filter for direct season folders under the wrong root")
     wrong_root_parser.add_argument("--limit", type=int, default=1000, help="Maximum cloud folder items to request")
     wrong_root_parser.add_argument("--timeout", type=int, default=120, help="Per-request timeout in seconds")
     wrong_root_parser.add_argument("--approve-move", action="store_true", help="Allow moving media from wrong root to correct root when checks pass")
@@ -3555,6 +3556,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             strm_root=args.strm_root,
             storage=args.storage,
             title_filter=args.title_filter,
+            season=args.season,
             approve_move=args.approve_move,
             approve_delete_duplicates=args.approve_delete_duplicates,
             approve_delete_empty=args.approve_delete_empty,

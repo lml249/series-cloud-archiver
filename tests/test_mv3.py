@@ -352,6 +352,74 @@ class MV3WrongRootRepairTest(unittest.TestCase):
             self.assertEqual(report["items"][0]["strm"]["total_strm"], 2)
             self.assertFalse(any("/api/v1/files/115/move" in url for _method, url, _body in calls))
 
+    def test_wrong_root_repair_direct_season_filter_only_processes_requested_season(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            title = "广告狂人 (2007) {tmdbid=1104}"
+            strm_title_root = Path(tmp) / "strm" / "series" / title
+            season_dir = strm_title_root / "Season 07"
+            season_dir.mkdir(parents=True)
+            for episode in (1, 2):
+                (season_dir / f"广告狂人 - S07E{episode:02d}.strm").write_text(
+                    f"/已整理/series/广告狂人 (2007) {{tmdbid=1104}}/Season 07/E{episode:02d}.mkv",
+                    encoding="utf-8",
+                )
+
+            with patch("urllib.request.urlopen", lambda request, timeout: _fake_mv3_direct_multi_season_wrong_root_response(request, moved=False)):
+                report = repair_mv3_wrong_root(
+                    "http://mv3.example",
+                    "token",
+                    "/已整理/series/美剧【广告狂人】1-7季全 1080P中字【373G】",
+                    "/已整理/series/广告狂人 (2007) {tmdbid=1104}",
+                    str(strm_title_root),
+                    storage="115-default",
+                    season=7,
+                )
+
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["season_filter"], 7)
+            self.assertEqual(report["wrong_root_direct_season_total_count"], 2)
+            self.assertEqual(report["wrong_root_direct_season_count"], 1)
+            self.assertEqual([item["season"] for item in report["items"]], [7])
+            self.assertEqual(report["items"][0]["decision"], "move_wrong_media_to_correct_season")
+
+    def test_wrong_root_repair_direct_season_filter_moves_only_requested_season_with_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            title = "广告狂人 (2007) {tmdbid=1104}"
+            strm_title_root = Path(tmp) / "strm" / "series" / title
+            season_dir = strm_title_root / "Season 07"
+            season_dir.mkdir(parents=True)
+            for episode in (1, 2):
+                (season_dir / f"广告狂人 - S07E{episode:02d}.strm").write_text(
+                    f"/已整理/series/广告狂人 (2007) {{tmdbid=1104}}/Season 07/E{episode:02d}.mkv",
+                    encoding="utf-8",
+                )
+            posted = []
+            state = {"moved": False}
+
+            def fake_urlopen(request, timeout):
+                if getattr(request, "data", None):
+                    posted.append((request.full_url, json.loads(request.data.decode("utf-8"))))
+                    if request.full_url.endswith("/api/v1/files/115/move"):
+                        state["moved"] = True
+                return _fake_mv3_direct_multi_season_wrong_root_response(request, moved=state["moved"])
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                report = repair_mv3_wrong_root(
+                    "http://mv3.example",
+                    "token",
+                    "/已整理/series/美剧【广告狂人】1-7季全 1080P中字【373G】",
+                    "/已整理/series/广告狂人 (2007) {tmdbid=1104}",
+                    str(strm_title_root),
+                    storage="115-default",
+                    season=7,
+                    approve_move=True,
+                )
+
+            self.assertTrue(report["ok"])
+            move_bodies = [body for url, body in posted if url.endswith("/api/v1/files/115/move")]
+            self.assertEqual(move_bodies, [{"file_ids": ["wrong-s7-file-1", "wrong-s7-file-2"], "target_cid": "correct-season-7", "storage": "115-default"}])
+            self.assertEqual([item["season"] for item in report["items"]], [7])
+
     def test_wrong_root_repair_direct_season_counts_url_path_strm_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             title = "广告狂人 (2007) {tmdbid=1104}"
@@ -856,6 +924,71 @@ def _fake_mv3_direct_season_wrong_root_response(request, moved=False, deleted=Fa
         "wrong-season-7": [] if moved else wrong_files_before,
         "correct-title-madmen": [{"name": "Season 07", "cid": "correct-season-7", "is_dir": True}],
         "correct-season-7": correct_files_after if moved else [],
+    }
+
+    if parsed.path.endswith("/api/v1/files/cloud/info"):
+        return FakeResponse({"success": True, "data": info.get(path, {})})
+    if parsed.path.endswith("/api/v1/files/cloud/browse") or parsed.path.endswith("/api/v1/files/115/browse"):
+        return FakeResponse({"success": True, "data": {"items": browse.get(cid, [])}})
+    return FakeResponse({"success": True, "data": {}})
+
+
+def _fake_mv3_direct_multi_season_wrong_root_response(request, moved=False):
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            return False
+
+        def read(self, _limit=-1):
+            return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+
+        @property
+        def headers(self):
+            return {"Content-Type": "application/json"}
+
+    parsed = urllib.parse.urlparse(request.full_url)
+    query = urllib.parse.parse_qs(parsed.query)
+    path = query.get("path", [""])[0]
+    cid = query.get("cid", [""])[0]
+    if parsed.path.endswith("/api/v1/files/115/delete") or parsed.path.endswith("/api/v1/files/115/move"):
+        return FakeResponse({"success": True, "message": "ok", "data": None})
+
+    title = "广告狂人 (2007) {tmdbid=1104}"
+    wrong_root = "/已整理/series/美剧【广告狂人】1-7季全 1080P中字【373G】"
+    correct_title = f"/已整理/series/{title}"
+    info = {
+        wrong_root: {"name": "美剧【广告狂人】1-7季全 1080P中字【373G】", "cid": "wrong-root-direct", "is_dir": True},
+        f"{wrong_root}/S01": {"name": "S01", "cid": "wrong-season-1", "is_dir": True},
+        f"{wrong_root}/S07": {"name": "S07", "cid": "wrong-season-7", "is_dir": True},
+        correct_title: {"name": title, "cid": "correct-title-madmen", "is_dir": True},
+        f"{correct_title}/Season 07": {"name": "Season 07", "cid": "correct-season-7", "is_dir": True},
+    }
+    browse = {
+        "wrong-root-direct": [
+            {"name": "S01", "cid": "wrong-season-1", "is_dir": True},
+            {"name": "S07", "cid": "wrong-season-7", "is_dir": True},
+        ],
+        "wrong-season-1": [{"name": "Mad.Men.S01E01.mkv", "fid": "wrong-s1-file-1", "is_dir": False}],
+        "wrong-season-7": []
+        if moved
+        else [
+            {"name": "Mad.Men.S07E01.mkv", "fid": "wrong-s7-file-1", "is_dir": False},
+            {"name": "Mad.Men.S07E02.mkv", "fid": "wrong-s7-file-2", "is_dir": False},
+        ],
+        "correct-title-madmen": [{"name": "Season 07", "cid": "correct-season-7", "is_dir": True}],
+        "correct-season-7": [
+            {"name": "Mad.Men.S07E01.mkv", "fid": "wrong-s7-file-1", "is_dir": False},
+            {"name": "Mad.Men.S07E02.mkv", "fid": "wrong-s7-file-2", "is_dir": False},
+        ]
+        if moved
+        else [],
     }
 
     if parsed.path.endswith("/api/v1/files/cloud/info"):

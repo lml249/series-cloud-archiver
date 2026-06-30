@@ -1675,6 +1675,7 @@ def repair_mv3_wrong_root(
     strm_root: str,
     storage: str = "115-default",
     title_filter: str = "",
+    season: Optional[int] = None,
     approve_move: bool = False,
     approve_delete_duplicates: bool = False,
     approve_delete_empty: bool = False,
@@ -1703,9 +1704,19 @@ def repair_mv3_wrong_root(
         for row in wrong_root_folder.get("rows", [])
         if isinstance(row, dict) and _cloud_item_kind(row) == "folder"
     ]
-    direct_season_rows = [row for row in folder_rows if _looks_like_season_folder(_cloud_name(row))]
+    direct_season_rows_all = [row for row in folder_rows if _looks_like_season_folder(_cloud_name(row))]
+    direct_season_rows = direct_season_rows_all
+    if season is not None:
+        if season <= 0:
+            blockers.append("season_filter_must_be_positive")
+        else:
+            direct_season_rows = [
+                row
+                for row in direct_season_rows_all
+                if _season_number_from_folder_name(_cloud_name(row)) == season
+            ]
     title_rows = folder_rows
-    if direct_season_rows:
+    if direct_season_rows_all:
         title_rows = []
     direct_title = _derive_direct_wrong_root_title(
         normalized_wrong_root,
@@ -1721,9 +1732,11 @@ def repair_mv3_wrong_root(
         ]
     if not wrong_root_folder.get("exists") and normalized_wrong_root:
         warnings.append("wrong_root_not_found")
+    if direct_season_rows_all and season is not None and season > 0 and not direct_season_rows:
+        warnings.append("direct_season_filter_matched_no_folders")
     if direct_season_rows and not direct_title:
         blockers.append("direct_season_wrong_root_title_required")
-    if not title_rows and not direct_season_rows and wrong_root_folder.get("exists"):
+    if not title_rows and not direct_season_rows_all and wrong_root_folder.get("exists"):
         warnings.append("wrong_root_has_no_title_folders")
 
     items: List[Dict[str, object]] = []
@@ -1781,7 +1794,7 @@ def repair_mv3_wrong_root(
     write_requested = approve_move or approve_delete_duplicates or approve_delete_empty
     item_ok = all(bool(item.get("ok")) for item in items) if items else not bool(title_rows)
     no_wrong_children_after_write = True
-    if write_requested and verify_wrong_root.get("exists"):
+    if write_requested and season is None and verify_wrong_root.get("exists"):
         no_wrong_children_after_write = len(verify_wrong_root.get("rows", [])) == 0
 
     return {
@@ -1798,8 +1811,10 @@ def repair_mv3_wrong_root(
         "strm_root": normalized_strm_root,
         "storage": storage,
         "title_filter": title_filter,
+        "season_filter": season,
         "wrong_root_found": bool(wrong_root_folder.get("exists")),
         "wrong_root_title_count": len(title_rows),
+        "wrong_root_direct_season_total_count": len(direct_season_rows_all),
         "wrong_root_direct_season_count": len(direct_season_rows),
         "items": items,
         "root_cleanup": root_cleanup,
@@ -1829,6 +1844,8 @@ def render_mv3_wrong_root_repair_report(report: Dict[str, object], output_format
         f"- Correct root: `{report.get('correct_root', '')}`",
         f"- STRM root: `{report.get('strm_root', '')}`",
         f"- Titles found: `{report.get('wrong_root_title_count', 0)}`",
+        f"- Direct seasons found: `{report.get('wrong_root_direct_season_count', 0)}` / `{report.get('wrong_root_direct_season_total_count', 0)}`",
+        f"- Season filter: `{report.get('season_filter', '')}`",
         "- Safety: compares cloud + STRM evidence before any approved move/delete.",
     ]
     blockers = report.get("blockers")
