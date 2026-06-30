@@ -6,18 +6,39 @@ cd "$ROOT"
 
 echo "== Public safety scans =="
 
-if git grep -InE '[0-9]{1,3}(\.[0-9]{1,3}){3}' -- . ':!.agents'; then
+scan_files() {
+  if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git ls-files ':!.agents'
+  else
+    find . \
+      -path './.git' -prune -o \
+      -path './.agents' -prune -o \
+      -path './data' -prune -o \
+      -path './logs' -prune -o \
+      -path './reports' -prune -o \
+      -path './outputs' -prune -o \
+      -path './artifacts' -prune -o \
+      -path './backups' -prune -o \
+      -path './.pytest_cache' -prune -o \
+      -path './.ruff_cache' -prune -o \
+      -path './.mypy_cache' -prune -o \
+      -path './.venv' -prune -o \
+      -path './venv' -prune -o \
+      -path './node_modules' -prune -o \
+      -name '__pycache__' -prune -o \
+      -name '.env' -prune -o \
+      -name '.env.*' -prune -o \
+      -type f -print | sed 's#^\./##'
+  fi
+}
+
+if scan_files | xargs grep -InE '[0-9]{1,3}(\.[0-9]{1,3}){3}'; then
   echo "IP address-like value found. Use .local placeholders instead." >&2
   exit 1
 fi
 
-if git grep -InEi '["'\'']?(token|cookie|password|passwd|api[_-]?key|secret|pickcode|authorization)["'\'']?\s*[:=]' -- . \
-  ':!.agents' \
-  ':!src' \
-  ':!tests' \
-  ':!.env.example' \
-  ':!.github/workflows/public-safety.yml' \
-  ':!scripts/validate-plan.sh'; then
+if scan_files | grep -Ev '^(src|tests)/|^\.env\.example$|^\.github/workflows/public-safety\.yml$|^scripts/validate-plan\.sh$' \
+  | xargs grep -InEi '["'\'']?(token|cookie|password|passwd|api[_-]?key|secret|pickcode|authorization)["'\'']?\s*[:=]'; then
   echo "Potential secret assignment found. Keep real secrets out of repo." >&2
   exit 1
 fi
@@ -59,16 +80,16 @@ if findings:
     raise SystemExit("Suspicious source literal found.")
 PY
 
-if git grep -InE '/volume[0-9]+/|/Users/[A-Za-z0-9._-]+|/mnt/[A-Za-z0-9._-]+|/downloads/[A-Za-z0-9._-]+' -- . \
-  ':!.agents' \
-  ':!scripts/validate-plan.sh'; then
+if scan_files | grep -Ev '^scripts/validate-plan\.sh$' \
+  | xargs grep -InE '/volume[0-9]+/|/Users/[A-Za-z0-9._-]+|/mnt/[A-Za-z0-9._-]+|/downloads/[A-Za-z0-9._-]+'; then
   echo "Real-looking local path found. Use placeholders instead." >&2
   exit 1
 fi
 
-if git grep -InE '\[NEEDS CLARIFICATION\]|ACTION REQUIRED|REMOVE IF UNUSED|TODO\(' -- \
-  README.md AGENTS.md docs specs .specify/memory \
-  ':!specs/**/requirements.md'; then
+if find README.md AGENTS.md docs specs .specify/memory \
+  -path 'specs/*/requirements.md' -prune -o \
+  -type f -print \
+  | xargs grep -InE '\[NEEDS CLARIFICATION\]|ACTION REQUIRED|REMOVE IF UNUSED|TODO\('; then
   echo "Template marker or unresolved clarification found." >&2
   exit 1
 fi
