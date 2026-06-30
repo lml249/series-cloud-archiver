@@ -2572,6 +2572,66 @@ class MoviePilotEvidenceTest(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertIn("no_matching_mp_transfer_history", report["blockers"])
 
+    def test_mp_cleanup_preview_allows_explicit_record_only_scope(self) -> None:
+        records = [
+            MPTransferHistoryRecord(
+                id=10,
+                title="夫妻的世界",
+                seasons="S01",
+                episodes="E01",
+                src="/example/source/The.World.of.the.Married.S01E01.mkv",
+                dest="/example/hlink/TV/夫妻的世界 (2020) {tmdbid=96164}/Season 01/夫妻的世界 S01E01.mkv",
+                mode="link",
+                status=True,
+                download_hash="27f6e02b447a5d676a233108b7bad035612a1afa",
+                tmdbid=96164,
+            ),
+            MPTransferHistoryRecord(
+                id=11,
+                title="夫妻的世界",
+                seasons="S01",
+                episodes="E02",
+                src="/example/source/The.World.of.the.Married.S01E02.mkv",
+                dest="/example/hlink/TV/夫妻的世界 (2020) {tmdbid=96164}/Season 01/夫妻的世界 S01E02.mkv",
+                mode="link",
+                status=True,
+                download_hash="27f6e02b447a5d676a233108b7bad035612a1afa",
+                tmdbid=96164,
+            ),
+        ]
+
+        blocked = build_mp_cleanup_preview(
+            "夫妻的世界",
+            records,
+            expected_title="夫妻的世界",
+            expected_tmdbid=96164,
+            expected_hash_prefix="27f6e02b447a",
+            expected_season=1,
+            include_deletesrc=False,
+            include_deletedest=False,
+        )
+        self.assertFalse(blocked["ok"])
+        self.assertIn("no_mp_delete_scope_selected", blocked["blockers"])
+
+        report = build_mp_cleanup_preview(
+            "夫妻的世界",
+            records,
+            expected_title="夫妻的世界",
+            expected_tmdbid=96164,
+            expected_hash_prefix="27f6e02b447a",
+            expected_season=1,
+            include_deletesrc=False,
+            include_deletedest=False,
+            record_only=True,
+        )
+        rendered = render_mp_cleanup_preview(report, "markdown")
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["ready_for_manual_cleanup_approval"])
+        self.assertEqual(report["mp_delete_plan"]["query"], {"deletesrc": False, "deletedest": False})
+        self.assertTrue(report["mp_delete_plan"]["record_only"])
+        self.assertIn("deletesrc=false&deletedest=false", rendered)
+
     def test_mp_cleanup_execute_uses_validated_preview_ids(self) -> None:
         preview = build_mp_cleanup_preview(
             "楚汉传奇",
@@ -2632,6 +2692,88 @@ class MoviePilotEvidenceTest(unittest.TestCase):
         self.assertEqual(client.calls, [(10, True, True), (11, True, True)])
         self.assertEqual(report["summary"]["success_count"], 2)
         self.assertIn("Attempted: `2`", rendered)
+
+    def test_mp_cleanup_execute_can_delete_records_only(self) -> None:
+        preview = build_mp_cleanup_preview(
+            "夫妻的世界",
+            [
+                MPTransferHistoryRecord(
+                    id=10,
+                    title="夫妻的世界",
+                    seasons="S01",
+                    episodes="E01",
+                    mode="link",
+                    status=True,
+                    download_hash="27f6e02b447a5d676a233108b7bad035612a1afa",
+                    tmdbid=96164,
+                ),
+                MPTransferHistoryRecord(
+                    id=11,
+                    title="夫妻的世界",
+                    seasons="S01",
+                    episodes="E02",
+                    mode="link",
+                    status=True,
+                    download_hash="27f6e02b447a5d676a233108b7bad035612a1afa",
+                    tmdbid=96164,
+                ),
+            ],
+            expected_title="夫妻的世界",
+            expected_tmdbid=96164,
+            expected_hash_prefix="27f6e02b447a",
+            expected_season=1,
+            include_deletesrc=False,
+            include_deletedest=False,
+            record_only=True,
+        )
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def delete_transfer_history(self, history_id, deletesrc=True, deletedest=True):
+                self.calls.append((history_id, deletesrc, deletedest))
+                return {"http_status": 200, "ok": True, "response": {"success": True}}
+
+        blocked = execute_mp_cleanup_from_preview(
+            FakeClient(),
+            preview,
+            expected_title="夫妻的世界",
+            expected_tmdbid=96164,
+            expected_hash_prefix="27f6e02b447a",
+            expected_record_count=2,
+            expected_episode_count=2,
+            expected_episode_min=1,
+            expected_episode_max=2,
+            expected_season=1,
+            include_deletesrc=False,
+            include_deletedest=False,
+        )
+        self.assertFalse(blocked["ok"])
+        self.assertIn("no_mp_delete_scope_selected", blocked["blockers"])
+        self.assertIn("record_only_scope_mismatch", blocked["blockers"])
+
+        client = FakeClient()
+        report = execute_mp_cleanup_from_preview(
+            client,
+            preview,
+            expected_title="夫妻的世界",
+            expected_tmdbid=96164,
+            expected_hash_prefix="27f6e02b447a",
+            expected_record_count=2,
+            expected_episode_count=2,
+            expected_episode_min=1,
+            expected_episode_max=2,
+            expected_season=1,
+            include_deletesrc=False,
+            include_deletedest=False,
+            record_only=True,
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(client.calls, [(10, False, False), (11, False, False)])
+        self.assertTrue(report["expected"]["record_only"])
+        self.assertIn("source media files", report["safety"])
 
     def test_mp_cleanup_execute_can_approve_explicit_non_contiguous_episodes(self) -> None:
         preview = build_mp_cleanup_preview(

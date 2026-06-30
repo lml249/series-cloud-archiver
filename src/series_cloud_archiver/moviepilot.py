@@ -216,6 +216,7 @@ def mp_cleanup_preview_from_transfer_history(
     expected_season: int = 0,
     include_deletedest: bool = True,
     include_deletesrc: bool = True,
+    record_only: bool = False,
     timeout: int = 20,
 ) -> Dict[str, object]:
     client = MoviePilotClient(base_url, token, timeout=timeout)
@@ -229,6 +230,7 @@ def mp_cleanup_preview_from_transfer_history(
         expected_season=expected_season,
         include_deletedest=include_deletedest,
         include_deletesrc=include_deletesrc,
+        record_only=record_only,
     )
 
 
@@ -319,6 +321,24 @@ def _scrape_request_summary(body: Dict[str, object]) -> Dict[str, object]:
     return {key: body.get(key) for key in allowed if key in body}
 
 
+def _mp_delete_effect(include_deletesrc: bool, include_deletedest: bool, record_only: bool) -> str:
+    if record_only:
+        return "MP deletes only the transfer-history record with deletesrc=false and deletedest=false; qBittorrent, source media files, hlink files, STRM files, and cloud media are not modified by this request."
+    return "MP deletes destination media file when deletedest=true, deletes source media file when deletesrc=true, then emits DownloadFileDeleted with the download hash; MP download chain removes the qBittorrent task without files after the source file deletion event."
+
+
+def _mp_cleanup_preview_safety(record_only: bool) -> str:
+    if record_only:
+        return "readonly preview only for MP transfer-history record cleanup; no MoviePilot DELETE request, qBittorrent action, hlink deletion, source deletion, STRM write, or cloud media change is performed"
+    return "readonly preview only; no MoviePilot DELETE request, qBittorrent action, hlink deletion, source deletion, or filesystem deletion is performed"
+
+
+def _mp_cleanup_execute_safety(record_only: bool) -> str:
+    if record_only:
+        return "approved MoviePilot transfer-history record cleanup only; delete requests use deletesrc=false and deletedest=false for validated history IDs, so qBittorrent, source media files, hlink files, STRM files, and cloud media are not modified by this request"
+    return "approved MoviePilot cleanup execution; delete requests are sent only for validated transfer history IDs from the preview report"
+
+
 def build_mp_cleanup_preview(
     title: str,
     records: List[MPTransferHistoryRecord],
@@ -328,6 +348,7 @@ def build_mp_cleanup_preview(
     expected_season: int = 0,
     include_deletedest: bool = True,
     include_deletesrc: bool = True,
+    record_only: bool = False,
 ) -> Dict[str, object]:
     warnings: List[str] = []
     blockers: List[str] = []
@@ -370,7 +391,9 @@ def build_mp_cleanup_preview(
         blockers.append("expected_qb_hash_not_found")
     if expected_tmdbid and any(record.tmdbid and record.tmdbid != expected_tmdbid for record in filtered):
         blockers.append("unexpected_tmdbid_in_mp_history")
-    if not include_deletesrc and not include_deletedest:
+    if record_only and (include_deletesrc or include_deletedest):
+        blockers.append("record_only_requires_keep_source_and_dest")
+    if not include_deletesrc and not include_deletedest and not record_only:
         blockers.append("no_mp_delete_scope_selected")
 
     rows = [_cleanup_transfer_row(record) for record in sorted(filtered, key=lambda record: (_episode_number(record.episodes) or 0, record.id))]
@@ -399,9 +422,10 @@ def build_mp_cleanup_preview(
         "mp_delete_plan": {
             "endpoint": {"method": "DELETE", "path": "/api/v1/history/transfer"},
             "query": {"deletesrc": include_deletesrc, "deletedest": include_deletedest},
+            "record_only": record_only,
             "record_ids": [record.id for record in filtered],
             "per_record_body": "TransferHistory JSON from MP transfer history",
-            "effect": "MP deletes destination media file when deletedest=true, deletes source media file when deletesrc=true, then emits DownloadFileDeleted with the download hash; MP download chain removes the qBittorrent task without files after the source file deletion event.",
+            "effect": _mp_delete_effect(include_deletesrc, include_deletedest, record_only),
         },
         "qb_targets": [
             {
@@ -420,7 +444,7 @@ def build_mp_cleanup_preview(
         "records": rows,
         "warnings": warnings,
         "blockers": blockers,
-        "safety": "readonly preview only; no MoviePilot DELETE request, qBittorrent action, hlink deletion, source deletion, or filesystem deletion is performed",
+        "safety": _mp_cleanup_preview_safety(record_only),
     }
     return report
 
@@ -441,6 +465,7 @@ def execute_mp_cleanup_from_preview_report(
     expected_episodes: Optional[Iterable[int]] = None,
     include_deletesrc: bool = True,
     include_deletedest: bool = True,
+    record_only: bool = False,
     timeout: int = 20,
     continue_on_error: bool = False,
     allow_multiple_hashes: bool = False,
@@ -463,6 +488,7 @@ def execute_mp_cleanup_from_preview_report(
         expected_episodes=expected_episodes,
         include_deletesrc=include_deletesrc,
         include_deletedest=include_deletedest,
+        record_only=record_only,
         continue_on_error=continue_on_error,
         allow_multiple_hashes=allow_multiple_hashes,
         allow_multiple_source_roots=allow_multiple_source_roots,
@@ -485,6 +511,7 @@ def execute_mp_cleanup_from_preview(
     expected_episodes: Optional[Iterable[int]] = None,
     include_deletesrc: bool = True,
     include_deletedest: bool = True,
+    record_only: bool = False,
     continue_on_error: bool = False,
     allow_multiple_hashes: bool = False,
     allow_multiple_source_roots: bool = False,
@@ -505,6 +532,7 @@ def execute_mp_cleanup_from_preview(
         expected_episodes=expected_episode_list,
         include_deletesrc=include_deletesrc,
         include_deletedest=include_deletedest,
+        record_only=record_only,
         allow_multiple_hashes=allow_multiple_hashes,
         allow_multiple_source_roots=allow_multiple_source_roots,
         allow_duplicate_episodes=allow_duplicate_episodes,
@@ -529,6 +557,7 @@ def execute_mp_cleanup_from_preview(
             "episode_min": expected_episode_min,
             "episode_max": expected_episode_max,
             "episodes": expected_episode_list,
+            "record_only": record_only,
             "allow_multiple_hashes": allow_multiple_hashes,
             "allow_multiple_source_roots": allow_multiple_source_roots,
             "allow_duplicate_episodes": allow_duplicate_episodes,
@@ -542,7 +571,7 @@ def execute_mp_cleanup_from_preview(
         },
         "results": [],
         "blockers": blockers,
-        "safety": "approved MoviePilot cleanup execution; delete requests are sent only for validated transfer history IDs from the preview report",
+        "safety": _mp_cleanup_execute_safety(record_only),
     }
     if blockers:
         result["safety"] = "blocked before sending any MoviePilot DELETE request"
@@ -781,6 +810,7 @@ def _mp_cleanup_execution_blockers(
     expected_episodes: Optional[Iterable[int]],
     include_deletesrc: bool,
     include_deletedest: bool,
+    record_only: bool,
     allow_multiple_hashes: bool = False,
     allow_multiple_source_roots: bool = False,
     allow_duplicate_episodes: bool = False,
@@ -815,7 +845,9 @@ def _mp_cleanup_execution_blockers(
     preview_hash_prefixes = _normalize_hash_prefixes(None, str(preview.get("expected_hash_prefix") or ""))
     if normalized_hash_prefixes and preview_hash_prefixes and not _all_hash_prefixes_covered(preview_hash_prefixes, normalized_hash_prefixes):
         blockers.append("expected_hash_prefix_mismatch")
-    if not include_deletesrc and not include_deletedest:
+    if record_only and (include_deletesrc or include_deletedest):
+        blockers.append("record_only_requires_keep_source_and_dest")
+    if not include_deletesrc and not include_deletedest and not record_only:
         blockers.append("no_mp_delete_scope_selected")
 
     summary = preview.get("summary") if isinstance(preview.get("summary"), dict) else {}
@@ -848,6 +880,8 @@ def _mp_cleanup_execution_blockers(
         blockers.append("deletesrc_scope_mismatch")
     if bool(query.get("deletedest")) != include_deletedest:
         blockers.append("deletedest_scope_mismatch")
+    if bool(plan.get("record_only")) != record_only:
+        blockers.append("record_only_scope_mismatch")
 
     ids: Set[int] = set()
     episodes: Set[int] = set()

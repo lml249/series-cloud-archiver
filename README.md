@@ -568,6 +568,25 @@ PYTHONPATH=src python3 -m series_cloud_archiver mp-cleanup-execute \
 
 `mp-cleanup-execute` 会在发送任何 DELETE 前重新校验预览报告：标题、TMDB ID、qB hash 前缀、整理历史条数、集数数量、首尾集、缺失集、每条 MP history ID 和删除范围必须全部对上。只要校验失败，就不会发送删除请求。
 
+如果一次清理已经通过别的安全路径删掉了 qB、源目录和 hlink，只剩 MoviePilot 整理历史记录没有收口，可以显式使用 record-only 模式。它仍然必须先做预览，并且必须同时保留源文件和目标文件开关：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mp-cleanup-preview \
+  --env-file .env \
+  --title 示例剧名 \
+  --expected-title 示例剧名 \
+  --expected-tmdbid 100000 \
+  --expected-hash-prefix abcdef123456 \
+  --expected-season 1 \
+  --keep-source \
+  --keep-dest \
+  --record-only \
+  --format json \
+  --output reports/mp-record-only-preview.json
+```
+
+执行时同样要带 `--keep-source --keep-dest --record-only`。这会调用 `DELETE /api/v1/history/transfer?deletesrc=false&deletedest=false`，只删除经过校验的 MoviePilot 整理历史记录，不删除 qB 任务、本地源文件、hlink 文件、STRM 或云盘文件。
+
 执行后，用只读核验命令把 MP、qB、本地目录和 STRM 覆盖情况落成报告：
 
 ```bash
