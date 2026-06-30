@@ -219,14 +219,19 @@ def _run_transfer_item(
         row["blockers"] = _report_blockers(receive_report) or ["receive_failed"]
         return row
 
-    browse_report = actions.browse_cloud(
-        _config_value(config, "mv3_base_url"),
-        _config_value(config, "mv3_token"),
-        path=_received_browse_path(target_path, title, receive_report),
+    browse_report, received_resolution_reports = _browse_received_folder(
+        actions,
+        config,
+        target_path=target_path,
+        title=title,
+        receive_report=receive_report,
         storage=storage,
-        limit=1150,
         timeout=timeout,
     )
+    for index, resolution_report in enumerate(received_resolution_reports, start=1):
+        resolution_path = _stage_report_path(output_dir, prefix, f"received-path-resolve-{index:02d}")
+        _write_json(resolution_path, resolution_report)
+        row["stage_reports"][f"received_path_resolve_{index:02d}"] = str(resolution_path)
     browse_path = _stage_report_path(output_dir, prefix, "received-browse")
     _write_json(browse_path, browse_report)
     row["stage_reports"]["received_browse"] = str(browse_path)
@@ -283,14 +288,20 @@ def _run_transfer_item(
     row["stage_reports"]["organized_browse_verify"] = str(organized_verify_path)
     row["organized_verify_path"] = str(organized_browse.get("path") or "")
 
-    staging_browse = actions.browse_cloud(
-        _config_value(config, "mv3_base_url"),
-        _config_value(config, "mv3_token"),
-        path=str(browse_report.get("path") or _received_browse_path(target_path, title, receive_report)),
+    staging_browse, staging_resolution_reports = _browse_received_staging_after_organize(
+        actions,
+        config,
+        target_path=target_path,
+        title=title,
+        receive_report=receive_report,
+        received_browse_report=browse_report,
         storage=storage,
-        limit=1150,
         timeout=timeout,
     )
+    for index, resolution_report in enumerate(staging_resolution_reports, start=1):
+        resolution_path = _stage_report_path(output_dir, prefix, f"staging-path-resolve-{index:02d}")
+        _write_json(resolution_path, resolution_report)
+        row["stage_reports"][f"staging_path_resolve_{index:02d}"] = str(resolution_path)
     staging_verify_path = _stage_report_path(output_dir, prefix, "staging-browse-verify")
     _write_json(staging_verify_path, staging_browse)
     row["stage_reports"]["staging_browse_verify"] = str(staging_verify_path)
@@ -352,6 +363,195 @@ def _received_browse_path(target_path: str, title: str, receive_report: Dict[str
     clean_title = str(selection.get("name") or "").strip() if isinstance(selection, dict) else ""
     clean_title = clean_title or _title_contains(title)
     return f"{target_path.rstrip('/')}/{clean_title}"
+
+
+def _browse_received_folder(
+    actions: BatchTransferActions,
+    config: object,
+    *,
+    target_path: str,
+    title: str,
+    receive_report: Dict[str, object],
+    storage: str,
+    timeout: int,
+) -> tuple[Dict[str, object], List[Dict[str, object]]]:
+    direct_path = _received_browse_path(target_path, title, receive_report)
+    direct_report = actions.browse_cloud(
+        _config_value(config, "mv3_base_url"),
+        _config_value(config, "mv3_token"),
+        path=direct_path,
+        storage=storage,
+        limit=1150,
+        timeout=timeout,
+    )
+    if direct_report.get("ok") or not _staging_path_absent(direct_report):
+        return direct_report, []
+
+    root_path = target_path.rstrip("/") or "/"
+    root_report = actions.browse_cloud(
+        _config_value(config, "mv3_base_url"),
+        _config_value(config, "mv3_token"),
+        path=root_path,
+        storage=storage,
+        limit=1150,
+        timeout=timeout,
+    )
+    resolution_reports = [direct_report, root_report]
+    match = _received_folder_match(root_report, receive_report, title)
+    if not match:
+        return direct_report, resolution_reports
+
+    folder_id = str(match.get("file_id") or "")
+    folder_name = str(match.get("name") or "").strip()
+    if not folder_id:
+        missing_id_report = _synthetic_cloud_browse_report(
+            f"{root_path}/{folder_name}" if folder_name else direct_path,
+            ["received_folder_id_missing"],
+        )
+        return missing_id_report, resolution_reports
+
+    resolved_path = f"{root_path}/{folder_name}" if folder_name else direct_path
+    resolved_report = actions.browse_cloud(
+        _config_value(config, "mv3_base_url"),
+        _config_value(config, "mv3_token"),
+        folder_id=folder_id,
+        storage=storage,
+        limit=1150,
+        timeout=timeout,
+    )
+    resolved_report["path"] = resolved_path
+    resolved_report["folder_id"] = folder_id
+    resolved_report["resolved_from_staging_root"] = {
+        "root_path": root_path,
+        "folder_id": folder_id,
+        "folder_name": folder_name,
+        "reason": "direct_path_not_addressable",
+    }
+    return resolved_report, resolution_reports
+
+
+def _browse_received_staging_after_organize(
+    actions: BatchTransferActions,
+    config: object,
+    *,
+    target_path: str,
+    title: str,
+    receive_report: Dict[str, object],
+    received_browse_report: Dict[str, object],
+    storage: str,
+    timeout: int,
+) -> tuple[Dict[str, object], List[Dict[str, object]]]:
+    resolution = (
+        received_browse_report.get("resolved_from_staging_root")
+        if isinstance(received_browse_report.get("resolved_from_staging_root"), dict)
+        else {}
+    )
+    root_path = str(resolution.get("root_path") or target_path.rstrip("/") or "/")
+    folder_id = str(resolution.get("folder_id") or "")
+    folder_name = str(resolution.get("folder_name") or "").strip()
+    if not folder_id and not folder_name:
+        report = actions.browse_cloud(
+            _config_value(config, "mv3_base_url"),
+            _config_value(config, "mv3_token"),
+            path=str(received_browse_report.get("path") or _received_browse_path(target_path, title, receive_report)),
+            storage=storage,
+            limit=1150,
+            timeout=timeout,
+        )
+        return report, []
+
+    root_report = actions.browse_cloud(
+        _config_value(config, "mv3_base_url"),
+        _config_value(config, "mv3_token"),
+        path=root_path,
+        storage=storage,
+        limit=1150,
+        timeout=timeout,
+    )
+    match = _received_folder_match(root_report, receive_report, title, expected_folder_id=folder_id, expected_name=folder_name)
+    if not match:
+        return _synthetic_cloud_browse_report(
+            f"{root_path}/{folder_name}" if folder_name else str(received_browse_report.get("path") or ""),
+            ["path_info_not_found"],
+        ), [root_report]
+
+    matched_folder_id = str(match.get("file_id") or "")
+    if not matched_folder_id:
+        return _synthetic_cloud_browse_report(
+            f"{root_path}/{folder_name}" if folder_name else str(received_browse_report.get("path") or ""),
+            ["received_folder_id_missing"],
+        ), [root_report]
+
+    report = actions.browse_cloud(
+        _config_value(config, "mv3_base_url"),
+        _config_value(config, "mv3_token"),
+        folder_id=matched_folder_id,
+        storage=storage,
+        limit=1150,
+        timeout=timeout,
+    )
+    report["path"] = f"{root_path}/{str(match.get('name') or folder_name).strip()}"
+    report["folder_id"] = matched_folder_id
+    report["resolved_from_staging_root"] = {
+        "root_path": root_path,
+        "folder_id": matched_folder_id,
+        "folder_name": str(match.get("name") or folder_name).strip(),
+        "reason": "post_organize_staging_verification",
+    }
+    return report, [root_report]
+
+
+def _received_folder_match(
+    root_report: Dict[str, object],
+    receive_report: Dict[str, object],
+    title: str,
+    *,
+    expected_folder_id: str = "",
+    expected_name: str = "",
+) -> Optional[Dict[str, object]]:
+    if not root_report.get("ok"):
+        return None
+    folders = [
+        item
+        for item in root_report.get("items", [])
+        if isinstance(item, dict) and str(item.get("kind") or "") == "folder"
+    ]
+    if expected_folder_id:
+        matches = [item for item in folders if str(item.get("file_id") or "") == expected_folder_id]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            return None
+    wanted_names = [expected_name] if expected_name else []
+    selection = receive_report.get("browse_selection") if isinstance(receive_report.get("browse_selection"), dict) else {}
+    selected_name = str(selection.get("name") or "").strip() if isinstance(selection, dict) else ""
+    if selected_name and selected_name not in wanted_names:
+        wanted_names.append(selected_name)
+    fallback_title = _title_contains(title)
+    if fallback_title and fallback_title not in wanted_names:
+        wanted_names.append(fallback_title)
+    for wanted_name in wanted_names:
+        matches = [item for item in folders if str(item.get("name") or "").strip() == wanted_name]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def _synthetic_cloud_browse_report(path: str, warnings: Sequence[str]) -> Dict[str, object]:
+    return {
+        "mode": "readonly-mv3-cloud-browse",
+        "ok": False,
+        "path": path,
+        "summary": {
+            "item_count": 0,
+            "folder_count": 0,
+            "file_count": 0,
+            "video_file_count": 0,
+            "metadata_sidecar_file_count": 0,
+        },
+        "items": [],
+        "warnings": sorted(set(str(item) for item in warnings if str(item))),
+    }
 
 
 def _browse_organized_season(

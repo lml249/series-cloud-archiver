@@ -158,12 +158,16 @@ class TransferFakeActions:
         staging_remains: bool = False,
         organized_title_with_year: bool = False,
         organize_fails_after_side_effect: bool = False,
+        received_name: str = "折腰",
+        direct_received_browse_missing: bool = False,
     ) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.duplicate_after_organize = duplicate_after_organize
         self.staging_remains = staging_remains
         self.organized_title_with_year = organized_title_with_year
         self.organize_fails_after_side_effect = organize_fails_after_side_effect
+        self.received_name = received_name
+        self.direct_received_browse_missing = direct_received_browse_missing
         self.organized = False
 
     def receive_share(self, *args: object, **kwargs: object) -> dict:
@@ -173,12 +177,68 @@ class TransferFakeActions:
             "ok": True,
             "warnings": [],
             "target_path": kwargs.get("target_path"),
-            "browse_selection": {"name": "折腰"},
+            "browse_selection": {"name": self.received_name},
         }
 
     def browse_cloud(self, *args: object, **kwargs: object) -> dict:
         self.calls.append(("browse", {"args": list(args), "kwargs": kwargs}))
         path = str(kwargs.get("path") or "")
+        folder_id = str(kwargs.get("folder_id") or "")
+        if path == "/未整理":
+            return {
+                "mode": "readonly-mv3-cloud-browse",
+                "ok": True,
+                "path": path,
+                "summary": {
+                    "video_file_count": 0,
+                    "metadata_sidecar_file_count": 0,
+                },
+                "items": [
+                    {
+                        "kind": "folder",
+                        "media_kind": "folder",
+                        "name": self.received_name,
+                        "file_id": "received-folder",
+                    }
+                ],
+                "warnings": [],
+            }
+        if folder_id == "received-folder" and not self.organized:
+            return self._received_browse_report(f"/未整理/{self.received_name}", folder_id)
+        if folder_id == "received-folder" and self.organized and not self.staging_remains:
+            return {
+                "mode": "readonly-mv3-cloud-browse",
+                "ok": True,
+                "path": f"/未整理/{self.received_name}",
+                "folder_id": folder_id,
+                "summary": {
+                    "video_file_count": 0,
+                    "metadata_sidecar_file_count": 0,
+                },
+                "items": [],
+                "warnings": [],
+            }
+        if folder_id == "received-folder" and self.organized and self.staging_remains:
+            return {
+                "mode": "readonly-mv3-cloud-browse",
+                "ok": True,
+                "path": f"/未整理/{self.received_name}",
+                "folder_id": folder_id,
+                "summary": {
+                    "video_file_count": 1,
+                    "metadata_sidecar_file_count": 0,
+                },
+                "items": [
+                    {
+                        "kind": "file",
+                        "media_kind": "video",
+                        "name": "折腰 - S01E33.mkv",
+                        "episode": 33,
+                        "file_id": "staging-leftover",
+                    }
+                ],
+                "warnings": [],
+            }
         if path == "/已整理/series":
             return {
                 "mode": "readonly-mv3-cloud-browse",
@@ -199,6 +259,18 @@ class TransferFakeActions:
                 "warnings": [],
             }
         if self.organized_title_with_year and path == "/已整理/series/折腰 {tmdbid=296753}/Season 1":
+            return {
+                "mode": "readonly-mv3-cloud-browse",
+                "ok": False,
+                "path": path,
+                "summary": {
+                    "video_file_count": 0,
+                    "metadata_sidecar_file_count": 0,
+                },
+                "items": [],
+                "warnings": ["path_info_not_found"],
+            }
+        if self.direct_received_browse_missing and path == f"/未整理/{self.received_name}":
             return {
                 "mode": "readonly-mv3-cloud-browse",
                 "ok": False,
@@ -279,6 +351,29 @@ class TransferFakeActions:
                     "kind": "file",
                     "media_kind": "video",
                     "name": f"折腰 - S01E{episode:02d}.mkv",
+                    "file_id": f"file-{episode}",
+                }
+                for episode in range(1, 37)
+            ],
+            "warnings": [],
+        }
+
+    def _received_browse_report(self, path: str, folder_id: str = "") -> dict:
+        return {
+            "mode": "readonly-mv3-cloud-browse",
+            "ok": True,
+            "path": path,
+            "folder_id": folder_id,
+            "summary": {
+                "video_file_count": 36,
+                "metadata_sidecar_file_count": 0,
+            },
+            "items": [
+                {
+                    "kind": "file",
+                    "media_kind": "video",
+                    "name": f"折腰 - S01E{episode:02d}.mkv",
+                    "episode": episode,
                     "file_id": f"file-{episode}",
                 }
                 for episode in range(1, 37)
@@ -433,6 +528,43 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(actions.calls[4][1]["kwargs"]["path"], "/未整理/折腰")
         self.assertEqual(report["items"][0]["status"], "organized_requires_finalize")
         self.assertEqual(len(stage_files), 5)
+
+    def test_batch_transfer_run_resolves_received_folder_by_root_listing_when_path_has_slash(self) -> None:
+        actions = TransferFakeActions(
+            received_name="韩剧【夫妻的世界】(2020) 金喜爱 / 朴解浚",
+            direct_received_browse_missing=True,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            preview = Path(tmp) / "preview.json"
+            preview.write_text(
+                json.dumps({"ok": True, "episodes": list(range(1, 37)), "video_file_count": 36}),
+                encoding="utf-8",
+            )
+            report = run_batch_transfer(
+                self._receive_plan(str(preview)),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(),
+                approve_receive=True,
+                approve_transfer=True,
+                actions=BatchTransferActions(
+                    receive_share=actions.receive_share,
+                    browse_cloud=actions.browse_cloud,
+                    organize_transfer=actions.organize_transfer,
+                ),
+            )
+
+        browse_calls = [call[1]["kwargs"] for call in actions.calls if call[0] == "browse"]
+        item = report["items"][0]
+        self.assertTrue(report["ok"])
+        self.assertEqual(item["status"], "organized_requires_finalize")
+        self.assertIn("received_path_resolve_01", item["stage_reports"])
+        self.assertIn("received_path_resolve_02", item["stage_reports"])
+        self.assertIn("staging_path_resolve_01", item["stage_reports"])
+        self.assertEqual(browse_calls[0]["path"], "/未整理/韩剧【夫妻的世界】(2020) 金喜爱 / 朴解浚")
+        self.assertEqual(browse_calls[1]["path"], "/未整理")
+        self.assertEqual(browse_calls[2]["folder_id"], "received-folder")
+        organize_call = next(call for call in actions.calls if call[0] == "organize")
+        self.assertEqual(organize_call[1]["args"][2]["path"], "/未整理/韩剧【夫妻的世界】(2020) 金喜爱 / 朴解浚")
 
     def test_batch_transfer_run_recovers_when_organize_times_out_but_post_verify_passes(self) -> None:
         actions = TransferFakeActions(organize_fails_after_side_effect=True)
