@@ -3817,6 +3817,38 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["confirmed_mapping"]["items"][0]["season"], 0)
         self.assertIn("human-confirmed local media mapping file", report["safety"])
 
+    def test_organize_transfer_from_confirmed_local_map_dry_run_skips_request(self) -> None:
+        calls = []
+        mapping = {
+            "items": [
+                {
+                    "source_path": "/volume3/volume3/TV/Demo/Demo.SP1.mkv",
+                    "tmdbid": 123,
+                    "season": 0,
+                    "episode": 5,
+                }
+            ],
+        }
+
+        with patch("urllib.request.urlopen", lambda request, timeout: calls.append(request)):
+            report = execute_mv3_organize_transfer_from_confirmed_local_map(
+                "http://mv3.example",
+                "token",
+                mapping,
+                target_dir="/已整理",
+                strm_dir="/strm",
+                tmdb_id=123,
+                expected_episode_count=1,
+                expected_episode_min=5,
+                expected_episode_max=5,
+                dry_run=True,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["dry_run"])
+        self.assertEqual(calls, [])
+        self.assertEqual(report["transfer"], {"skipped": True, "reason": "dry_run"})
+
     def test_organize_transfer_from_confirmed_local_map_blocks_bad_tmdb_before_request(self) -> None:
         calls = []
         mapping = {
@@ -6269,11 +6301,12 @@ class MV3ProbeTest(unittest.TestCase):
 
             self.assertNotEqual(caught.exception.code, 0)
 
-    def test_cli_refuses_organize_transfer_from_local_map_without_approval(self) -> None:
+    def test_cli_writes_organize_transfer_from_local_map_dry_run_without_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             env_file = tmp_path / ".env"
             mapping_file = tmp_path / "mapping.json"
+            output = tmp_path / "dry-run.json"
             env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
             mapping_file.write_text(
                 json.dumps(
@@ -6290,9 +6323,10 @@ class MV3ProbeTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            calls = []
 
-            with self.assertRaises(SystemExit) as caught:
-                main(
+            with patch("urllib.request.urlopen", lambda request, timeout: calls.append(request)):
+                code = main(
                     [
                         "mv3-organize-transfer-from-local-map",
                         "--env-file",
@@ -6311,10 +6345,19 @@ class MV3ProbeTest(unittest.TestCase):
                         "5",
                         "--expected-episode-max",
                         "5",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
                     ]
                 )
 
-            self.assertNotEqual(caught.exception.code, 0)
+            self.assertEqual(code, 0)
+            self.assertEqual(calls, [])
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertTrue(payload["dry_run"])
+            self.assertEqual(payload["transfer"], {"skipped": True, "reason": "dry_run"})
 
     def test_cli_writes_organize_transfer_from_local_map_report_with_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

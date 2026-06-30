@@ -1017,7 +1017,7 @@ def build_parser() -> argparse.ArgumentParser:
     organize_transfer_local_map_parser.add_argument("--local-target", action="store_true", help="Treat target as local instead of cloud")
     organize_transfer_local_map_parser.add_argument("--background", action="store_true", help="Ask MV3 to run transfer in background")
     organize_transfer_local_map_parser.add_argument("--timeout", type=int, default=180, help="Per-request timeout in seconds")
-    organize_transfer_local_map_parser.add_argument("--approve-transfer", action="store_true", help="Required: actually send one MV3 organize transfer request")
+    organize_transfer_local_map_parser.add_argument("--approve-transfer", action="store_true", help="Actually send one MV3 organize transfer request; omitted means dry-run only")
     organize_transfer_local_map_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     organize_transfer_local_map_parser.add_argument("--output", default=None, help="Write aggregate report to file instead of stdout")
 
@@ -3114,8 +3114,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0 if report.get("ok") else 1
 
     if args.command == "mv3-organize-transfer-from-local-map":
-        if not args.approve_transfer:
-            parser.error("mv3-organize-transfer-from-local-map requires --approve-transfer")
         config = config_from_env(args.env_file, [])
         if not config.mv3_base_url or not config.mv3_token:
             parser.error("mv3-organize-transfer-from-local-map requires MV3_BASE_URL and MV3_API_TOKEN")
@@ -3136,6 +3134,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             mode=args.mode,
             is_cloud_target=not args.local_target,
             background=args.background,
+            dry_run=not args.approve_transfer,
             timeout=args.timeout,
         )
         rendered = render_mv3_organize_transfer_report(report, args.format)
@@ -3143,7 +3142,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             _write_text_output(args.output, rendered)
         else:
             print(rendered)
-        return 0 if report.get("ok") else 1
+        return 0 if report.get("ok") or report.get("dry_run") and not report.get("blockers") else 1
 
     if args.command == "mv3-strm-generate":
         if not args.approve_generate:

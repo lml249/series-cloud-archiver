@@ -825,7 +825,23 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-scan-source \
 }
 ```
 
-确认映射文件后，才可以用审批命令让 MV3 copy 到 `/已整理` 并生成 STRM：
+确认映射文件后，先生成 dry-run 报告；这一步只构造 MV3 请求和安全门禁，不会调用 `/api/v1/organize/transfer`：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-local-map \
+  --env-file .env \
+  --mapping-file reports/demo-extra-local-map.json \
+  --target-dir /已整理 \
+  --strm-dir /strm \
+  --tmdb-id 123 \
+  --expected-episode-count 1 \
+  --expected-episode-min 5 \
+  --expected-episode-max 5 \
+  --format json \
+  --output reports/demo-sp1-transfer-dry-run.json
+```
+
+dry-run 报告无 blocker 后，才可以加审批参数让 MV3 copy 到 `/已整理` 并生成 STRM：
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-local-map \
@@ -839,7 +855,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-local
   --expected-episode-max 5 \
   --approve-transfer \
   --format json \
-  --output reports/demo-sp1-transfer.json
+  --output reports/demo-sp1-transfer-execute.json
 ```
 
 这条链路不会移动或删除本地源文件，强制使用 copy 模式；映射文件里的季/集只作为项目的安全门禁和报告证据，最终命名仍由 MV3 根据 `tmdb_id` 和源文件信息完成。本地 qB/source/hlink 仍然必须等 STRM 完整、中文 NFO、Emby 和清理预览全部变绿后，才由最终 cleanup 阶段处理。云盘实体目录仍然只做转存和 STRM 生成，不做刮削，不写 NFO/JPG。

@@ -2238,6 +2238,7 @@ def execute_mv3_organize_transfer_from_browse_report(
         mode=mode,
         is_cloud_target=is_cloud_target,
         background=background,
+        dry_run=False,
         timeout=timeout,
         require_source_file_id=True,
         metadata_sidecar_items=metadata_sidecar_items,
@@ -2259,6 +2260,7 @@ def execute_mv3_organize_transfer_from_scan_report(
     mode: str = "copy",
     is_cloud_target: bool = True,
     background: bool = False,
+    dry_run: bool = False,
     timeout: int = 180,
 ) -> Dict[str, object]:
     source_path = str(scan_report.get("source_path") or "")
@@ -2282,6 +2284,7 @@ def execute_mv3_organize_transfer_from_scan_report(
         mode=mode,
         is_cloud_target=is_cloud_target,
         background=background,
+        dry_run=False,
         timeout=timeout,
         require_source_file_id=bool(scan_report.get("is_cloud_source")),
         metadata_sidecar_items=[],
@@ -2302,6 +2305,7 @@ def execute_mv3_organize_transfer_from_confirmed_local_map(
     mode: str = "copy",
     is_cloud_target: bool = True,
     background: bool = False,
+    dry_run: bool = False,
     timeout: int = 180,
 ) -> Dict[str, object]:
     rows = _confirmed_local_mapping_rows(mapping_report)
@@ -2327,6 +2331,7 @@ def execute_mv3_organize_transfer_from_confirmed_local_map(
         mode=mode,
         is_cloud_target=is_cloud_target,
         background=background,
+        dry_run=dry_run,
         timeout=timeout,
         require_source_file_id=False,
         metadata_sidecar_items=[],
@@ -2361,6 +2366,7 @@ def _execute_mv3_organize_transfer_from_files(
     mode: str,
     is_cloud_target: bool,
     background: bool,
+    dry_run: bool,
     timeout: int,
     require_source_file_id: bool,
     metadata_sidecar_items: List[Dict[str, object]],
@@ -2446,7 +2452,9 @@ def _execute_mv3_organize_transfer_from_files(
         episode_numbers,
         transfer_report,
     )
-    if not blockers:
+    if dry_run:
+        transfer_report = {"skipped": True, "reason": "dry_run"}
+    elif not blockers:
         client = MV3Client(base_url, token, timeout=timeout)
         try:
             status, headers, response_body = client.post_json("/api/v1/organize/transfer", request_body)
@@ -2486,7 +2494,7 @@ def _execute_mv3_organize_transfer_from_files(
 
     return {
         "mode": "mv3-organize-transfer-result",
-        "ok": bool(transfer_report.get("ok")) and not blockers,
+        "ok": not blockers and (dry_run or bool(transfer_report.get("ok"))),
         "source_path": source_path,
         "target_dir": normalized_target_dir,
         "strm_dir": normalized_strm_dir,
@@ -2494,6 +2502,7 @@ def _execute_mv3_organize_transfer_from_files(
         "transfer_mode": mode,
         "is_cloud_target": is_cloud_target,
         "background": background,
+        "dry_run": dry_run,
         "expected_episode_count": expected_episode_count,
         "expected_episode_min": expected_episode_min,
         "expected_episode_max": expected_episode_max,
@@ -3169,6 +3178,7 @@ def render_mv3_organize_transfer_report(report: Dict[str, object], output_format
         f"- Target dir: `{report.get('target_dir', '')}`",
         f"- STRM dir: `{report.get('strm_dir', '')}`",
         f"- TMDB ID: `{report.get('tmdb_id', '')}`",
+        f"- Dry run: `{bool(report.get('dry_run'))}`",
         f"- Files: `{report.get('file_count', 0)}`",
         f"- Excluded metadata sidecars: `{report.get('excluded_metadata_sidecar_count', 0)}`",
         f"- Episode count: `{report.get('episode_count', 0)}`",
