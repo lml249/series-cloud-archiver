@@ -2888,11 +2888,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         review_report = load_optional_json_report(args.review_report)
         if not isinstance(review_report, dict):
             parser.error("finalize-remediation-plan requires a valid --review-report JSON report")
-        finalize_run_reports = [
-            report
-            for report in (load_optional_json_report(path) for path in args.finalize_run_report)
-            if isinstance(report, dict)
-        ]
+        finalize_run_reports = []
+        for path in args.finalize_run_report:
+            report = load_optional_json_report(path)
+            if isinstance(report, dict):
+                report["_source_path"] = str(path)
+                finalize_run_reports.append(report)
         if not finalize_run_reports:
             parser.error("finalize-remediation-plan requires at least one valid --finalize-run-report JSON report")
         report = build_finalize_remediation_plan(

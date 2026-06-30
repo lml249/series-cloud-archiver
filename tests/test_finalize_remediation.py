@@ -119,7 +119,7 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
         }
         self.assertIn("strm-verify", commands_by_title["罚罪2"])
         self.assertIn("mv3-cloud-search", commands_by_title["云盘缺季"])
-        self.assertIn("extra-source-media-plan", commands_by_title["兄弟连"])
+        self.assertIn("缺少原始 finalize-run report 路径", commands_by_title["兄弟连"])
         self.assertIn("qb-orphan-torrent-cleanup-preview", commands_by_title["MP残留"])
         self.assertIn("mp-cleanup-preview", commands_by_title["MP残留"])
         self.assertNotIn("--approve-delete", commands_by_title["庆余年"])
@@ -157,6 +157,9 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["mode"], "readonly-finalize-remediation-plan")
         self.assertEqual(payload["planned_items"], 5)
+        brother = [item for item in payload["items"] if item["title"] == "兄弟连"][0]
+        self.assertIn("extra-source-media-plan", brother["commands"][0]["command"])
+        self.assertIn(str(finalize), brother["commands"][0]["command"])
 
     def test_run_defaults_to_dry_run_and_rewrites_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -261,6 +264,56 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
 
         self.assertTrue(run["ok"])
         self.assertEqual(run["status_counts"]["skipped"], 1)
+
+    def test_run_executes_extra_source_media_plan_readonly_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            finalize_path = tmp_path / "finalize.json"
+            output_dir = tmp_path / "diagnostics"
+            finalize_report = self._finalize_report()
+            finalize_report["_source_path"] = str(finalize_path)
+            finalize_path.write_text(json.dumps(finalize_report, ensure_ascii=False), encoding="utf-8")
+            plan = build_finalize_remediation_plan(
+                self._review_report(),
+                [finalize_report],
+                env_file="/safe/.env",
+                cloud_media_storage="115-default",
+            )
+            calls = []
+
+            def fake_runner(argv, **kwargs):
+                calls.append((argv, kwargs))
+                output_path = Path(argv[argv.index("--output") + 1])
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(
+                    json.dumps(
+                        {
+                            "mode": "readonly-extra-source-media-plan",
+                            "ok": True,
+                            "planned_items": 1,
+                            "status_counts": {"ready_for_mv3_scan": 1},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            run = run_finalize_remediation_plan(
+                plan,
+                output_dir=str(output_dir),
+                categories=["extra_source_media"],
+                execute_readonly=True,
+                cwd="/example/app",
+                command_runner=fake_runner,
+            )
+
+        self.assertTrue(run["ok"])
+        self.assertEqual(run["planned_commands"], 1)
+        self.assertEqual(run["executed_commands"], 1)
+        self.assertEqual(run["items"][0]["status"], "executed")
+        self.assertEqual(calls[0][0][:4], ["python3", "-m", "series_cloud_archiver", "extra-source-media-plan"])
+        self.assertIn(str(finalize_path), calls[0][0])
 
     def test_cli_writes_finalize_remediation_run_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

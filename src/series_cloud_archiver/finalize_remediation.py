@@ -17,6 +17,7 @@ JsonDict = Dict[str, object]
 CommandRunner = Callable[..., object]
 
 READONLY_REMEDIATION_COMMANDS = {
+    "extra-source-media-plan",
     "strm-verify",
     "mv3-cloud-duplicate-video-cleanup",
     "mv3-cloud-browse",
@@ -908,6 +909,7 @@ def _remediation_row(
         title=title,
         tmdbid=tmdbid,
         season=season,
+        finalize_report_path=str(finalize_item.get("_source_path") or ""),
         expected_count=expected_count,
         expected_min=expected_min,
         expected_max=expected_max,
@@ -1137,6 +1139,7 @@ def _commands(
     title: str,
     tmdbid: int,
     season: int,
+    finalize_report_path: str,
     expected_count: int,
     expected_min: int,
     expected_max: int,
@@ -1220,12 +1223,25 @@ def _commands(
         )
         return commands
     if category == "extra_source_media":
-        commands.append(
-            {
-                "stage": "extra_source_media_plan",
-                "command": "用对应 batch-pipeline 生成的 15-extra-source-media-plan.json 继续，只做 MV3 scan-source 只读识别；不要删除源目录",
-            }
-        )
+        if finalize_report_path:
+            commands.append(
+                {
+                    "stage": "extra_source_media_plan_readonly",
+                    "command": (
+                        f"PYTHONPATH=src python3 -m series_cloud_archiver extra-source-media-plan {env}"
+                        f"--finalize-run-report {_q(finalize_report_path)} --target-dir /已整理 --strm-dir /strm "
+                        f"--storage {_q(cloud_media_storage)} --timeout {timeout} --format json "
+                        f"--output {_q(prefix + '-extra-source-media-plan.json')}"
+                    ),
+                }
+            )
+        else:
+            commands.append(
+                {
+                    "stage": "extra_source_media_plan_missing_report",
+                    "command": "缺少原始 finalize-run report 路径，无法自动生成 extra-source-media-plan；请重新用 CLI 传入 finalize-run JSON",
+                }
+            )
         return commands
     if category == "mp_history_or_qb_mismatch":
         hash_args = " ".join(f"--expected-qb-hash {_q(value)}" for value in source_qb_hashes)
@@ -1295,9 +1311,13 @@ def _next_action(category: str) -> str:
 def _finalize_items_by_identity(reports: Sequence[JsonDict]) -> Dict[Tuple[int, int, str], JsonDict]:
     rows: Dict[Tuple[int, int, str], JsonDict] = {}
     for report in reports:
+        source_path = str(report.get("_source_path") or "")
         for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
             if isinstance(item, dict):
-                rows[_identity_key(item)] = item
+                row = dict(item)
+                if source_path:
+                    row["_source_path"] = source_path
+                rows[_identity_key(row)] = row
     return rows
 
 
