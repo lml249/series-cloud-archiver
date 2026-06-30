@@ -1,17 +1,21 @@
 import json
 import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 from series_cloud_archiver.batch_runner import (
     AUTO_CLEANUP,
     AUTO_TRANSFER,
+    BatchFinalizeActions,
     MANUAL_REVIEW,
     build_batch_finalize_plan,
     build_batch_plan,
     merge_share_search_plans,
     render_batch_finalize_plan,
+    render_batch_finalize_run,
     render_batch_plan,
+    run_batch_finalize,
 )
 from series_cloud_archiver.batch_preview import (
     build_batch_share_preview_plan,
@@ -22,7 +26,88 @@ from series_cloud_archiver.batch_preview import (
 from series_cloud_archiver.cli import main
 
 
+@dataclass
+class FinalizeFakeConfig:
+    mp_base_url: str = "http://mp.local"
+    mp_token: str = "mp-token"
+    qb_base_url: str = "http://qb.local"
+    qb_user: str = "qb"
+    qb_pass: str = "pass"
+    mv3_base_url: str = "http://mv3.local"
+    mv3_token: str = "mv3-token"
+    emby_base_url: str = "http://emby.local"
+    emby_key: str = "emby-key"
+    emby_library_db_path: str = ""
+    path_aliases: dict | None = None
+
+
+class FinalizeFakeActions:
+    def __init__(self, fail_stage: str = "") -> None:
+        self.fail_stage = fail_stage
+        self.calls: list[tuple[str, dict]] = []
+
+    def _ok(self, stage: str, **extra: object) -> dict:
+        self.calls.append((stage, dict(extra)))
+        ok = self.fail_stage != stage
+        return {
+            "mode": stage,
+            "ok": ok,
+            "ready_for_execute": ok,
+            "blockers": [] if ok else [f"{stage}_failed"],
+            "warnings": [],
+            **extra,
+        }
+
+    def verify_strm(self, **kwargs: object) -> dict:
+        return self._ok("strm-verify", expected=kwargs)
+
+    def scrape_mp_strm(self, *args: object, **kwargs: object) -> dict:
+        return self._ok("mp-scrape-strm-result", args=list(args), kwargs=kwargs)
+
+    def audit_nfo_language(self, **kwargs: object) -> dict:
+        return self._ok("strm-nfo-language-audit", expected=kwargs)
+
+    def emby_media_updated(self, *args: object, **kwargs: object) -> dict:
+        return self._ok("emby-media-updated", args=list(args), kwargs=kwargs)
+
+    def cleanup_preview(self, **kwargs: object) -> dict:
+        return self._ok(
+            "cloud-hlink-cleanup-preview",
+            expected={
+                "tmdbid": kwargs.get("expected_tmdbid"),
+                "cloud_media_path": kwargs.get("cloud_media_path"),
+            },
+            hlink={"path": kwargs.get("hlink_root")},
+            qbittorrent={"hashes": ["abcdef123456"], "matched_count": 1},
+        )
+
+    def cleanup_execute(self, *args: object, **kwargs: object) -> dict:
+        return self._ok("cloud-hlink-cleanup-execute", args=list(args), kwargs=kwargs)
+
+
 class BatchRunnerTest(unittest.TestCase):
+    def _finalize_plan(self) -> dict:
+        return {
+            "mode": "readonly-batch-finalize-plan",
+            "items": [
+                {
+                    "status": "planned_finalize",
+                    "title": "折腰",
+                    "tmdbid": 296753,
+                    "season": 1,
+                    "expected_episode_count": 36,
+                    "expected_episodes": list(range(1, 37)),
+                    "hlink_root": "/volume3/volume3/hlink/TV/折腰 (2025)/Season 1",
+                    "strm_root": "/volume4/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                    "service_strm_root": "/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                    "cloud_title_path": "/已整理/series/折腰 (2025) {tmdbid=296753}",
+                    "required_target_prefix": "/已整理/series/折腰 (2025) {tmdbid=296753}",
+                    "forbidden_target_prefixes": ["/未整理", "/series/series"],
+                    "command_context": {"report_prefix": "zheyao-296753-s01"},
+                }
+            ],
+        }
+
     def test_batch_finalize_plan_builds_ordered_post_transfer_gates(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",
@@ -125,6 +210,150 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(data["finalize_ready_items"], 1)
         self.assertIn("cloud_hlink_cleanup_preview", [item["stage"] for item in data["items"][0]["commands"]])
+
+    def test_batch_finalize_run_default_waits_for_delete_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            report = run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=False,
+                actions=BatchFinalizeActions(
+                    verify_strm=actions.verify_strm,
+                    scrape_mp_strm=actions.scrape_mp_strm,
+                    audit_nfo_language=actions.audit_nfo_language,
+                    emby_media_updated=actions.emby_media_updated,
+                    cleanup_preview=actions.cleanup_preview,
+                    cleanup_execute=actions.cleanup_execute,
+                ),
+            )
+            stage_files = sorted(Path(tmp).glob("*.json"))
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["items"][0]["status"], "cleanup_waiting_for_approval")
+        self.assertNotIn("cloud-hlink-cleanup-execute", [call[0] for call in actions.calls])
+        self.assertEqual(len(stage_files), 5)
+        rendered = render_batch_finalize_run(report, "markdown")
+        self.assertIn("Batch Finalize Run", rendered)
+        self.assertIn("cleanup_waiting_for_approval", rendered)
+
+    def test_batch_finalize_run_gate_failure_stops_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions(fail_stage="strm-nfo-language-audit")
+            report = run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=True,
+                actions=BatchFinalizeActions(
+                    verify_strm=actions.verify_strm,
+                    scrape_mp_strm=actions.scrape_mp_strm,
+                    audit_nfo_language=actions.audit_nfo_language,
+                    emby_media_updated=actions.emby_media_updated,
+                    cleanup_preview=actions.cleanup_preview,
+                    cleanup_execute=actions.cleanup_execute,
+                ),
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["halted"])
+        self.assertEqual(report["items"][0]["status"], "failed_nfo_language")
+        self.assertNotIn("emby-media-updated", [call[0] for call in actions.calls])
+        self.assertNotIn("cloud-hlink-cleanup-execute", [call[0] for call in actions.calls])
+
+    def test_batch_finalize_run_requires_delete_approval_to_execute_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            report = run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=True,
+                actions=BatchFinalizeActions(
+                    verify_strm=actions.verify_strm,
+                    scrape_mp_strm=actions.scrape_mp_strm,
+                    audit_nfo_language=actions.audit_nfo_language,
+                    emby_media_updated=actions.emby_media_updated,
+                    cleanup_preview=actions.cleanup_preview,
+                    cleanup_execute=actions.cleanup_execute,
+                ),
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["items"][0]["status"], "cleanup_executed")
+        self.assertIn("cloud-hlink-cleanup-execute", [call[0] for call in actions.calls])
+
+    def test_batch_finalize_run_uses_strm_paths_for_scrape_and_cloud_path_only_for_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=False,
+                actions=BatchFinalizeActions(
+                    verify_strm=actions.verify_strm,
+                    scrape_mp_strm=actions.scrape_mp_strm,
+                    audit_nfo_language=actions.audit_nfo_language,
+                    emby_media_updated=actions.emby_media_updated,
+                    cleanup_preview=actions.cleanup_preview,
+                    cleanup_execute=actions.cleanup_execute,
+                ),
+            )
+
+        scrape_call = next(call for call in actions.calls if call[0] == "mp-scrape-strm-result")
+        self.assertEqual(scrape_call[1]["kwargs"]["strm_path"], "/volume4/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
+        self.assertEqual(scrape_call[1]["kwargs"]["mp_path"], "/volume4/mv3/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
+        self.assertNotIn("/已整理", scrape_call[1]["kwargs"]["strm_path"])
+        cleanup_call = next(call for call in actions.calls if call[0] == "cloud-hlink-cleanup-preview")
+        self.assertEqual(cleanup_call[1]["expected"]["cloud_media_path"], "/已整理/series/折腰 (2025) {tmdbid=296753}")
+
+    def test_cli_writes_batch_finalize_run_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "QB_BASE_URL=http://qb.local",
+                        "MP_BASE_URL=http://mp.local",
+                        "MP_API_TOKEN=token",
+                        "EMBY_BASE_URL=http://emby.local",
+                        "EMBY_API_KEY=emby",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            plan = tmp_path / "finalize.json"
+            output = tmp_path / "run.json"
+            stages = tmp_path / "stages"
+            bad_plan = self._finalize_plan()
+            bad_plan["items"][0]["strm_root"] = str(tmp_path / "missing-strm")
+            plan.write_text(json.dumps(bad_plan, ensure_ascii=False), encoding="utf-8")
+            exit_code = main(
+                [
+                    "batch-finalize-run",
+                    "--env-file",
+                    str(env_file),
+                    "--finalize-plan",
+                    str(plan),
+                    "--output-dir",
+                    str(stages),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+            data = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(data["items"][0]["status"], "failed_strm_verify")
 
     def test_complete_cloud_strm_item_gets_validation_cleanup_commands(self) -> None:
         plan = build_batch_plan(

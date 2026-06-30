@@ -702,6 +702,30 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-brows
 
 整理转存成功后，下一步必须先验证两边：云盘媒体目录只应该有视频和可播放用字幕旁挂，不能有 `.nfo/.jpg/.jpeg/.png/.webp`；STRM 目录才是后续刮削和 Emby 入库对象。也就是说，删除本地 hlink 或 qB 种子前，至少要同时拿到 `mv3-cloud-browse`、`mv3-cloud-media-sidecar-verify`、`strm-verify` 和局部 Emby 验证报告。
 
+批量场景不要再把 `batch-finalize-plan` 里的命令一条条手工复制执行。先生成 finalize plan，再交给 `batch-finalize-run` 按顺序跑门禁：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver batch-finalize-plan \
+  --env-file .env \
+  --batch-plan reports/batch-plan.json \
+  --host-strm-root "/volume4/volume4/mv3/strm" \
+  --service-strm-root "/volume4/mv3/strm" \
+  --forbidden-target-prefix "/未整理" \
+  --format json \
+  --output reports/batch-finalize-plan.json
+
+PYTHONPATH=src python3 -m series_cloud_archiver batch-finalize-run \
+  --env-file .env \
+  --finalize-plan reports/batch-finalize-plan.json \
+  --output-dir reports/batch-finalize-stages \
+  --limit 2 \
+  --execute-scrape \
+  --format json \
+  --output reports/batch-finalize-run-sample.json
+```
+
+`batch-finalize-run` 会逐部剧季执行 `strm-verify -> mp-scrape-strm -> strm-nfo-language-audit -> emby-media-updated -> cloud-hlink-cleanup-preview`。任何一步失败都会停止当前项并写报告；默认不会删除 qB、种子文件或 hlink。只有在前面所有门禁都通过，并且显式加上 `--approve-delete` 时，才会继续执行 `cloud-hlink-cleanup-execute`。这个 runner 只把 STRM 路径传给 MP/Emby 刮削和刷新；云盘 `/已整理/...` 路径只用于检查实体目录里有没有误写入的 NFO/JPG 等旁挂。
+
 单独调用 `mv3-strm-generate` 时也保持同样边界：只生成 STRM，不允许顺手整理或刮削云盘媒体。`--target-dir` 必须是 STRM 侧根目录，不能传 `/已整理`、`/未整理` 或 `/series`。命令里的 `--organize` 会被项目阻断；即使传了旧版兼容参数 `--allow-organize` 也不会放行。正常迁移流程应先用 `mv3-organize-transfer-from-browse` 完成云盘整理和 STRM 生成，再只刷新/刮削 STRM 侧媒体库。
 
 如果发现云盘媒体目录里已经出现 `.nfo/.jpg/.jpeg/.png/.webp` 等刮削旁挂，先用 dry-run 列出将要删除的元数据文件：

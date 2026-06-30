@@ -6,9 +6,15 @@ import json
 import re
 import shlex
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Dict, List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+from .cleanup_verify import audit_strm_nfo_language, verify_strm_paths
+from .emby import notify_and_verify_emby_media_updated
+from .hlink_cleanup import execute_cloud_hlink_cleanup, preview_cloud_hlink_cleanup
+from .moviepilot import scrape_mp_strm_path
 from .reporting import human_size
 from .transfer_plan import DEFAULT_CLOUD_ROOT, DEFAULT_STRM_ROOT
 
@@ -17,6 +23,16 @@ AUTO_TRANSFER = "auto_ready_for_transfer_preview"
 AUTO_CLEANUP = "auto_ready_for_validation_cleanup"
 MANUAL_REVIEW = "manual_review"
 SKIPPED = "skipped"
+
+
+@dataclass
+class BatchFinalizeActions:
+    verify_strm: Callable[..., Dict[str, object]] = verify_strm_paths
+    scrape_mp_strm: Callable[..., Dict[str, object]] = scrape_mp_strm_path
+    audit_nfo_language: Callable[..., Dict[str, object]] = audit_strm_nfo_language
+    emby_media_updated: Callable[..., Dict[str, object]] = notify_and_verify_emby_media_updated
+    cleanup_preview: Callable[..., Dict[str, object]] = preview_cloud_hlink_cleanup
+    cleanup_execute: Callable[..., Dict[str, object]] = execute_cloud_hlink_cleanup
 
 
 def build_batch_plan(
@@ -273,6 +289,382 @@ def render_batch_finalize_plan(report: Dict[str, object], output_format: str) ->
             )
         )
     return "\n".join(lines)
+
+
+def run_batch_finalize(
+    finalize_plan: Dict[str, object],
+    *,
+    output_dir: str,
+    config: object,
+    limit: int = 0,
+    title_filters: Optional[Sequence[str]] = None,
+    continue_on_error: bool = False,
+    execute_scrape: bool = False,
+    approve_delete: bool = False,
+    min_seed_days: int = 7,
+    cloud_media_storage: str = "115-default",
+    timeout: int = 20,
+    scrape_timeout: int = 120,
+    nfo_min_chinese_ratio: float = 0.35,
+    nfo_sample_limit: int = 50,
+    actions: Optional[BatchFinalizeActions] = None,
+) -> Dict[str, object]:
+    """Execute post-transfer gates from a finalize plan.
+
+    The runner is deliberately gate-first: each item stops at the first failed
+    stage, and destructive cleanup requires approve_delete=True.
+    """
+
+    actions = actions or BatchFinalizeActions()
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    filters = [value for value in (title_filters or []) if str(value)]
+    candidates = _finalize_run_candidates(finalize_plan, filters)
+    if limit > 0:
+        candidates = candidates[:limit]
+
+    rows: List[Dict[str, object]] = []
+    halted = False
+    for item in candidates:
+        row = _run_finalize_item(
+            item,
+            output_dir=output_path,
+            config=config,
+            execute_scrape=execute_scrape,
+            approve_delete=approve_delete,
+            min_seed_days=min_seed_days,
+            cloud_media_storage=cloud_media_storage,
+            timeout=timeout,
+            scrape_timeout=scrape_timeout,
+            nfo_min_chinese_ratio=nfo_min_chinese_ratio,
+            nfo_sample_limit=nfo_sample_limit,
+            actions=actions,
+        )
+        rows.append(row)
+        if row.get("status") not in {"cleanup_executed", "cleanup_waiting_for_approval"} and not continue_on_error:
+            halted = True
+            break
+
+    status_counts = Counter(str(row.get("status") or "") for row in rows)
+    stage_counts = Counter(
+        str(stage.get("stage") or "")
+        for row in rows
+        for stage in row.get("stages", [])
+        if isinstance(stage, dict)
+    )
+    return {
+        "mode": "batch-finalize-run",
+        "source_mode": finalize_plan.get("mode", ""),
+        "ok": all(row.get("status") in {"cleanup_executed", "cleanup_waiting_for_approval"} for row in rows) and not halted,
+        "halted": halted,
+        "planned_items": len(candidates),
+        "processed_items": len(rows),
+        "status_counts": dict(sorted(status_counts.items())),
+        "stage_counts": dict(sorted(stage_counts.items())),
+        "settings": {
+            "output_dir": str(output_path),
+            "limit": limit,
+            "title_filters": filters,
+            "continue_on_error": continue_on_error,
+            "execute_scrape": execute_scrape,
+            "approve_delete": approve_delete,
+            "min_seed_days": min_seed_days,
+            "cloud_media_storage": cloud_media_storage,
+            "timeout": timeout,
+            "scrape_timeout": scrape_timeout,
+            "nfo_min_chinese_ratio": nfo_min_chinese_ratio,
+            "nfo_sample_limit": nfo_sample_limit,
+        },
+        "items": rows,
+        "safety": (
+            "batch finalize runner executes ordered gates only. MoviePilot scraping requires execute_scrape=true; "
+            "qB/hlink cleanup requires approve_delete=true and a fresh ready cloud-hlink cleanup preview."
+        ),
+    }
+
+
+def render_batch_finalize_run(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# Batch Finalize Run",
+        "",
+        f"- Mode: `{report.get('mode', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Halted: `{bool(report.get('halted'))}`",
+        f"- Processed: `{report.get('processed_items', 0)}` / `{report.get('planned_items', 0)}`",
+        f"- Status counts: `{report.get('status_counts', {})}`",
+        "- Safety: cleanup runs only with explicit approval after all gates pass.",
+        "",
+        "| Status | TMDB | S | Episodes | Title | Last stage | Blockers |",
+        "| --- | ---: | ---: | ---: | --- | --- | --- |",
+    ]
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        stages = item.get("stages") if isinstance(item.get("stages"), list) else []
+        last_stage = ""
+        if stages and isinstance(stages[-1], dict):
+            last_stage = str(stages[-1].get("stage") or "")
+        lines.append(
+            "| {status} | {tmdbid} | {season} | {episodes} | {title} | {stage} | {blockers} |".format(
+                status=item.get("status", ""),
+                tmdbid=item.get("tmdbid") or "",
+                season=item.get("season") or "",
+                episodes=item.get("expected_episode_count") or "",
+                title=_escape_cell(str(item.get("title") or "")),
+                stage=_escape_cell(last_stage),
+                blockers=_escape_cell(", ".join(_string_list(item.get("blockers")))),
+            )
+        )
+    return "\n".join(lines)
+
+
+def _finalize_run_candidates(finalize_plan: Dict[str, object], title_filters: Sequence[str]) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
+    lowered_filters = [item.lower() for item in title_filters]
+    for item in finalize_plan.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") != "planned_finalize":
+            continue
+        title = str(item.get("title") or "")
+        if lowered_filters and not any(value in title.lower() for value in lowered_filters):
+            continue
+        rows.append(item)
+    return rows
+
+
+def _run_finalize_item(
+    item: Dict[str, object],
+    *,
+    output_dir: Path,
+    config: object,
+    execute_scrape: bool,
+    approve_delete: bool,
+    min_seed_days: int,
+    cloud_media_storage: str,
+    timeout: int,
+    scrape_timeout: int,
+    nfo_min_chinese_ratio: float,
+    nfo_sample_limit: int,
+    actions: BatchFinalizeActions,
+) -> Dict[str, object]:
+    title = str(item.get("title") or "")
+    tmdbid = int(item.get("tmdbid") or 0)
+    season = int(item.get("season") or 0)
+    expected_count = int(item.get("expected_episode_count") or 0)
+    expected_episodes = _int_list(item.get("expected_episodes"))
+    expected_min = min(expected_episodes) if expected_episodes else 1
+    expected_max = max(expected_episodes) if expected_episodes else expected_count
+    hlink_root = str(item.get("hlink_root") or "").rstrip("/")
+    strm_root = str(item.get("strm_root") or "").rstrip("/")
+    service_root = str(item.get("service_strm_root") or strm_root).rstrip("/")
+    required_prefix = str(item.get("required_target_prefix") or "")
+    forbidden_prefixes = _string_list(item.get("forbidden_target_prefixes"))
+    cloud_title_path = str(item.get("cloud_title_path") or "").rstrip("/")
+    report_prefix = str((item.get("command_context") or {}).get("report_prefix") if isinstance(item.get("command_context"), dict) else "") or _report_prefix(title, tmdbid, season)
+
+    row: Dict[str, object] = {
+        "status": "running",
+        "title": title,
+        "tmdbid": tmdbid,
+        "season": season,
+        "expected_episode_count": expected_count,
+        "hlink_root": hlink_root,
+        "strm_root": strm_root,
+        "service_strm_root": service_root,
+        "cloud_title_path": cloud_title_path,
+        "required_target_prefix": required_prefix,
+        "stages": [],
+        "blockers": [],
+        "warnings": [],
+    }
+
+    if not _append_stage(
+        row,
+        _stage_report_path(output_dir, report_prefix, "01-strm-verify"),
+        "strm_verify",
+        actions.verify_strm(
+            title=title,
+            strm_roots=[strm_root],
+            expected_episode_count=expected_count,
+            expected_episode_min=expected_min,
+            expected_episode_max=expected_max,
+            required_target_prefix=required_prefix,
+            forbidden_target_prefixes=forbidden_prefixes,
+        ),
+    ):
+        row["status"] = "failed_strm_verify"
+        return row
+
+    if execute_scrape:
+        if not _config_value(config, "mp_base_url") or not _config_value(config, "mp_token"):
+            return _finish_missing_credentials(row, "mp_credentials_required", "failed_mp_scrape")
+        scrape_report = actions.scrape_mp_strm(
+            _config_value(config, "mp_base_url"),
+            _config_value(config, "mp_token"),
+            strm_path=strm_root,
+            mp_path=service_root,
+            storage="local",
+            item_type="dir",
+            timeout=scrape_timeout,
+        )
+    else:
+        scrape_report = {
+            "mode": "mp-scrape-strm-result",
+            "ok": True,
+            "skipped": True,
+            "reason": "execute_scrape_not_requested",
+            "strm_path": strm_root,
+            "mp_path": service_root,
+            "safety": "MoviePilot scrape skipped because execute_scrape was not requested",
+        }
+    if not _append_stage(row, _stage_report_path(output_dir, report_prefix, "02-mp-scrape-strm"), "mp_scrape_strm", scrape_report):
+        row["status"] = "failed_mp_scrape"
+        return row
+
+    if not _append_stage(
+        row,
+        _stage_report_path(output_dir, report_prefix, "03-nfo-language"),
+        "strm_nfo_language_audit",
+        actions.audit_nfo_language(
+            strm_roots=[strm_root],
+            min_chinese_ratio=nfo_min_chinese_ratio,
+            sample_limit=nfo_sample_limit,
+        ),
+    ):
+        row["status"] = "failed_nfo_language"
+        return row
+
+    if not _config_value(config, "emby_base_url") or not _config_value(config, "emby_key"):
+        return _finish_missing_credentials(row, "emby_credentials_required", "failed_emby_media_updated")
+    if not _append_stage(
+        row,
+        _stage_report_path(output_dir, report_prefix, "04-emby-media-updated"),
+        "emby_media_updated_verify",
+        actions.emby_media_updated(
+            _config_value(config, "emby_base_url"),
+            _config_value(config, "emby_key"),
+            title=title,
+            updated_paths=[service_root],
+            stale_path_prefixes=[],
+            strm_path_prefixes=[service_root],
+            update_type="Created",
+            expected_strm_records=0,
+            expected_episode_count=expected_count,
+            expected_episode_min=expected_min,
+            expected_episode_max=expected_max,
+            library_db_path=_config_value(config, "emby_library_db_path"),
+            timeout=timeout,
+        ),
+    ):
+        row["status"] = "failed_emby_media_updated"
+        return row
+
+    if not _config_value(config, "qb_base_url"):
+        return _finish_missing_credentials(row, "qb_credentials_required", "failed_cleanup_preview")
+    cleanup_preview = actions.cleanup_preview(
+        title=title.split(" (", 1)[0].strip() or title,
+        hlink_root=hlink_root,
+        strm_root=strm_root,
+        expected_tmdbid=tmdbid,
+        expected_episode_count=expected_count,
+        expected_episode_min=expected_min,
+        expected_episode_max=expected_max,
+        qb_base_url=_config_value(config, "qb_base_url"),
+        qb_user=_config_value(config, "qb_user"),
+        qb_pass=_config_value(config, "qb_pass"),
+        path_aliases=getattr(config, "path_aliases", {}) or {},
+        min_seed_days=min_seed_days,
+        required_target_prefix=required_prefix,
+        forbidden_target_prefixes=forbidden_prefixes,
+        mv3_base_url=_config_value(config, "mv3_base_url"),
+        mv3_token=_config_value(config, "mv3_token"),
+        cloud_media_path=cloud_title_path,
+        cloud_media_storage=cloud_media_storage,
+    )
+    if not _append_stage(
+        row,
+        _stage_report_path(output_dir, report_prefix, "05-cloud-hlink-cleanup-preview"),
+        "cloud_hlink_cleanup_preview",
+        cleanup_preview,
+        ok_key="ready_for_execute",
+    ):
+        row["status"] = "failed_cleanup_preview"
+        return row
+
+    if not approve_delete:
+        row["status"] = "cleanup_waiting_for_approval"
+        return row
+
+    execute_report = actions.cleanup_execute(
+        cleanup_preview,
+        _config_value(config, "qb_base_url"),
+        _config_value(config, "qb_user"),
+        _config_value(config, "qb_pass"),
+        path_aliases=getattr(config, "path_aliases", {}) or {},
+        mv3_base_url=_config_value(config, "mv3_base_url"),
+        mv3_token=_config_value(config, "mv3_token"),
+        timeout=timeout,
+    )
+    if not _append_stage(
+        row,
+        _stage_report_path(output_dir, report_prefix, "06-cloud-hlink-cleanup-execute"),
+        "cloud_hlink_cleanup_execute",
+        execute_report,
+    ):
+        row["status"] = "failed_cleanup_execute"
+        return row
+    row["status"] = "cleanup_executed"
+    return row
+
+
+def _append_stage(
+    row: Dict[str, object],
+    output_path: Path,
+    stage: str,
+    report: Dict[str, object],
+    *,
+    ok_key: str = "ok",
+) -> bool:
+    _write_json(output_path, report)
+    ok = bool(report.get(ok_key))
+    blockers = _string_list(report.get("blockers"))
+    warnings = _string_list(report.get("warnings"))
+    row.setdefault("stages", []).append(
+        {
+            "stage": stage,
+            "ok": ok,
+            "output": str(output_path),
+            "mode": report.get("mode", ""),
+            "blockers": blockers,
+            "warnings": warnings,
+        }
+    )
+    row["blockers"] = sorted(set(_string_list(row.get("blockers")) + blockers))
+    row["warnings"] = sorted(set(_string_list(row.get("warnings")) + warnings))
+    return ok
+
+
+def _finish_missing_credentials(row: Dict[str, object], blocker: str, status: str) -> Dict[str, object]:
+    row["status"] = status
+    row["blockers"] = sorted(set(_string_list(row.get("blockers")) + [blocker]))
+    row.setdefault("stages", []).append({"stage": "configuration", "ok": False, "blockers": [blocker]})
+    return row
+
+
+def _stage_report_path(output_dir: Path, report_prefix: str, stage_name: str) -> Path:
+    return output_dir / f"{report_prefix}-{stage_name}.json"
+
+
+def _write_json(path: Path, report: Dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _config_value(config: object, name: str) -> str:
+    return str(getattr(config, name, "") or "")
 
 
 def _batch_item(

@@ -10,7 +10,14 @@ from .batch_preview import (
     render_batch_share_preview_report,
     render_batch_share_receive_plan,
 )
-from .batch_runner import build_batch_finalize_plan, build_batch_plan, render_batch_finalize_plan, render_batch_plan
+from .batch_runner import (
+    build_batch_finalize_plan,
+    build_batch_plan,
+    render_batch_finalize_plan,
+    render_batch_finalize_run,
+    render_batch_plan,
+    run_batch_finalize,
+)
 from .cloud_check import cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
 from .cloud_cleanup import (
     execute_cloud_complete_cleanup_plan,
@@ -698,6 +705,24 @@ def build_parser() -> argparse.ArgumentParser:
     batch_finalize_parser.add_argument("--limit", type=int, default=0, help="Maximum planned finalize rows; 0 means all")
     batch_finalize_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     batch_finalize_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    batch_finalize_run_parser = subcommands.add_parser("batch-finalize-run", help="Run ordered post-transfer STRM/MP/NFO/Emby/cleanup gates from a finalize plan")
+    batch_finalize_run_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    batch_finalize_run_parser.add_argument("--finalize-plan", required=True, help="JSON report from batch-finalize-plan")
+    batch_finalize_run_parser.add_argument("--output-dir", required=True, help="Directory for per-stage JSON reports")
+    batch_finalize_run_parser.add_argument("--limit", type=int, default=0, help="Maximum planned finalize rows to process; 0 means all")
+    batch_finalize_run_parser.add_argument("--title", action="append", default=[], help="Only process titles containing this text; can be repeated")
+    batch_finalize_run_parser.add_argument("--continue-on-error", action="store_true", help="Continue to the next item after a gate failure")
+    batch_finalize_run_parser.add_argument("--execute-scrape", action="store_true", help="Actually request MoviePilot to scrape STRM-side paths")
+    batch_finalize_run_parser.add_argument("--approve-delete", action="store_true", help="Actually execute qB+hlink cleanup after all gates pass")
+    batch_finalize_run_parser.add_argument("--min-seed-days", type=int, default=7, help="Minimum qB seed days for cleanup preview")
+    batch_finalize_run_parser.add_argument("--cloud-media-storage", default="115-default", help="MV3 cloud storage slug for cloud sidecar verification")
+    batch_finalize_run_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    batch_finalize_run_parser.add_argument("--scrape-timeout", type=int, default=120, help="MoviePilot scrape timeout in seconds")
+    batch_finalize_run_parser.add_argument("--nfo-min-chinese-ratio", type=float, default=0.35, help="Minimum Chinese ratio for NFO language audit")
+    batch_finalize_run_parser.add_argument("--nfo-sample-limit", type=int, default=50, help="NFO sample limit per STRM root")
+    batch_finalize_run_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    batch_finalize_run_parser.add_argument("--output", default=None, help="Write aggregate report to file instead of stdout")
 
     preview_parser = subcommands.add_parser("plan-mv3-preview", help="Create a readonly MV3 preview manifest from a transfer plan")
     preview_parser.add_argument("--transfer-plan", required=True, help="JSON report from plan-mv3-transfer")
@@ -2381,6 +2406,34 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(rendered)
         return 0
+
+    if args.command == "batch-finalize-run":
+        finalize_plan = load_optional_json_report(args.finalize_plan)
+        if not isinstance(finalize_plan, dict):
+            parser.error("batch-finalize-run requires a valid --finalize-plan JSON report")
+        config = config_from_env(args.env_file, [])
+        report = run_batch_finalize(
+            finalize_plan,
+            output_dir=args.output_dir,
+            config=config,
+            limit=args.limit,
+            title_filters=args.title,
+            continue_on_error=args.continue_on_error,
+            execute_scrape=args.execute_scrape,
+            approve_delete=args.approve_delete,
+            min_seed_days=args.min_seed_days,
+            cloud_media_storage=args.cloud_media_storage,
+            timeout=args.timeout,
+            scrape_timeout=args.scrape_timeout,
+            nfo_min_chinese_ratio=args.nfo_min_chinese_ratio,
+            nfo_sample_limit=args.nfo_sample_limit,
+        )
+        rendered = render_batch_finalize_run(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
 
     if args.command == "plan-mv3-preview":
         manifest = plan_mv3_preview_manifest(
