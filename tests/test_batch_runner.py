@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 from series_cloud_archiver.batch_runner import (
     AUTO_CLEANUP,
@@ -38,7 +39,7 @@ class FinalizeFakeConfig:
     emby_base_url: str = "http://emby.local"
     emby_key: str = "emby-key"
     emby_library_db_path: str = ""
-    path_aliases: dict | None = None
+    path_aliases: Optional[dict] = None
 
 
 class FinalizeFakeActions:
