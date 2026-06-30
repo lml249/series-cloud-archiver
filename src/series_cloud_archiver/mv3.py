@@ -1905,8 +1905,6 @@ def repair_mv3_wrong_root_direct_season_pair(
     normalized_correct_root = _normalize_cloud_path(correct_root)
     normalized_strm_root = str(strm_root or "").rstrip("/")
     normalized_season = int(season or 0)
-    season_name = f"S{normalized_season:02d}" if normalized_season > 0 else ""
-    wrong_season_path = _cloud_join_path(normalized_wrong_root, season_name) if season_name else ""
     correct_title = _derive_direct_wrong_root_title(
         normalized_wrong_root,
         normalized_correct_root,
@@ -1941,7 +1939,11 @@ def repair_mv3_wrong_root_direct_season_pair(
     ensure_report: Dict[str, object] = {"skipped": True}
     move_report: Dict[str, object] = {"skipped": True}
     rewrite_report: Dict[str, object] = {"skipped": True}
+    wrong_season_resolution: Dict[str, object] = {"skipped": True}
 
+    if normalized_wrong_root and normalized_season > 0:
+        wrong_season_resolution = _resolve_wrong_root_direct_season_path(client, normalized_wrong_root, normalized_season, storage, limit)
+    wrong_season_path = str(wrong_season_resolution.get("selected_path") or "")
     if wrong_season_path:
         wrong_season = _cloud_folder_summary_by_path(client, wrong_season_path, storage, limit)
     if correct_title_path:
@@ -2091,6 +2093,7 @@ def repair_mv3_wrong_root_direct_season_pair(
             "rewrite_count": expected_rewrite_count,
         },
         "precheck": {
+            "wrong_season_resolution": wrong_season_resolution,
             "wrong": _public_cloud_folder_summary(wrong_season),
             "correct_title": _public_cloud_folder_summary(correct_title_summary),
             "correct": _public_cloud_folder_summary(correct_season),
@@ -4478,6 +4481,87 @@ def _correct_title_path_for_wrong_root_title(correct_root: str, title: str) -> s
     if normalized_correct == f"/{clean_title}" or normalized_correct.endswith(f"/{clean_title}"):
         return normalized_correct
     return _cloud_join_path(normalized_correct, clean_title)
+
+
+def _wrong_root_direct_season_name_candidates(season_number: int) -> List[str]:
+    if season_number <= 0:
+        return []
+    candidates = [
+        f"S{season_number:02d}",
+        f"S{season_number}",
+        f"Season {season_number:02d}",
+        f"Season {season_number}",
+    ]
+    deduped: List[str] = []
+    seen: Set[str] = set()
+    for candidate in candidates:
+        key = candidate.casefold()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(candidate)
+    return deduped
+
+
+def _resolve_wrong_root_direct_season_path(
+    client: MV3Client,
+    wrong_root: str,
+    season_number: int,
+    storage: str,
+    limit: int,
+) -> Dict[str, object]:
+    normalized_wrong_root = _normalize_cloud_path(wrong_root)
+    candidates = _wrong_root_direct_season_name_candidates(season_number)
+    fallback_name = candidates[0] if candidates else ""
+    fallback_path = _cloud_join_path(normalized_wrong_root, fallback_name) if fallback_name else ""
+    report: Dict[str, object] = {
+        "wrong_root": normalized_wrong_root,
+        "season": season_number,
+        "candidate_names": candidates,
+        "selected_name": fallback_name,
+        "selected_path": fallback_path,
+        "selected_folder_id": "",
+        "method": "fallback",
+        "root_exists": False,
+        "root_browse_ok": False,
+        "root_folders": [],
+    }
+    if not normalized_wrong_root or season_number <= 0:
+        return report
+
+    root_summary = _cloud_folder_summary_by_path(client, normalized_wrong_root, storage, limit)
+    folders = list(root_summary.get("folders", [])) if isinstance(root_summary.get("folders"), list) else []
+    report["root_exists"] = bool(root_summary.get("exists"))
+    report["root_browse_ok"] = bool(root_summary.get("browse_ok"))
+    report["root_folders"] = folders[:20]
+    rows = root_summary.get("rows") if isinstance(root_summary.get("rows"), list) else []
+    candidate_rank = {name.casefold(): index for index, name in enumerate(candidates)}
+    exact_matches: List[Dict[str, object]] = []
+    season_number_matches: List[Dict[str, object]] = []
+    for row in rows:
+        if not isinstance(row, dict) or _cloud_item_kind(row) != "folder":
+            continue
+        name = _cloud_name(row)
+        if name.casefold() in candidate_rank:
+            exact_matches.append(row)
+        elif _season_number_from_folder_name(name) == season_number:
+            season_number_matches.append(row)
+
+    selected: Dict[str, object] = {}
+    method = "fallback"
+    if exact_matches:
+        selected = sorted(exact_matches, key=lambda item: candidate_rank.get(_cloud_name(item).casefold(), 999))[0]
+        method = "root_exact_folder_match"
+    elif season_number_matches:
+        selected = sorted(season_number_matches, key=lambda item: _cloud_name(item).casefold())[0]
+        method = "root_season_number_match"
+
+    if selected:
+        selected_name = _cloud_name(selected)
+        report["selected_name"] = selected_name
+        report["selected_path"] = _cloud_join_path(normalized_wrong_root, selected_name)
+        report["selected_folder_id"] = _cloud_file_id(selected)
+        report["method"] = method
+    return report
 
 
 def _best_season_summary(

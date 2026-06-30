@@ -569,6 +569,46 @@ class MV3WrongRootRepairTest(unittest.TestCase):
             self.assertTrue(payload["dry_run"])
             self.assertEqual(payload["precheck"]["rewrite_preview"]["summary"]["rewritable_count"], 2)
 
+    def test_wrong_root_direct_season_pair_detects_actual_season_folder_variant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            title = "真相捕捉 (2019) {tmdbid=93166}"
+            strm_title_root = Path(tmp) / "strm" / "未识别" / title
+            season_dir = strm_title_root / "Season 3"
+            season_dir.mkdir(parents=True)
+            for episode in range(1, 7):
+                target = urllib.parse.quote(
+                    f"/已整理/未识别/{title}/Season 3/真相捕捉 - S03E{episode:02d}.mkv",
+                    safe="/(){}= -.",
+                )
+                (season_dir / f"真相捕捉 - S03E{episode:02d}.strm").write_text(
+                    f"http://mv3.example/redirect?path={target}&pickcode=p{episode}",
+                    encoding="utf-8",
+                )
+
+            with patch("urllib.request.urlopen", lambda request, timeout: _fake_mv3_direct_pair_season3_response(request)):
+                report = repair_mv3_wrong_root_direct_season_pair(
+                    "http://mv3.example",
+                    "token",
+                    f"/已整理/未识别/{title}",
+                    "/已整理/series",
+                    str(strm_title_root),
+                    season=3,
+                    storage="115-default",
+                    expected_episode_count=6,
+                    expected_episode_min=1,
+                    expected_episode_max=6,
+                    expected_rewrite_count=6,
+                )
+
+            self.assertTrue(report["ok"], report["blockers"])
+            self.assertEqual(report["wrong_season_path"], f"/已整理/未识别/{title}/Season 3")
+            self.assertEqual(report["correct_title_path"], f"/已整理/series/{title}")
+            self.assertEqual(report["correct_season_path"], f"/已整理/series/{title}/Season 03")
+            self.assertEqual(report["precheck"]["wrong_season_resolution"]["method"], "root_exact_folder_match")
+            self.assertEqual(report["precheck"]["wrong"]["media_count"], 6)
+            self.assertEqual(report["precheck"]["strm"]["wrong_target_count"], 6)
+            self.assertEqual(report["precheck"]["rewrite_preview"]["summary"]["rewritable_count"], 6)
+
     def test_wrong_root_repair_direct_season_counts_url_path_strm_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             title = "广告狂人 (2007) {tmdbid=1104}"
@@ -1214,6 +1254,59 @@ def _fake_mv3_direct_pair_repair_response(request, moved=False, target_created=F
         "wrong-season-7": [] if moved else wrong_files,
         "correct-title-madmen": [{"name": "Season 07", "cid": "correct-season-7", "is_dir": True}] if target_created or moved else [],
         "correct-season-7": correct_files if moved else [],
+    }
+
+    if parsed.path.endswith("/api/v1/files/cloud/info"):
+        return FakeResponse({"success": True, "data": info.get(path, {})})
+    if parsed.path.endswith("/api/v1/files/cloud/browse") or parsed.path.endswith("/api/v1/files/115/browse"):
+        return FakeResponse({"success": True, "data": {"items": browse.get(cid, [])}})
+    return FakeResponse({"success": True, "data": {}})
+
+
+def _fake_mv3_direct_pair_season3_response(request):
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            return False
+
+        def read(self, _limit=-1):
+            return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+
+        @property
+        def headers(self):
+            return {"Content-Type": "application/json"}
+
+    parsed = urllib.parse.urlparse(request.full_url)
+    query = urllib.parse.parse_qs(parsed.query)
+    path = query.get("path", [""])[0]
+    cid = query.get("cid", [""])[0]
+
+    title = "真相捕捉 (2019) {tmdbid=93166}"
+    wrong_root = f"/已整理/未识别/{title}"
+    correct_title = f"/已整理/series/{title}"
+    correct_season = f"{correct_title}/Season 03"
+    wrong_files = [
+        {"name": f"真相捕捉 - S03E{episode:02d}.mkv", "fid": f"capture-s3-file-{episode}", "is_dir": False}
+        for episode in range(1, 7)
+    ]
+    info = {
+        wrong_root: {"name": title, "cid": "wrong-root-capture", "is_dir": True},
+        f"{wrong_root}/Season 3": {"name": "Season 3", "cid": "wrong-season-3", "is_dir": True},
+        correct_title: {"name": title, "cid": "correct-title-capture", "is_dir": True},
+        correct_season: {"name": "Season 03", "cid": "correct-season-3", "is_dir": True},
+    }
+    browse = {
+        "wrong-root-capture": [{"name": "Season 3", "cid": "wrong-season-3", "is_dir": True}],
+        "wrong-season-3": wrong_files,
+        "correct-title-capture": [{"name": "Season 03", "cid": "correct-season-3", "is_dir": True}],
+        "correct-season-3": [],
     }
 
     if parsed.path.endswith("/api/v1/files/cloud/info"):
