@@ -33,6 +33,18 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
                         }
                     ],
                 }
+            ]
+            + [
+                {
+                    "status": "failed_cleanup_preview",
+                    "title": "怪奇物语",
+                    "tmdbid": 66732,
+                    "season": 5,
+                    "blockers": ["source_root_check_failed"],
+                    "cleanup_unlinked_video_sample": [
+                        "/volume-example/source-tv/怪奇物语/Stranger.Things.S01E01.mkv",
+                    ],
+                }
             ],
         }
 
@@ -44,8 +56,8 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
             strm_dir="/strm",
         )
 
-        self.assertEqual(report["planned_items"], 2)
-        self.assertEqual(report["ready_for_mv3_scan_items"], 2)
+        self.assertEqual(report["planned_items"], 3)
+        self.assertEqual(report["ready_for_mv3_scan_items"], 3)
         first = report["items"][0]
         self.assertEqual(first["suggested_season"], 0)
         self.assertEqual(first["media_kind"], "special")
@@ -56,6 +68,20 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
         self.assertFalse(first["commands"][1]["command"].startswith("PYTHONPATH=src"))
         rendered = render_extra_source_media_plan(report, "csv")
         self.assertIn("Band.of.Brothers.SP2.The.Making.mkv", rendered)
+
+    def test_plan_can_filter_one_finalize_item(self) -> None:
+        report = build_extra_source_media_plan(
+            self._finalize_report(),
+            title="兄弟连 (2001) {tmdbid=4613} Season 01",
+            tmdbid=4613,
+            season=1,
+        )
+
+        self.assertEqual(report["planned_items"], 2)
+        self.assertTrue(all(item["tmdbid"] == 4613 for item in report["items"]))
+        self.assertEqual(report["settings"]["tmdbid"], 4613)
+        rendered = render_extra_source_media_plan(report, "csv")
+        self.assertNotIn("Stranger.Things", rendered)
 
     def test_cli_writes_extra_source_media_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -71,6 +97,12 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
                     str(finalize),
                     "--env-file",
                     "/safe/.env",
+                    "--title",
+                    "兄弟连 (2001) {tmdbid=4613} Season 01",
+                    "--tmdbid",
+                    "4613",
+                    "--season",
+                    "1",
                     "--format",
                     "json",
                     "--output",
@@ -82,6 +114,7 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["mode"], "readonly-extra-source-media-plan")
         self.assertEqual(payload["planned_items"], 2)
+        self.assertEqual(payload["settings"]["season"], 1)
 
 
 if __name__ == "__main__":

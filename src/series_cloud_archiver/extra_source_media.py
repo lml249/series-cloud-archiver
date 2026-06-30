@@ -22,6 +22,9 @@ def build_extra_source_media_plan(
     strm_dir: str = "/strm",
     storage: str = "115-default",
     timeout: int = 120,
+    title: str = "",
+    tmdbid: int = 0,
+    season: int = 0,
 ) -> JsonDict:
     """Build a readonly follow-up plan for source videos not covered by hlink.
 
@@ -37,14 +40,20 @@ def build_extra_source_media_plan(
             continue
         if "source_root_check_failed" not in _strings(item.get("blockers")):
             continue
-        title = str(item.get("title") or "")
-        tmdbid = int(item.get("tmdbid") or 0)
+        item_title = str(item.get("title") or "")
+        item_tmdbid = int(item.get("tmdbid") or 0)
         main_season = int(item.get("season") or 0)
+        if title and item_title != title:
+            continue
+        if tmdbid and item_tmdbid != tmdbid:
+            continue
+        if season and main_season != season:
+            continue
         unlinked_paths = _unlinked_video_paths(item)
         for source_path in unlinked_paths:
             media = _media_row(
-                title=title,
-                tmdbid=tmdbid,
+                title=item_title,
+                tmdbid=item_tmdbid,
                 main_season=main_season,
                 source_path=source_path,
                 env_file=env_file,
@@ -77,6 +86,9 @@ def build_extra_source_media_plan(
             "strm_dir": strm_dir,
             "storage": storage,
             "timeout": timeout,
+            "title": title,
+            "tmdbid": tmdbid,
+            "season": season,
         },
         "safety": (
             "readonly follow-up plan only; it promotes source videos that blocked cleanup into MV3 scan-source command "

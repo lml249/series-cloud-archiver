@@ -1230,6 +1230,7 @@ def _commands(
                     "command": (
                         f"PYTHONPATH=src python3 -m series_cloud_archiver extra-source-media-plan {env}"
                         f"--finalize-run-report {_q(finalize_report_path)} --target-dir /已整理 --strm-dir /strm "
+                        f"--title {_q(title)} --tmdbid {tmdbid} --season {season} "
                         f"--storage {_q(cloud_media_storage)} --timeout {timeout} --format json "
                         f"--output {_q(prefix + '-extra-source-media-plan.json')}"
                     ),

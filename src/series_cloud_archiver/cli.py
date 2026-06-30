@@ -839,6 +839,9 @@ def build_parser() -> argparse.ArgumentParser:
     extra_source_parser.add_argument("--strm-dir", default="/strm", help="MV3 STRM output root")
     extra_source_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
     extra_source_parser.add_argument("--timeout", type=int, default=120)
+    extra_source_parser.add_argument("--title", default="", help="Optional exact finalize item title filter")
+    extra_source_parser.add_argument("--tmdbid", type=int, default=0, help="Optional TMDB id filter")
+    extra_source_parser.add_argument("--season", type=int, default=0, help="Optional season filter")
     extra_source_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     extra_source_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
@@ -3004,6 +3007,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             strm_dir=args.strm_dir,
             storage=args.storage,
             timeout=args.timeout,
+            title=args.title,
+            tmdbid=args.tmdbid,
+            season=args.season,
         )
         rendered = render_extra_source_media_plan(report, args.format)
         if args.output:
