@@ -44,6 +44,7 @@ TECHNICAL_TOKENS = {
     "hhweb",
     "hevc",
     "iq",
+    "dl",
     "nf",
     "ourtv",
     "season",
@@ -57,6 +58,7 @@ YEAR_SUFFIX_PATTERN = re.compile(r"\(\d{4}\)")
 YEAR_VALUE_PATTERN = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 SEASON_TOKEN_PATTERN = re.compile(r"(?i)^s\d{1,2}$")
 EPISODE_TOKEN_PATTERN = re.compile(r"(?i)^e\d{1,3}$")
+CJK_TITLE_PATTERN = re.compile(r"[\u4e00-\u9fff]+(?:[·・][\u4e00-\u9fff]+)*")
 TV_SIGNAL_PATTERN = re.compile(
     r"(?i)(\bS\d{1,2}\b|\bS\d{1,2}\s*[-~_]\s*S?\d{1,2}\b|\bE\d{1,3}\b|第\s*\d{1,3}\s*[季集话話]|全\s*\d{1,4}\s*[集话話]|全集|完结|complete)"
 )
@@ -675,7 +677,113 @@ def _search_keywords_for_item(item: Dict[str, object], limit: int = 8) -> List[s
     values.extend(_string_list(item.get("titles")))
     for path in _string_list(item.get("source_paths")):
         values.extend(_keyword_variants_from_path(path))
-    return _merge_keywords(values, limit=limit)
+    keywords: List[str] = []
+    for value in values:
+        keywords.extend(_search_keyword_variants(value))
+    return _merge_keywords(keywords, limit=limit)
+
+
+def search_keywords_for_item(item: Dict[str, object], limit: int = 8) -> List[str]:
+    return _search_keywords_for_item(item, limit=limit)
+
+
+def _search_keyword_variants(value: object) -> List[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    cjk_title = _cjk_title_guess(raw)
+    english_title = _english_title_guess(raw)
+    cleaned = _clean_search_keyword(raw)
+    candidates = [cjk_title, english_title]
+    if not ((cjk_title or english_title) and _has_cjk(cleaned) and re.search(r"[A-Za-z]", cleaned)):
+        candidates.append(cleaned)
+    return [candidate for candidate in _merge_keywords(candidates, limit=4) if _is_useful_search_keyword(candidate)]
+
+
+def _clean_search_keyword(value: str) -> str:
+    text = TMDBID_PATTERN.sub(" ", value or "")
+    text = re.sub(r"[\[\]【】{}（）()]", " ", text)
+    text = re.sub(r"[._]+", " ", text)
+    text = re.sub(r"(?i)\bSeason\s*0?\d{1,2}\b", " ", text)
+    text = re.sub(r"(?i)\bS\d{1,2}(?:E\d{1,3})?\b", " ", text)
+    text = re.sub(r"第\s*0?\d{1,2}\s*季", " ", text)
+    text = YEAR_VALUE_PATTERN.sub(" ", text)
+    tokens = []
+    for raw_token in re.split(r"[\s\-]+", text):
+        token = raw_token.strip(" \t\r\n:：,，;；'\"")
+        if not token:
+            continue
+        lowered = token.casefold()
+        if lowered in TECHNICAL_TOKENS:
+            continue
+        if re.fullmatch(r"(?i)\d+p|fps|\d+bit|v\d+|proper|repack", token):
+            continue
+        tokens.append(token)
+    return " ".join(tokens).strip()
+
+
+def _cjk_title_guess(value: str) -> str:
+    cleaned = _clean_search_keyword(value)
+    matches = CJK_TITLE_PATTERN.findall(cleaned)
+    if not matches:
+        return ""
+    matches.sort(key=len, reverse=True)
+    return matches[0].strip("·・")
+
+
+def _has_cjk(value: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", value or ""))
+
+
+def _english_title_guess(value: str) -> str:
+    text = TMDBID_PATTERN.sub(" ", value or "")
+    text = re.sub(r"[\[\]【】{}（）()]", " ", text)
+    text = re.sub(r"[._]+", " ", text)
+    tokens: List[str] = []
+    for raw_token in re.split(r"[\s\-]+", text):
+        token = raw_token.strip(" \t\r\n:：,，;；'\"")
+        if not token:
+            continue
+        lowered = token.casefold()
+        if re.search(r"[\u4e00-\u9fff]", token):
+            if tokens:
+                break
+            continue
+        if YEAR_VALUE_PATTERN.fullmatch(token) or re.fullmatch(r"(?i)S\d{1,2}(?:E\d{1,3})?", token):
+            if tokens:
+                break
+            continue
+        if lowered in TECHNICAL_TOKENS or re.fullmatch(r"(?i)\d+p|fps|\d+bit|v\d+|proper|repack", token):
+            if tokens:
+                break
+            continue
+        if re.search(r"[A-Za-z]", token):
+            tokens.append(token)
+            continue
+        if tokens:
+            break
+    title_tokens = [token for token in tokens if token.casefold() not in TITLE_STOP_TOKENS]
+    if len(title_tokens) >= 2 or any(len(token) >= 4 for token in title_tokens):
+        return " ".join(tokens).strip()
+    return ""
+
+
+def _is_useful_search_keyword(value: str) -> bool:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) < 2:
+        return False
+    if TMDBID_PATTERN.search(text):
+        return False
+    if not re.search(r"[A-Za-z\u4e00-\u9fff]", text):
+        return False
+    if not _title_token_set(text):
+        return False
+    if re.fullmatch(r"(?i)(?:season|s)\s*0?\d{1,2}", text):
+        return False
+    compact = re.sub(r"[\W_]+", "", text.casefold(), flags=re.UNICODE)
+    if compact in {"season", "tmdbid", "tmdb", "series", "tv"}:
+        return False
+    return True
 
 
 def _search_keyword_matches(row: Dict[str, object], normalized_remote: str) -> bool:

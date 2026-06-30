@@ -171,6 +171,7 @@ from .transfer_plan import (
     render_mv3_restored_transfer_queue,
     render_mv3_share_search_plan,
     render_mv3_transfer_plan,
+    search_keywords_for_item,
 )
 
 
@@ -1364,22 +1365,7 @@ def _write_text_output(path: str, text: str) -> None:
 
 
 def _share_search_keywords(item: Dict[str, object]) -> List[str]:
-    values: List[str] = []
-    title = str(item.get("title") or "").strip()
-    if title:
-        values.append(title)
-    for key in ("search_keywords", "titles"):
-        raw = item.get(key)
-        if isinstance(raw, list):
-            values.extend(str(value).strip() for value in raw if str(value).strip())
-    merged: List[str] = []
-    for value in values:
-        if not value or any(value.lower() == existing.lower() for existing in merged):
-            continue
-        merged.append(value)
-        if len(merged) >= 8:
-            break
-    return merged
+    return search_keywords_for_item(item, limit=8)
 
 
 def _combined_mv3_search_report(

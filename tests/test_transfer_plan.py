@@ -17,6 +17,7 @@ from series_cloud_archiver.transfer_plan import (
     render_mv3_restored_transfer_queue,
     render_mv3_share_search_plan,
     render_mv3_transfer_plan,
+    search_keywords_for_item,
 )
 
 
@@ -102,6 +103,50 @@ class TransferPlanTest(unittest.TestCase):
 
         self.assertIn("长安二十四计", keywords)
         self.assertIn("The Vendetta of An", keywords)
+
+    def test_transfer_plan_filters_generic_mv3_search_keywords(self) -> None:
+        report = {
+            "mode": "readonly-cloud-check",
+            "items": [
+                {
+                    "status": "cloud_strm_not_found",
+                    "title": "长风渡 (2023) {tmdbid=207004}",
+                    "tmdbid": 207004,
+                    "season": 1,
+                    "size_bytes": 100,
+                    "expected_count": 40,
+                    "candidate_count": 1,
+                    "titles": [
+                        "长风渡.The.Destined.S01.2023.2160p.WEB-DL.H265.AAC",
+                        "{tmdbid=207004} Season",
+                    ],
+                    "search_keywords": ["Season 01", "{tmdbid=207004} Season"],
+                    "source_paths": ["/example/library/长风渡 (2023) {tmdbid=207004}/Season 01"],
+                }
+            ],
+        }
+
+        plan = plan_mv3_transfers_from_cloud_report(report)
+        keywords = plan["items"][0]["search_keywords"]
+
+        self.assertIn("长风渡", keywords)
+        self.assertIn("The Destined", keywords)
+        self.assertNotIn("Season 01", keywords)
+        self.assertFalse(any("{tmdbid=" in keyword for keyword in keywords))
+        self.assertFalse(any(keyword.lower().strip() == "season" for keyword in keywords))
+
+    def test_search_keywords_for_item_cleans_cli_execution_inputs(self) -> None:
+        keywords = search_keywords_for_item(
+            {
+                "title": "Demo Show (2020) {tmdbid=1}",
+                "season": 1,
+                "search_keywords": ["Season 01", "{tmdbid=1} Season", "Demo Show"],
+                "titles": ["Demo.Show.S01.2020.1080p.WEB-DL"],
+                "source_paths": ["/example/library/Demo Show (2020) {tmdbid=1}/Season 01"],
+            }
+        )
+
+        self.assertEqual(keywords, ["Demo Show"])
 
     def test_renders_markdown_with_safety_note(self) -> None:
         plan = {
@@ -1025,12 +1070,14 @@ class TransferPlanTest(unittest.TestCase):
                         "mode": "readonly-mv3-transfer-plan",
                         "items": [
                             {
-                                "title": "长安二十四计",
+                                "title": "长安二十四计 (2025) {tmdbid=254482}",
                                 "tmdbid": 254482,
                                 "season": 1,
                                 "size_bytes": int(190 * 1024**3),
                                 "expected_count": 28,
-                                "search_keywords": ["长安二十四计", "The Vendetta of An"],
+                                "search_keywords": ["Season 01", "{tmdbid=254482} Season", "长安二十四计", "The Vendetta of An"],
+                                "titles": ["长安二十四计.The.Vendetta.of.An.S01.2025.2160p.WEB-DL.H265.AAC"],
+                                "source_paths": ["/example/library/长安二十四计 (2025) {tmdbid=254482}/Season 01"],
                             }
                         ],
                     }
