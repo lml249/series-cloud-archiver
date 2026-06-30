@@ -2288,6 +2288,61 @@ def execute_mv3_organize_transfer_from_scan_report(
     )
 
 
+def execute_mv3_organize_transfer_from_confirmed_local_map(
+    base_url: str,
+    token: str,
+    mapping_report: Dict[str, object],
+    target_dir: str,
+    strm_dir: str,
+    tmdb_id: int,
+    expected_episode_count: int,
+    expected_episode_min: int,
+    expected_episode_max: int,
+    expected_episodes: Optional[List[int]] = None,
+    mode: str = "copy",
+    is_cloud_target: bool = True,
+    background: bool = False,
+    timeout: int = 180,
+) -> Dict[str, object]:
+    rows = _confirmed_local_mapping_rows(mapping_report)
+    mapping_blockers = _confirmed_local_mapping_blockers(rows, tmdb_id)
+    if mode != "copy":
+        mapping_blockers.append("confirmed_local_mapping_requires_copy_mode")
+    files = [] if mapping_blockers else _transfer_files_from_confirmed_local_mapping(rows)
+    source_path = _confirmed_local_mapping_source_path(rows, mapping_report)
+    report = _execute_mv3_organize_transfer_from_files(
+        base_url,
+        token,
+        files=files,
+        source_path=source_path,
+        missing_source_blocker="confirmed_local_mapping_missing_source_path",
+        source_description="human-confirmed local media mapping file",
+        target_dir=target_dir,
+        strm_dir=strm_dir,
+        tmdb_id=tmdb_id,
+        expected_episode_count=expected_episode_count,
+        expected_episode_min=expected_episode_min,
+        expected_episode_max=expected_episode_max,
+        expected_episodes=expected_episodes,
+        mode=mode,
+        is_cloud_target=is_cloud_target,
+        background=background,
+        timeout=timeout,
+        require_source_file_id=False,
+        metadata_sidecar_items=[],
+    )
+    if mapping_blockers:
+        report["ok"] = False
+        report["blockers"] = sorted(set([str(item) for item in report.get("blockers", [])] + mapping_blockers))
+    report["confirmed_mapping"] = {
+        "mode": str(mapping_report.get("mode") or ""),
+        "item_count": len(rows),
+        "items": [_confirmed_local_mapping_public_row(row, index) for index, row in enumerate(rows, start=1)],
+        "note": "season/episode are used as explicit safety gates and report evidence; MV3 organize/transfer still derives final naming from tmdb_id and source file metadata.",
+    }
+    return report
+
+
 def _execute_mv3_organize_transfer_from_files(
     base_url: str,
     token: str,
@@ -5263,6 +5318,104 @@ def _transfer_files_from_organize_scan_items(items: List[Dict[str, object]]) -> 
     return files
 
 
+def _confirmed_local_mapping_rows(mapping_report: Dict[str, object]) -> List[Dict[str, object]]:
+    raw_items = mapping_report.get("items")
+    if isinstance(raw_items, list):
+        return [item for item in raw_items if isinstance(item, dict)]
+    if all(key in mapping_report for key in ("source_path", "season", "episode")):
+        return [mapping_report]
+    return []
+
+
+def _confirmed_local_mapping_blockers(rows: List[Dict[str, object]], expected_tmdb_id: int) -> List[str]:
+    blockers: List[str] = []
+    if not rows:
+        blockers.append("confirmed_local_mapping_items_required")
+    seen_sources: Set[str] = set()
+    seen_episodes: Set[Tuple[int, int]] = set()
+    for row in rows:
+        source_path = str(row.get("source_path") or row.get("path") or "")
+        suffix = PurePosixPath(source_path).suffix.lower()
+        season = _positive_int(row.get("season"), allow_zero=True)
+        episode = _positive_int(row.get("episode"), allow_zero=False)
+        tmdb_id = _positive_int(row.get("tmdb_id", row.get("tmdbid")), allow_zero=False)
+        if not source_path:
+            blockers.append("confirmed_local_mapping_source_path_required")
+        elif not source_path.startswith("/volume"):
+            blockers.append("confirmed_local_mapping_source_must_be_local_volume_path")
+        if source_path in seen_sources:
+            blockers.append("confirmed_local_mapping_duplicate_source_path")
+        seen_sources.add(source_path)
+        if suffix not in MEDIA_EXTENSIONS:
+            blockers.append("confirmed_local_mapping_source_must_be_video")
+        if season is None:
+            blockers.append("confirmed_local_mapping_season_required")
+        if episode is None:
+            blockers.append("confirmed_local_mapping_episode_required")
+        if tmdb_id is None:
+            blockers.append("confirmed_local_mapping_tmdb_id_required")
+        if tmdb_id is not None and expected_tmdb_id and tmdb_id != expected_tmdb_id:
+            blockers.append("confirmed_local_mapping_tmdb_id_mismatch")
+        if season is not None and episode is not None:
+            key = (season, episode)
+            if key in seen_episodes:
+                blockers.append("confirmed_local_mapping_duplicate_episode")
+            seen_episodes.add(key)
+    return sorted(set(blockers))
+
+
+def _transfer_files_from_confirmed_local_mapping(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    files: List[Dict[str, object]] = []
+    for row in rows:
+        source_path = str(row.get("source_path") or row.get("path") or "")
+        if not source_path:
+            continue
+        season = _positive_int(row.get("season"), allow_zero=True)
+        episode = _positive_int(row.get("episode"), allow_zero=False)
+        if season is None or episode is None:
+            continue
+        name = str(row.get("name") or row.get("file_name") or PurePosixPath(source_path).name)
+        gated_name = f"S{season:02d}E{episode:02d} {name}"
+        files.append(
+            {
+                "source_path": source_path,
+                "source_file_id": "",
+                "is_cloud_source": False,
+                "name": gated_name,
+            }
+        )
+    return files
+
+
+def _confirmed_local_mapping_source_path(rows: List[Dict[str, object]], mapping_report: Dict[str, object]) -> str:
+    explicit = str(mapping_report.get("source_path") or "")
+    if explicit:
+        return explicit
+    if not rows:
+        return ""
+    first = str(rows[0].get("source_path") or rows[0].get("path") or "")
+    if len(rows) == 1:
+        return first
+    parents = {str(PurePosixPath(str(row.get("source_path") or row.get("path") or "")).parent) for row in rows}
+    return sorted(parents)[0] if len(parents) == 1 else first
+
+
+def _confirmed_local_mapping_public_row(row: Dict[str, object], index: int) -> Dict[str, object]:
+    source_path = str(row.get("source_path") or row.get("path") or "")
+    season = _positive_int(row.get("season"), allow_zero=True)
+    episode = _positive_int(row.get("episode"), allow_zero=False)
+    return {
+        "index": index,
+        "source_path": source_path,
+        "file_name": str(row.get("file_name") or row.get("name") or PurePosixPath(source_path).name),
+        "tmdb_id": _positive_int(row.get("tmdb_id", row.get("tmdbid")), allow_zero=False) or 0,
+        "season": season if season is not None else "",
+        "episode": episode if episode is not None else "",
+        "title": str(row.get("title") or ""),
+        "episode_title": str(row.get("episode_title") or ""),
+    }
+
+
 def _organize_scan_item_media_kind(item: Dict[str, object]) -> str:
     name = str(item.get("name") or item.get("path") or "")
     suffix = Path(name).suffix.lower()
@@ -5884,6 +6037,16 @@ def _positive_int_list(values: object) -> List[int]:
         if integer > 0:
             items.add(integer)
     return sorted(items)
+
+
+def _positive_int(value: object, *, allow_zero: bool = False) -> Optional[int]:
+    try:
+        integer = int(value)
+    except (TypeError, ValueError):
+        return None
+    if integer > 0 or (allow_zero and integer == 0):
+        return integer
+    return None
 
 
 def _share_item_file_id(item: Dict[str, object]) -> str:

@@ -807,25 +807,42 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-scan-source \
   --output reports/demo-sp1-scan.json
 ```
 
-确认这条本地视频的 TMDB、季号和集号后，才可以用审批命令让 MV3 copy 到 `/已整理` 并生成 STRM：
+如果 `scan-source` 返回空 `items`，不要手工挪文件，也不要绕开项目直接操作云盘。先把人工确认过的归属写成映射文件；每一行必须有本地源文件、TMDB ID、季号和集号。比如特辑通常会写成 Season 00，但具体 `episode` 必须以 TMDB/媒体库确认结果为准：
+
+```json
+{
+  "mode": "confirmed-extra-source-media-map",
+  "items": [
+    {
+      "title": "兄弟连",
+      "tmdbid": 4613,
+      "season": 0,
+      "episode": 5,
+      "episode_title": "We Stand Alone Together",
+      "source_path": "/volume3/volume3/TV/Demo/Demo.SP1.mkv"
+    }
+  ]
+}
+```
+
+确认映射文件后，才可以用审批命令让 MV3 copy 到 `/已整理` 并生成 STRM：
 
 ```bash
-PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-scan \
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-local-map \
   --env-file .env \
-  --scan-report reports/demo-sp1-scan.json \
+  --mapping-file reports/demo-extra-local-map.json \
   --target-dir /已整理 \
   --strm-dir /strm \
   --tmdb-id 123 \
   --expected-episode-count 1 \
-  --expected-episode-min 1 \
-  --expected-episode-max 1 \
-  --mode copy \
+  --expected-episode-min 5 \
+  --expected-episode-max 5 \
   --approve-transfer \
   --format json \
   --output reports/demo-sp1-transfer.json
 ```
 
-这条链路不会移动或删除本地源文件；本地 qB/source/hlink 仍然必须等 STRM 完整、中文 NFO、Emby 和清理预览全部变绿后，才由最终 cleanup 阶段处理。
+这条链路不会移动或删除本地源文件，强制使用 copy 模式；映射文件里的季/集只作为项目的安全门禁和报告证据，最终命名仍由 MV3 根据 `tmdb_id` 和源文件信息完成。本地 qB/source/hlink 仍然必须等 STRM 完整、中文 NFO、Emby 和清理预览全部变绿后，才由最终 cleanup 阶段处理。云盘实体目录仍然只做转存和 STRM 生成，不做刮削，不写 NFO/JPG。
 
 如果怀疑 115 里已经有同内容，或者分享预览暂时不可用，可以先用只读云盘搜索找候选目录。这个命令只查 115 文件名，不转存、不整理、不生成 STRM，也不会刮削云盘媒体目录：
 

@@ -93,6 +93,7 @@ from .mv3 import (
     check_mv3_offline_task,
     check_mv3_offline_manifest_status,
     execute_mv3_organize_transfer_from_browse_report,
+    execute_mv3_organize_transfer_from_confirmed_local_map,
     execute_mv3_organize_transfer_from_scan_report,
     generate_mv3_strm,
     inspect_mv3_capabilities,
@@ -1001,6 +1002,24 @@ def build_parser() -> argparse.ArgumentParser:
     organize_transfer_scan_parser.add_argument("--approve-transfer", action="store_true", help="Required: actually send one MV3 organize transfer request")
     organize_transfer_scan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     organize_transfer_scan_parser.add_argument("--output", default=None, help="Write aggregate report to file instead of stdout")
+
+    organize_transfer_local_map_parser = subcommands.add_parser("mv3-organize-transfer-from-local-map", help="Execute approved MV3 organize transfer from a human-confirmed local media mapping JSON")
+    organize_transfer_local_map_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    organize_transfer_local_map_parser.add_argument("--mapping-file", required=True, help="JSON mapping with items containing source_path, tmdb_id/tmdbid, season, and episode")
+    organize_transfer_local_map_parser.add_argument("--target-dir", required=True, help="MV3 organize root, e.g. /已整理; MV3 adds media categories such as series")
+    organize_transfer_local_map_parser.add_argument("--strm-dir", required=True, help="MV3 STRM output dir")
+    organize_transfer_local_map_parser.add_argument("--tmdb-id", type=int, required=True, help="Expected TMDB ID")
+    organize_transfer_local_map_parser.add_argument("--expected-episode-count", type=int, required=True, help="Expected distinct episode count")
+    organize_transfer_local_map_parser.add_argument("--expected-episode-min", type=int, required=True, help="Expected first episode number")
+    organize_transfer_local_map_parser.add_argument("--expected-episode-max", type=int, required=True, help="Expected last episode number")
+    organize_transfer_local_map_parser.add_argument("--expected-episode", action="append", default=[], help="Optional explicit expected episode list, comma-separated; can be repeated")
+    organize_transfer_local_map_parser.add_argument("--mode", choices=["copy"], default="copy", help="Local extras must be copied, never moved")
+    organize_transfer_local_map_parser.add_argument("--local-target", action="store_true", help="Treat target as local instead of cloud")
+    organize_transfer_local_map_parser.add_argument("--background", action="store_true", help="Ask MV3 to run transfer in background")
+    organize_transfer_local_map_parser.add_argument("--timeout", type=int, default=180, help="Per-request timeout in seconds")
+    organize_transfer_local_map_parser.add_argument("--approve-transfer", action="store_true", help="Required: actually send one MV3 organize transfer request")
+    organize_transfer_local_map_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    organize_transfer_local_map_parser.add_argument("--output", default=None, help="Write aggregate report to file instead of stdout")
 
     strm_generate_parser = subcommands.add_parser("mv3-strm-generate", help="Execute one approved MV3 STRM generation request")
     strm_generate_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -3075,6 +3094,38 @@ def main(argv: Optional[List[str]] = None) -> int:
             config.mv3_base_url,
             config.mv3_token,
             scan_report,
+            target_dir=args.target_dir,
+            strm_dir=args.strm_dir,
+            tmdb_id=args.tmdb_id,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            expected_episodes=_parse_int_list_args(args.expected_episode),
+            mode=args.mode,
+            is_cloud_target=not args.local_target,
+            background=args.background,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_organize_transfer_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "mv3-organize-transfer-from-local-map":
+        if not args.approve_transfer:
+            parser.error("mv3-organize-transfer-from-local-map requires --approve-transfer")
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-organize-transfer-from-local-map requires MV3_BASE_URL and MV3_API_TOKEN")
+        mapping_report = load_optional_json_report(args.mapping_file)
+        if not isinstance(mapping_report, dict):
+            parser.error("mapping file must be a JSON object")
+        report = execute_mv3_organize_transfer_from_confirmed_local_map(
+            config.mv3_base_url,
+            config.mv3_token,
+            mapping_report,
             target_dir=args.target_dir,
             strm_dir=args.strm_dir,
             tmdb_id=args.tmdb_id,

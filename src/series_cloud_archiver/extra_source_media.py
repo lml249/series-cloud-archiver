@@ -214,13 +214,16 @@ def _commands(
     if media_kind == "special":
         commands.append(
             {
-                "stage": "season00_mapping_required",
+                "stage": "confirmed_local_mapping_required",
                 "requires": [
                     "scan-source report",
                     "confirmed TMDB Season 00 episode number",
                     "human approval",
                 ],
-                "command": "确认这个特辑对应的 TMDB Season 00 集号后，再生成 mv3-organize-transfer-from-scan 命令",
+                "command": (
+                    "确认这个特辑对应的 TMDB Season 00 集号后，写入 confirmed local mapping JSON，"
+                    "再用 mv3-organize-transfer-from-local-map --approve-transfer 让 MV3 copy 到 /已整理 并生成 STRM"
+                ),
             }
         )
         return commands

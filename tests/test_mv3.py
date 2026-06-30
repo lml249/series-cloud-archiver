@@ -61,6 +61,7 @@ from series_cloud_archiver.mv3 import (
     preview_mv3_share,
     receive_mv3_share,
     execute_mv3_organize_transfer_from_browse_report,
+    execute_mv3_organize_transfer_from_confirmed_local_map,
     execute_mv3_organize_transfer_from_scan_report,
     generate_mv3_strm,
     regenerate_mv3_strm_records,
@@ -3758,6 +3759,127 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertFalse(seen["body"]["files"][0]["is_cloud_source"])
         self.assertNotIn("missing_source_file_id", report["blockers"])
 
+    def test_organize_transfer_from_confirmed_local_map_posts_copy_request(self) -> None:
+        seen = {}
+        mapping = {
+            "mode": "confirmed-extra-source-media-map",
+            "items": [
+                {
+                    "source_path": "/volume3/volume3/TV/Demo/Demo.SP1.mkv",
+                    "tmdbid": 123,
+                    "season": 0,
+                    "episode": 5,
+                    "episode_title": "Special",
+                }
+            ],
+        }
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return b'{"success":true,"data":{"task_id":"task-1"}}'
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = execute_mv3_organize_transfer_from_confirmed_local_map(
+                "http://mv3.example",
+                "token",
+                mapping,
+                target_dir="/已整理",
+                strm_dir="/strm",
+                tmdb_id=123,
+                expected_episode_count=1,
+                expected_episode_min=5,
+                expected_episode_max=5,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(seen["url"], "http://mv3.example/api/v1/organize/transfer")
+        self.assertEqual(seen["body"]["mode"], "copy")
+        self.assertEqual(seen["body"]["files"][0]["source_path"], "/volume3/volume3/TV/Demo/Demo.SP1.mkv")
+        self.assertFalse(seen["body"]["files"][0]["is_cloud_source"])
+        self.assertEqual(report["episodes"], [5])
+        self.assertEqual(report["confirmed_mapping"]["items"][0]["season"], 0)
+        self.assertIn("human-confirmed local media mapping file", report["safety"])
+
+    def test_organize_transfer_from_confirmed_local_map_blocks_bad_tmdb_before_request(self) -> None:
+        calls = []
+        mapping = {
+            "items": [
+                {
+                    "source_path": "/volume3/volume3/TV/Demo/Demo.SP1.mkv",
+                    "tmdbid": 999,
+                    "season": 0,
+                    "episode": 5,
+                }
+            ],
+        }
+
+        with patch("urllib.request.urlopen", lambda request, timeout: calls.append(request)):
+            report = execute_mv3_organize_transfer_from_confirmed_local_map(
+                "http://mv3.example",
+                "token",
+                mapping,
+                target_dir="/已整理",
+                strm_dir="/strm",
+                tmdb_id=123,
+                expected_episode_count=1,
+                expected_episode_min=5,
+                expected_episode_max=5,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(calls, [])
+        self.assertIn("confirmed_local_mapping_tmdb_id_mismatch", report["blockers"])
+        self.assertEqual(report["transfer"], {"skipped": True})
+
+    def test_organize_transfer_from_confirmed_local_map_blocks_move_before_request(self) -> None:
+        calls = []
+        mapping = {
+            "items": [
+                {
+                    "source_path": "/volume3/volume3/TV/Demo/Demo.SP1.mkv",
+                    "tmdbid": 123,
+                    "season": 0,
+                    "episode": 5,
+                }
+            ],
+        }
+
+        with patch("urllib.request.urlopen", lambda request, timeout: calls.append(request)):
+            report = execute_mv3_organize_transfer_from_confirmed_local_map(
+                "http://mv3.example",
+                "token",
+                mapping,
+                target_dir="/已整理",
+                strm_dir="/strm",
+                tmdb_id=123,
+                expected_episode_count=1,
+                expected_episode_min=5,
+                expected_episode_max=5,
+                mode="move",
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(calls, [])
+        self.assertIn("confirmed_local_mapping_requires_copy_mode", report["blockers"])
+        self.assertEqual(report["transfer"], {"skipped": True})
+
     def test_organize_transfer_accepts_delimited_episode_numbers(self) -> None:
         seen = {}
         browse_report = {
@@ -6146,6 +6268,125 @@ class MV3ProbeTest(unittest.TestCase):
                 )
 
             self.assertNotEqual(caught.exception.code, 0)
+
+    def test_cli_refuses_organize_transfer_from_local_map_without_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            mapping_file = tmp_path / "mapping.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+            mapping_file.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "source_path": "/volume3/volume3/TV/Demo/Demo.SP1.mkv",
+                                "tmdbid": 123,
+                                "season": 0,
+                                "episode": 5,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(SystemExit) as caught:
+                main(
+                    [
+                        "mv3-organize-transfer-from-local-map",
+                        "--env-file",
+                        str(env_file),
+                        "--mapping-file",
+                        str(mapping_file),
+                        "--target-dir",
+                        "/已整理",
+                        "--strm-dir",
+                        "/strm",
+                        "--tmdb-id",
+                        "123",
+                        "--expected-episode-count",
+                        "1",
+                        "--expected-episode-min",
+                        "5",
+                        "--expected-episode-max",
+                        "5",
+                    ]
+                )
+
+            self.assertNotEqual(caught.exception.code, 0)
+
+    def test_cli_writes_organize_transfer_from_local_map_report_with_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            mapping_file = tmp_path / "mapping.json"
+            output = tmp_path / "transfer.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+            mapping_file.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "source_path": "/volume3/volume3/TV/Demo/Demo.SP1.mkv",
+                                "tmdbid": 123,
+                                "season": 0,
+                                "episode": 5,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return b'{"success":true,"data":{"task_id":"task-1"}}'
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                code = main(
+                    [
+                        "mv3-organize-transfer-from-local-map",
+                        "--env-file",
+                        str(env_file),
+                        "--mapping-file",
+                        str(mapping_file),
+                        "--target-dir",
+                        "/已整理",
+                        "--strm-dir",
+                        "/strm",
+                        "--tmdb-id",
+                        "123",
+                        "--expected-episode-count",
+                        "1",
+                        "--expected-episode-min",
+                        "5",
+                        "--expected-episode-max",
+                        "5",
+                        "--approve-transfer",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["confirmed_mapping"]["items"][0]["episode"], 5)
 
     def test_cli_writes_organize_transfer_report_with_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
