@@ -24,6 +24,7 @@ from .batch_runner import (
 from .batch_transfer import BatchTransferActions, run_batch_transfer
 from .cloud_check import cloud_check_from_scan_report
 from .config import ScanConfig
+from .extra_source_media import build_extra_source_media_plan
 from .mv3 import preview_mv3_share, search_mv3_resources
 from .scanner import scan
 from .transfer_plan import (
@@ -335,6 +336,20 @@ def run_batch_pipeline(
     )
     phases.append(_write_phase(pipeline_dir, "14-review", review_report))
 
+    extra_source_plan: Optional[JsonDict] = None
+    if finalize_run_report:
+        extra_source_plan = build_extra_source_media_plan(
+            finalize_run_report,
+            env_file=env_file,
+            target_dir=organize_target_dir,
+            strm_dir=transfer_strm_dir,
+            storage=transfer_storage,
+            timeout=organize_timeout,
+        )
+        phases.append(_write_phase(pipeline_dir, "15-extra-source-media-plan", extra_source_plan))
+    else:
+        phases.append(_skipped_phase("extra-source-media-plan", "finalize_run_report_not_available"))
+
     state = _state_report(
         pipeline_dir=pipeline_dir,
         phases=phases,
@@ -345,6 +360,7 @@ def run_batch_pipeline(
         finalize_plan=finalize_plan,
         finalize_run_report=finalize_run_report,
         review_report=review_report,
+        extra_source_plan=extra_source_plan,
         warnings=warnings,
         settings={
             "cloud_root": cloud_root,
@@ -574,6 +590,7 @@ def _state_report(
     finalize_plan: JsonDict,
     finalize_run_report: Optional[JsonDict],
     review_report: JsonDict,
+    extra_source_plan: Optional[JsonDict],
     warnings: Sequence[str],
     settings: JsonDict,
 ) -> JsonDict:
@@ -598,6 +615,7 @@ def _state_report(
             "finalize_plan": _report_summary(finalize_plan),
             "finalize_run": _report_summary(finalize_run_report or {}),
             "review": _report_summary(review_report),
+            "extra_source_media": _report_summary(extra_source_plan or {}),
         },
         "settings": settings,
         "warnings": sorted(set(str(item) for item in warnings if str(item))),

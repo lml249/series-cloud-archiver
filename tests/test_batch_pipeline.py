@@ -8,6 +8,7 @@ from series_cloud_archiver.batch_pipeline import (
     render_batch_pipeline_report,
     run_batch_pipeline,
 )
+from series_cloud_archiver.batch_runner import BatchFinalizeActions
 from series_cloud_archiver.config import ScanConfig
 from series_cloud_archiver.cli import main
 
@@ -46,6 +47,26 @@ class BatchPipelineTest(unittest.TestCase):
                         "blockers": [],
                     },
                     "candidates": [{"score": 85}],
+                }
+            ],
+        }
+
+    def _cloud_complete_report(self) -> dict:
+        return {
+            "mode": "readonly-cloud-check",
+            "items": [
+                {
+                    "status": "cloud_strm_complete",
+                    "title": "兄弟连 (2001) {tmdbid=4613}",
+                    "tmdbid": 4613,
+                    "season": 1,
+                    "size_bytes": 1_000_000_000,
+                    "expected_count": 10,
+                    "expected_episodes": list(range(1, 11)),
+                    "source_paths": ["/volume3/hlink/TV/兄弟连 (2001) {tmdbid=4613}/Season 01"],
+                    "strm_paths_sample": [
+                        "/volume4/volume4/mv3/strm/series/兄弟连 (2001) {tmdbid=4613}/Season 1/兄弟连 S01E01.strm"
+                    ],
                 }
             ],
         }
@@ -111,6 +132,75 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertTrue(calls)
         self.assertEqual(share_search["planned_items"], 1)
         self.assertEqual(report["summary"]["batch_plan"]["auto_transfer_items"], 1)
+
+    def test_pipeline_writes_extra_source_media_plan_after_finalize_blocker(self) -> None:
+        def ok_report(mode, **extra):
+            return {"mode": mode, "ok": True, "ready_for_execute": True, "blockers": [], "warnings": [], **extra}
+
+        def cleanup_preview(**_kwargs):
+            return {
+                "mode": "cloud-hlink-cleanup-preview",
+                "ok": False,
+                "ready_for_execute": False,
+                "blockers": ["source_root_check_failed"],
+                "warnings": [],
+                "filesystem": {
+                    "source_roots": [
+                        {
+                            "path": "/volume3/volume3/TV/兄弟连",
+                            "blocked": True,
+                            "video_count": 12,
+                            "linked_hlink_video_count": 10,
+                            "unlinked_video_sample": [
+                                "/volume3/volume3/TV/兄弟连/Band.of.Brothers.SP1.We.Stand.Alone.mkv",
+                            ],
+                        }
+                    ]
+                },
+            }
+
+        actions = BatchFinalizeActions(
+            verify_strm=lambda **kwargs: ok_report("strm-verify", expected=kwargs),
+            cloud_duplicate_cleanup=lambda *args, **kwargs: ok_report(
+                "mv3-cloud-duplicate-video-cleanup-result",
+                delete_plan={"duplicate_video_count": 0},
+            ),
+            scrape_mp_strm=lambda *args, **kwargs: ok_report("mp-scrape-strm-result"),
+            audit_nfo_language=lambda **kwargs: ok_report("strm-nfo-language-audit"),
+            emby_media_updated=lambda *args, **kwargs: ok_report("emby-media-updated"),
+            cleanup_preview=cleanup_preview,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_pipeline(
+                output_dir=tmp,
+                run_id="finalize-extra",
+                config=ScanConfig(
+                    media_roots=[],
+                    mp_base_url="http://mp.local",
+                    mp_token="mp-token",
+                    qb_base_url="http://qb.local",
+                    mv3_base_url="http://mv3.local",
+                    mv3_token="mv3-token",
+                    emby_base_url="http://emby.local",
+                    emby_key="emby-key",
+                ),
+                env_file="/safe/.env",
+                cloud_report=self._cloud_complete_report(),
+                host_strm_root="/volume4/volume4/mv3/strm",
+                emby_strm_root="/volume4/mv3/strm",
+                run_finalize_stage=True,
+                execute_scrape=True,
+                actions=BatchPipelineActions(finalize_actions=actions),
+            )
+            run_dir = Path(report["run_dir"])
+            extra = json.loads((run_dir / "15-extra-source-media-plan.json").read_text(encoding="utf-8"))
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(extra["planned_items"], 1)
+        self.assertEqual(extra["items"][0]["media_kind"], "special")
+        self.assertIn("mv3-organize-scan-source", extra["items"][0]["commands"][0]["command"])
+        self.assertEqual(report["summary"]["extra_source_media"]["planned_items"], 1)
 
     def test_cli_batch_pipeline_writes_json_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

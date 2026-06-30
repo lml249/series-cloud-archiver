@@ -74,6 +74,7 @@ from .identity import (
     resolve_identity_overrides_from_cloud_report,
     resolve_identity_overrides_from_scan_report,
 )
+from .extra_source_media import build_extra_source_media_plan, render_extra_source_media_plan
 from .moviepilot import (
     execute_mp_cleanup_from_preview_report,
     render_mp_cleanup_execute_report,
@@ -92,6 +93,7 @@ from .mv3 import (
     check_mv3_offline_task,
     check_mv3_offline_manifest_status,
     execute_mv3_organize_transfer_from_browse_report,
+    execute_mv3_organize_transfer_from_scan_report,
     generate_mv3_strm,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
@@ -685,6 +687,16 @@ def build_parser() -> argparse.ArgumentParser:
     batch_review_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     batch_review_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
+    extra_source_parser = subcommands.add_parser("extra-source-media-plan", help="Build readonly follow-up plan for source videos that blocked cleanup")
+    extra_source_parser.add_argument("--finalize-run-report", required=True, help="JSON report from batch-finalize-run")
+    extra_source_parser.add_argument("--env-file", default="", help="Local env file; used only for generated command templates")
+    extra_source_parser.add_argument("--target-dir", default="/已整理", help="MV3 organize root, e.g. /已整理")
+    extra_source_parser.add_argument("--strm-dir", default="/strm", help="MV3 STRM output root")
+    extra_source_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
+    extra_source_parser.add_argument("--timeout", type=int, default=120)
+    extra_source_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
+    extra_source_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
     batch_share_preview_parser = subcommands.add_parser("batch-share-preview", help="Build or execute readonly MV3 share previews from a batch-plan report")
     batch_share_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
     batch_share_preview_parser.add_argument("--batch-plan", required=True, help="JSON report from batch-plan")
@@ -971,6 +983,24 @@ def build_parser() -> argparse.ArgumentParser:
     organize_transfer_parser.add_argument("--approve-transfer", action="store_true", help="Required: actually send one MV3 organize transfer request")
     organize_transfer_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     organize_transfer_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    organize_transfer_scan_parser = subcommands.add_parser("mv3-organize-transfer-from-scan", help="Execute one approved MV3 organize transfer from a scan-source JSON report")
+    organize_transfer_scan_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    organize_transfer_scan_parser.add_argument("--scan-report", required=True, help="JSON report from mv3-organize-scan-source")
+    organize_transfer_scan_parser.add_argument("--target-dir", required=True, help="MV3 organize root, e.g. /已整理; MV3 adds media categories such as series")
+    organize_transfer_scan_parser.add_argument("--strm-dir", required=True, help="MV3 STRM output dir")
+    organize_transfer_scan_parser.add_argument("--tmdb-id", type=int, required=True, help="Expected TMDB ID")
+    organize_transfer_scan_parser.add_argument("--expected-episode-count", type=int, required=True, help="Expected distinct episode count")
+    organize_transfer_scan_parser.add_argument("--expected-episode-min", type=int, required=True, help="Expected first episode number")
+    organize_transfer_scan_parser.add_argument("--expected-episode-max", type=int, required=True, help="Expected last episode number")
+    organize_transfer_scan_parser.add_argument("--expected-episode", action="append", default=[], help="Optional explicit expected episode list, comma-separated; can be repeated")
+    organize_transfer_scan_parser.add_argument("--mode", choices=["move", "copy"], default="copy", help="MV3 transfer mode; use copy for local source extras")
+    organize_transfer_scan_parser.add_argument("--local-target", action="store_true", help="Treat target as local instead of cloud")
+    organize_transfer_scan_parser.add_argument("--background", action="store_true", help="Ask MV3 to run transfer in background")
+    organize_transfer_scan_parser.add_argument("--timeout", type=int, default=180, help="Per-request timeout in seconds")
+    organize_transfer_scan_parser.add_argument("--approve-transfer", action="store_true", help="Required: actually send one MV3 organize transfer request")
+    organize_transfer_scan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    organize_transfer_scan_parser.add_argument("--output", default=None, help="Write aggregate report to file instead of stdout")
 
     strm_generate_parser = subcommands.add_parser("mv3-strm-generate", help="Execute one approved MV3 STRM generation request")
     strm_generate_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -2469,6 +2499,25 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(rendered)
         return 0
 
+    if args.command == "extra-source-media-plan":
+        finalize_report = load_optional_json_report(args.finalize_run_report)
+        if not isinstance(finalize_report, dict):
+            parser.error("extra-source-media-plan requires a valid --finalize-run-report JSON report")
+        report = build_extra_source_media_plan(
+            finalize_report,
+            env_file=args.env_file,
+            target_dir=args.target_dir,
+            strm_dir=args.strm_dir,
+            storage=args.storage,
+            timeout=args.timeout,
+        )
+        rendered = render_extra_source_media_plan(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
     if args.command == "batch-share-preview":
         batch_plan = load_optional_json_report(args.batch_plan)
         if not isinstance(batch_plan, dict):
@@ -3004,6 +3053,38 @@ def main(argv: Optional[List[str]] = None) -> int:
             is_cloud_target=not args.local_target,
             background=args.background,
             source_path_override=args.source_path_override,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_organize_transfer_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "mv3-organize-transfer-from-scan":
+        if not args.approve_transfer:
+            parser.error("mv3-organize-transfer-from-scan requires --approve-transfer")
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-organize-transfer-from-scan requires MV3_BASE_URL and MV3_API_TOKEN")
+        scan_report = load_optional_json_report(args.scan_report)
+        if not isinstance(scan_report, dict):
+            parser.error("scan report must be a JSON object")
+        report = execute_mv3_organize_transfer_from_scan_report(
+            config.mv3_base_url,
+            config.mv3_token,
+            scan_report,
+            target_dir=args.target_dir,
+            strm_dir=args.strm_dir,
+            tmdb_id=args.tmdb_id,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            expected_episodes=_parse_int_list_args(args.expected_episode),
+            mode=args.mode,
+            is_cloud_target=not args.local_target,
+            background=args.background,
             timeout=args.timeout,
         )
         rendered = render_mv3_organize_transfer_report(report, args.format)

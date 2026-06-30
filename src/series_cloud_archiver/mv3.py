@@ -7,7 +7,7 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Set, Tuple
 
 from .path_safety import looks_like_strm_side_path
@@ -2215,13 +2215,107 @@ def execute_mv3_organize_transfer_from_browse_report(
     source_path_override: str = "",
     timeout: int = 180,
 ) -> Dict[str, object]:
+    source_path = str(source_path_override or browse_report.get("path") or "")
+    items = [item for item in browse_report.get("items", []) if isinstance(item, dict)]
+    file_items = [item for item in items if str(item.get("kind") or "") == "file"]
+    media_items = [item for item in file_items if _browse_report_item_media_kind(item) == "video"]
+    metadata_sidecar_items = [item for item in file_items if _browse_report_item_media_kind(item) == "metadata_sidecar"]
+    files = _transfer_files_from_cloud_browse_items(media_items, source_path)
+    report = _execute_mv3_organize_transfer_from_files(
+        base_url,
+        token,
+        files=files,
+        source_path=source_path,
+        missing_source_blocker="browse_report_missing_source_path",
+        source_description="complete readonly cloud browse report",
+        target_dir=target_dir,
+        strm_dir=strm_dir,
+        tmdb_id=tmdb_id,
+        expected_episode_count=expected_episode_count,
+        expected_episode_min=expected_episode_min,
+        expected_episode_max=expected_episode_max,
+        expected_episodes=expected_episodes,
+        mode=mode,
+        is_cloud_target=is_cloud_target,
+        background=background,
+        timeout=timeout,
+        require_source_file_id=True,
+        metadata_sidecar_items=metadata_sidecar_items,
+    )
+    return report
+
+
+def execute_mv3_organize_transfer_from_scan_report(
+    base_url: str,
+    token: str,
+    scan_report: Dict[str, object],
+    target_dir: str,
+    strm_dir: str,
+    tmdb_id: int,
+    expected_episode_count: int,
+    expected_episode_min: int,
+    expected_episode_max: int,
+    expected_episodes: Optional[List[int]] = None,
+    mode: str = "copy",
+    is_cloud_target: bool = True,
+    background: bool = False,
+    timeout: int = 180,
+) -> Dict[str, object]:
+    source_path = str(scan_report.get("source_path") or "")
+    items = [item for item in scan_report.get("items", []) if isinstance(item, dict)]
+    media_items = [item for item in items if _organize_scan_item_media_kind(item) == "video"]
+    files = _transfer_files_from_organize_scan_items(media_items)
+    return _execute_mv3_organize_transfer_from_files(
+        base_url,
+        token,
+        files=files,
+        source_path=source_path,
+        missing_source_blocker="scan_report_missing_source_path",
+        source_description="approved MV3 organize scan-source report",
+        target_dir=target_dir,
+        strm_dir=strm_dir,
+        tmdb_id=tmdb_id,
+        expected_episode_count=expected_episode_count,
+        expected_episode_min=expected_episode_min,
+        expected_episode_max=expected_episode_max,
+        expected_episodes=expected_episodes,
+        mode=mode,
+        is_cloud_target=is_cloud_target,
+        background=background,
+        timeout=timeout,
+        require_source_file_id=bool(scan_report.get("is_cloud_source")),
+        metadata_sidecar_items=[],
+    )
+
+
+def _execute_mv3_organize_transfer_from_files(
+    base_url: str,
+    token: str,
+    *,
+    files: List[Dict[str, object]],
+    source_path: str,
+    missing_source_blocker: str,
+    source_description: str,
+    target_dir: str,
+    strm_dir: str,
+    tmdb_id: int,
+    expected_episode_count: int,
+    expected_episode_min: int,
+    expected_episode_max: int,
+    expected_episodes: Optional[List[int]],
+    mode: str,
+    is_cloud_target: bool,
+    background: bool,
+    timeout: int,
+    require_source_file_id: bool,
+    metadata_sidecar_items: List[Dict[str, object]],
+) -> Dict[str, object]:
     warnings: List[str] = []
     blockers: List[str] = []
-    source_path = str(source_path_override or browse_report.get("path") or "")
     normalized_target_dir = _normalize_cloud_path(target_dir)
     normalized_strm_dir = _normalize_cloud_path(strm_dir)
     if not source_path:
-        blockers.append("browse_report_missing_source_path")
+        blockers.append(missing_source_blocker)
     if not normalized_target_dir:
         blockers.append("target_dir_required")
     if _looks_like_mv3_category_dir(normalized_target_dir):
@@ -2241,13 +2335,8 @@ def execute_mv3_organize_transfer_from_browse_report(
     if expected_episode_min <= 0 or expected_episode_max <= 0:
         blockers.append("expected_episode_range_required")
 
-    items = [item for item in browse_report.get("items", []) if isinstance(item, dict)]
-    file_items = [item for item in items if str(item.get("kind") or "") == "file"]
-    media_items = [item for item in file_items if _browse_report_item_media_kind(item) == "video"]
-    metadata_sidecar_items = [item for item in file_items if _browse_report_item_media_kind(item) == "metadata_sidecar"]
     if metadata_sidecar_items:
         warnings.append("metadata_sidecars_excluded_from_organize_transfer")
-    files = _transfer_files_from_cloud_browse_items(media_items, source_path)
     episode_numbers = _episode_numbers_from_scan_items(files)
     expected_episode_list = sorted({int(item) for item in (expected_episodes or []) if int(item) > 0})
     expected_episode_set = set(expected_episode_list)
@@ -2272,7 +2361,7 @@ def execute_mv3_organize_transfer_from_browse_report(
         blockers.append("video_file_count_mismatch")
     if not files:
         blockers.append("no_transfer_files")
-    if any(not str(file.get("source_file_id") or "") for file in files):
+    if require_source_file_id and any(not str(file.get("source_file_id") or "") for file in files):
         blockers.append("missing_source_file_id")
     if mode not in ("move", "copy"):
         blockers.append("unsupported_transfer_mode")
@@ -2372,7 +2461,7 @@ def execute_mv3_organize_transfer_from_browse_report(
         "warnings": warnings,
         "blockers": sorted(set(blockers)),
         "safety": (
-            "approved MV3 organize transfer; request is built only from video files in a complete readonly cloud browse report "
+            f"approved MV3 organize transfer; request is built only from video files in a {source_description} "
             "and sends one /api/v1/organize/transfer call. Cloud storage is used only for transfer and STRM generation; "
             "cloud media metadata sidecars are not copied, and scraping must happen against the STRM library side. "
             "No qBittorrent action, hlink deletion, local filesystem deletion, or MP cleanup is performed"
@@ -5155,6 +5244,35 @@ def _transfer_files_from_cloud_browse_items(items: List[Dict[str, object]], sour
             }
         )
     return files
+
+
+def _transfer_files_from_organize_scan_items(items: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    files: List[Dict[str, object]] = []
+    for item in items:
+        source_path = str(item.get("path") or "")
+        if not source_path:
+            continue
+        files.append(
+            {
+                "source_path": source_path,
+                "source_file_id": str(item.get("source_file_id") or ""),
+                "is_cloud_source": bool(item.get("is_cloud_source")),
+                "name": str(item.get("name") or PurePosixPath(source_path).name),
+            }
+        )
+    return files
+
+
+def _organize_scan_item_media_kind(item: Dict[str, object]) -> str:
+    name = str(item.get("name") or item.get("path") or "")
+    suffix = Path(name).suffix.lower()
+    if suffix in MEDIA_EXTENSIONS:
+        return "video"
+    if suffix in SIDECAR_EXTENSIONS:
+        return "subtitle_sidecar"
+    if suffix in METADATA_SIDECAR_EXTENSIONS:
+        return "metadata_sidecar"
+    return "file"
 
 
 def _organize_transfer_request_summary(request_body: Dict[str, object]) -> Dict[str, object]:

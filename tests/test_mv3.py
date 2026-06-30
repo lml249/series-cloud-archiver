@@ -61,6 +61,7 @@ from series_cloud_archiver.mv3 import (
     preview_mv3_share,
     receive_mv3_share,
     execute_mv3_organize_transfer_from_browse_report,
+    execute_mv3_organize_transfer_from_scan_report,
     generate_mv3_strm,
     regenerate_mv3_strm_records,
 )
@@ -3700,6 +3701,63 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("episode_range_incomplete", report["blockers"])
         self.assertEqual(report["transfer"], {"skipped": True})
 
+    def test_organize_transfer_from_local_scan_report_allows_missing_file_id(self) -> None:
+        seen = {}
+        scan_report = {
+            "mode": "readonly-mv3-organize-scan-source",
+            "source_path": "/volume3/volume3/TV/Demo.SP1.mkv",
+            "is_cloud_source": False,
+            "items": [
+                {
+                    "name": "Demo.S01E11.mkv",
+                    "path": "/volume3/volume3/TV/Demo.S01E11.mkv",
+                    "episode": 11,
+                    "source_file_id": "",
+                    "is_cloud_source": False,
+                }
+            ],
+        }
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return b'{"success":true,"data":{"job_id":"ok"}}'
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = execute_mv3_organize_transfer_from_scan_report(
+                "http://mv3.example",
+                "token",
+                scan_report,
+                target_dir="/已整理",
+                strm_dir="/strm",
+                tmdb_id=123,
+                expected_episode_count=1,
+                expected_episode_min=11,
+                expected_episode_max=11,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(seen["url"], "http://mv3.example/api/v1/organize/transfer")
+        self.assertEqual(seen["body"]["files"][0]["source_path"], "/volume3/volume3/TV/Demo.S01E11.mkv")
+        self.assertFalse(seen["body"]["files"][0]["is_cloud_source"])
+        self.assertNotIn("missing_source_file_id", report["blockers"])
+
     def test_organize_transfer_accepts_delimited_episode_numbers(self) -> None:
         seen = {}
         browse_report = {
@@ -6042,6 +6100,48 @@ class MV3ProbeTest(unittest.TestCase):
                         "1",
                         "--expected-episode-max",
                         "1",
+                    ]
+                )
+
+            self.assertNotEqual(caught.exception.code, 0)
+
+    def test_cli_refuses_organize_transfer_from_scan_without_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            scan_report = tmp_path / "scan.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+            scan_report.write_text(
+                json.dumps(
+                    {
+                        "source_path": "/volume3/TV/Demo.S01E11.mkv",
+                        "is_cloud_source": False,
+                        "items": [{"name": "Demo.S01E11.mkv", "path": "/volume3/TV/Demo.S01E11.mkv"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(SystemExit) as caught:
+                main(
+                    [
+                        "mv3-organize-transfer-from-scan",
+                        "--env-file",
+                        str(env_file),
+                        "--scan-report",
+                        str(scan_report),
+                        "--target-dir",
+                        "/已整理",
+                        "--strm-dir",
+                        "/strm",
+                        "--tmdb-id",
+                        "123",
+                        "--expected-episode-count",
+                        "1",
+                        "--expected-episode-min",
+                        "11",
+                        "--expected-episode-max",
+                        "11",
                     ]
                 )
 

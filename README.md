@@ -253,7 +253,22 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
 - `12-finalize-plan.json`：STRM/NFO/Emby/qB/MP 清理前门禁计划。
 - `13-finalize-run.json`：如果跑了 finalize 阶段，这里记录每个门禁的结果。
 - `14-review.json`：合并人工复核报告。
+- `15-extra-source-media-plan.json`：如果 finalize 被“源目录有额外视频但 hlink 未覆盖”阻断，这里会列出这些额外视频的 MV3 只读扫描命令和人工映射要求。
 - `00-pipeline-state.json`：整次运行的索引和摘要。
+
+如果 `13-finalize-run.json` 出现 `source_root_check_failed`，不要直接删除源目录。通常意思是 qB 源目录里还有 hlink 没覆盖的视频，例如 SP、making-of、花絮或错季文件。`batch-pipeline` 会自动生成 `15-extra-source-media-plan.json`；也可以单独重跑：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver extra-source-media-plan \
+  --finalize-run-report /volume1/docker/series-cloud-archiver/outputs/current-20260629/pipeline-runs/RUN_ID/13-finalize-run.json \
+  --env-file /volume1/docker/series-cloud-archiver/.env \
+  --target-dir /已整理 \
+  --strm-dir /strm \
+  --format json \
+  --output reports/extra-source-media-plan.json
+```
+
+这个计划仍然只读：它只把额外视频整理成 `mv3-organize-scan-source --local-source --file` 命令。像 `SP1/SP2` 这种特辑不会自动假设成 `Season 00` 的第几集，必须先确认 TMDB Season 00 的映射，再进入转存、生成 STRM、STRM 侧刮削和 Emby 验证。
 
 下面保留的散命令仍然可用，主要用于调试单个阶段、修复异常项，或者在 pipeline 缺少某个能力时作为构件使用。
 
@@ -779,6 +794,38 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-share-receive-one \
 ```
 
 `mv3-share-receive-one` 会重新搜索并预览同一个候选，只在通过标题校验和 `--approve-receive` 时调用 `/api/v1/share-transfer/receive`。接收文件夹时还会复核 `--verified-folder-browse-report` 里的 `browse_cid`、集数范围、缺失集和异常集，避免把未验证的文件夹转存进云盘。它只转存选中的一个分享条目，不会整理、识别媒体类型、生成 STRM、操作 qB 或删除本地文件。
+
+如果 cleanup preview 发现 qB 源目录里还有 hlink 未覆盖的本地视频，例如特辑或花絮，先用 `extra-source-media-plan` 生成只读计划，再让 MV3 扫描单个本地文件：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-scan-source \
+  --env-file .env \
+  --source-path "/volume3/volume3/TV/Demo/Demo.SP1.mkv" \
+  --local-source \
+  --file \
+  --format json \
+  --output reports/demo-sp1-scan.json
+```
+
+确认这条本地视频的 TMDB、季号和集号后，才可以用审批命令让 MV3 copy 到 `/已整理` 并生成 STRM：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-scan \
+  --env-file .env \
+  --scan-report reports/demo-sp1-scan.json \
+  --target-dir /已整理 \
+  --strm-dir /strm \
+  --tmdb-id 123 \
+  --expected-episode-count 1 \
+  --expected-episode-min 1 \
+  --expected-episode-max 1 \
+  --mode copy \
+  --approve-transfer \
+  --format json \
+  --output reports/demo-sp1-transfer.json
+```
+
+这条链路不会移动或删除本地源文件；本地 qB/source/hlink 仍然必须等 STRM 完整、中文 NFO、Emby 和清理预览全部变绿后，才由最终 cleanup 阶段处理。
 
 如果怀疑 115 里已经有同内容，或者分享预览暂时不可用，可以先用只读云盘搜索找候选目录。这个命令只查 115 文件名，不转存、不整理、不生成 STRM，也不会刮削云盘媒体目录：
 
