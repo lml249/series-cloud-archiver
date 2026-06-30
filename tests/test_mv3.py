@@ -3276,6 +3276,68 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("video_file_count_mismatch", report["blockers"])
         self.assertIn("Missing expected", rendered)
 
+    def test_share_preview_accepts_ep_episode_tokens_before_cjk_noise(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.replace("http://mv3.example", "")
+            if path == "/api/v1/resource-search/search":
+                return FakeResponse({"success": True, "data": {"items": [{"title": "夫妻的世界", "share_link": "https://example.test/s/private"}]}})
+            if path == "/api/v1/share-transfer/parse":
+                return FakeResponse({"success": True, "data": {"share_code": "parsed-code"}})
+            if path == "/api/v1/share-transfer/browse":
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {
+                                    "name": f"夫妻的世界.EP{episode:02d}【微信公众号】.mp4",
+                                    "fid": f"file-{episode}",
+                                    "is_dir": False,
+                                }
+                                for episode in range(16, 0, -1)
+                            ]
+                        },
+                    }
+                )
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = preview_mv3_share(
+                "http://mv3.example",
+                "token",
+                "夫妻的世界",
+                selection_index=1,
+                expected_episode_count=16,
+                expected_episode_min=1,
+                expected_episode_max=16,
+                expected_title_contains="夫妻的世界",
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["episode_count"], 16)
+        self.assertEqual(report["episodes"], list(range(1, 17)))
+        self.assertEqual(report["missing_expected"], [])
+        self.assertNotIn("episode_range_incomplete", report["blockers"])
+
     def test_share_preview_fails_when_browse_returns_no_items(self) -> None:
         class FakeResponse:
             status = 200

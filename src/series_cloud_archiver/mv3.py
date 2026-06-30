@@ -6406,7 +6406,7 @@ def _episode_number_from_text(text: str) -> Optional[int]:
     match = re.search(r"[Ss](\d{1,2})[Ee](\d{1,3})", text)
     if match:
         return int(match.group(2))
-    match = re.search(r"(?i)(?:^|[\s._\-\[\(])E(?:P)?(\d{1,3})(?=$|[\s._\-\]\)])", text)
+    match = re.search(r"(?i)(?:^|[^A-Z0-9])E(?:P)?0*(\d{1,3})(?=$|[^A-Z0-9])", text)
     if match:
         return int(match.group(1))
     match = re.search(r"(?:第\s*)?(\d{1,3})(?:\s*[集话話])", text)
