@@ -2748,6 +2748,87 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("strm-nfo-language-audit", item["post_cleanup_reports"])
         self.assertIn("emby-media-updated", item["post_cleanup_reports"])
 
+    def test_batch_review_report_combines_finalize_gates_with_cloud_complete_cleanup_execute(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "state": "planned_validation_then_cleanup",
+                    "title": "扫毒风暴",
+                    "tmdbid": 292575,
+                    "season": 1,
+                    "cloud_status": "cloud_strm_complete",
+                    "expected_episode_count": 33,
+                }
+            ],
+        }
+        finalize_report = {
+            "mode": "batch-finalize-run",
+            "items": [
+                {
+                    "status": "failed_cleanup_preview",
+                    "title": "扫毒风暴",
+                    "tmdbid": 292575,
+                    "season": 1,
+                    "expected_episode_count": 33,
+                    "blockers": ["mp_transfer_history_still_present_use_mp_cleanup"],
+                    "stages": [
+                        {"stage": "strm_verify", "ok": True},
+                        {"stage": "strm_nfo_language_audit", "ok": True},
+                        {"stage": "emby_media_updated_verify", "ok": True},
+                        {"stage": "no_hash_local_absent_noop_verify", "ok": False},
+                    ],
+                }
+            ],
+        }
+        cleanup_execute = {
+            "mode": "cloud-complete-cleanup-execute",
+            "ok": True,
+            "results": [
+                {
+                    "title": "扫毒风暴",
+                    "tmdbid": 292575,
+                    "season": 1,
+                    "ok": True,
+                    "blockers": [],
+                    "verify": {
+                        "mode": "mp-cleanup-verify",
+                        "title": "扫毒风暴",
+                        "ok": True,
+                        "expected": {"tmdbid": 292575, "season": 1, "episode_count": 33},
+                        "mp_transfer_history": {"records_matched": 0},
+                        "qbittorrent": {"matched_count": 0},
+                        "filesystem": {
+                            "source_roots": [{"path": "/example/source/saodu", "exists": False}],
+                            "destination_roots": [{"path": "/example/hlink/TV/扫毒风暴 (2025) {tmdbid=292575}/Season 01", "exists": False}],
+                        },
+                        "strm": {
+                            "roots": [{"path": "/example/strm/series/扫毒风暴 (2025) {tmdbid=292575}/Season 1", "exists": True}],
+                            "combined": {"episode_count": 33, "episode_min": 1, "episode_max": 33, "missing_in_range": []},
+                        },
+                        "blockers": [],
+                    },
+                }
+            ],
+        }
+
+        report = build_batch_review_report(
+            batch_plan,
+            finalize_run_reports=[finalize_report],
+            post_cleanup_reports=[cleanup_execute],
+        )
+
+        self.assertEqual(report["decision_counts"]["done_cleanup_verified"], 1)
+        item = report["items"][0]
+        self.assertEqual(item["decision"], "done_cleanup_verified")
+        self.assertEqual(item["finalize_status"], "failed_cleanup_preview")
+        self.assertEqual(item["post_cleanup_status"], "cleanup_executed_verified")
+        self.assertIn("cloud-complete-cleanup-execute", item["post_cleanup_reports"])
+        self.assertIn("batch-finalize-run:strm_nfo_language_audit", item["post_cleanup_reports"])
+        self.assertIn("batch-finalize-run:emby_media_updated_verify", item["post_cleanup_reports"])
+        self.assertIn("已完成清理", item["post_cleanup_result"])
+
     def test_batch_review_report_treats_qb_orphan_missing_hash_as_noop_gate(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",

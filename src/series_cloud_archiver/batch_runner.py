@@ -10,7 +10,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from .cleanup_verify import audit_strm_nfo_language, verify_strm_paths
 from .emby import delete_stale_emby_paths, notify_and_verify_emby_media_updated
@@ -218,7 +218,8 @@ def build_batch_review_report(
     preview_by_key = _review_preview_by_identity(share_preview_reports or [])
     transfer_by_key = _review_transfer_by_identity(transfer_run_reports or [])
     finalize_by_key = _review_finalize_by_identity(finalize_run_reports or [])
-    post_cleanup_by_key = _review_post_cleanup_by_identity(post_cleanup_reports or [])
+    finalize_gate_reports = _post_cleanup_reports_from_finalize_runs(finalize_run_reports or [])
+    post_cleanup_by_key = _review_post_cleanup_by_identity([*finalize_gate_reports, *(post_cleanup_reports or [])])
     rows: List[Dict[str, object]] = []
 
     for index, item in enumerate(batch_plan.get("items", []), start=1):
@@ -2652,6 +2653,12 @@ def _review_report_by_identity(report: Dict[str, object]) -> Dict[Tuple[int, int
 
 
 def _review_post_cleanup_items(report: Dict[str, object]) -> List[Dict[str, object]]:
+    if str(report.get("mode") or "") == "cloud-complete-cleanup-execute":
+        return [
+            _normalize_post_cleanup_item(item)
+            for item in _post_cleanup_items_from_cloud_complete_execute(report)
+            if isinstance(item, dict)
+        ]
     raw_items = report.get("items")
     if isinstance(raw_items, list):
         return [_normalize_post_cleanup_item(item) for item in raw_items if isinstance(item, dict)]
@@ -2659,6 +2666,99 @@ def _review_post_cleanup_items(report: Dict[str, object]) -> List[Dict[str, obje
     if evidence:
         return [_normalize_post_cleanup_item(evidence)]
     return [_normalize_post_cleanup_item(report)]
+
+
+def _post_cleanup_reports_from_finalize_runs(reports: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
+    gate_reports: List[Dict[str, object]] = []
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
+            if not isinstance(item, dict):
+                continue
+            gate_reports.extend(_post_cleanup_gate_summaries_from_finalize_item(item))
+    return gate_reports
+
+
+def _post_cleanup_gate_summaries_from_finalize_item(item: Dict[str, object]) -> List[Dict[str, object]]:
+    stages = item.get("stages") if isinstance(item.get("stages"), list) else []
+    if not stages:
+        return []
+    title = str(item.get("title") or "")
+    tmdbid = int(item.get("tmdbid") or 0)
+    season = int(item.get("season") or 0)
+    episode_count = int(item.get("expected_episode_count") or item.get("episode_count") or 0)
+    reports: List[Dict[str, object]] = []
+    if _finalize_stage_ok(stages, {"strm_verify"}):
+        reports.append(
+            {
+                "mode": "post-cleanup-gate-summary",
+                "source_mode": "batch-finalize-run:strm_verify",
+                "title": title,
+                "tmdbid": tmdbid,
+                "season": season,
+                "status": "post_cleanup_gates_partial",
+                "strm_ok": "true",
+                "episode_count": episode_count,
+                "blockers": [],
+                "reports": "batch-finalize-run:strm_verify",
+            }
+        )
+    if _finalize_stage_ok(stages, {"strm_nfo_language_audit"}):
+        reports.append(
+            {
+                "mode": "post-cleanup-gate-summary",
+                "source_mode": "batch-finalize-run:strm_nfo_language_audit",
+                "title": title,
+                "tmdbid": tmdbid,
+                "season": season,
+                "status": "post_cleanup_gates_partial",
+                "nfo_ok": "true",
+                "blockers": [],
+                "reports": "batch-finalize-run:strm_nfo_language_audit",
+            }
+        )
+    if _finalize_stage_ok(stages, {"emby_media_updated_verify", "emby_media_updated_verify_after_stale_delete"}):
+        reports.append(
+            {
+                "mode": "post-cleanup-gate-summary",
+                "source_mode": "batch-finalize-run:emby_media_updated_verify",
+                "title": title,
+                "tmdbid": tmdbid,
+                "season": season,
+                "status": "post_cleanup_gates_partial",
+                "emby_ok": "true",
+                "blockers": [],
+                "reports": "batch-finalize-run:emby_media_updated_verify",
+            }
+        )
+    return reports
+
+
+def _finalize_stage_ok(stages: Sequence[object], wanted: Set[str]) -> bool:
+    return any(isinstance(stage, dict) and bool(stage.get("ok")) and str(stage.get("stage") or "") in wanted for stage in stages)
+
+
+def _post_cleanup_items_from_cloud_complete_execute(report: Dict[str, object]) -> List[Dict[str, object]]:
+    items: List[Dict[str, object]] = []
+    for result in report.get("results", []) if isinstance(report.get("results"), list) else []:
+        if not isinstance(result, dict):
+            continue
+        verify = result.get("verify") if isinstance(result.get("verify"), dict) else {}
+        if verify.get("mode") == "mp-cleanup-verify":
+            item = _post_cleanup_item_from_mp_verify(verify)
+        else:
+            item = {}
+        if not item:
+            continue
+        item["source_mode"] = "cloud-complete-cleanup-execute"
+        item["title"] = result.get("title") or item.get("title", "")
+        item["tmdbid"] = int(result.get("tmdbid") or item.get("tmdbid") or 0)
+        item["season"] = int(result.get("season") or item.get("season") or 0)
+        item["blockers"] = sorted(set(_string_list(item.get("blockers")) + _string_list(result.get("blockers"))))
+        item["reports"] = "cloud-complete-cleanup-execute; mp-cleanup-verify"
+        items.append(item)
+    return items
 
 
 def _post_cleanup_gate_item(report: Dict[str, object]) -> Dict[str, object]:
