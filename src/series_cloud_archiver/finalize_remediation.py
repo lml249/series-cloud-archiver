@@ -22,6 +22,7 @@ READONLY_REMEDIATION_COMMANDS = {
     "mv3-cloud-browse",
     "mv3-cloud-search",
     "qb-orphan-torrent-cleanup-preview",
+    "no-hash-local-absent-verify",
     "mp-cleanup-preview",
     "hlink-empty-root-cleanup",
 }
@@ -561,7 +562,7 @@ def _cleanup_remediation_next_action(category: str) -> str:
     return {
         "qb_orphan_preview_candidate": "先运行生成的 qB orphan 只读预览；如果 ready_for_execute=true，再单独审批 qB 任务清理，deleteFiles 必须为 false",
         "empty_hlink_root_review": "只剩非视频 hlink 空根，先运行无审批的 hlink-empty-root-cleanup 复核；删除必须单独加审批",
-        "local_already_absent_no_qb_match": "本地 hlink/source 没有视频且 qB 未匹配；缺少 full qB hash，只能作为 no-op/人工复核候选，不能自动删除",
+        "local_already_absent_no_qb_match": "本地 hlink/source 没有视频且 qB 未匹配；先运行 no-hash 只读验证，确认 qB 没有同路径/同标题同季残留后才能作为清理后证据",
         "source_or_wrong_season_review": "本地源目录仍有视频或匹配到错季/错源；必须人工复核，不能自动删除",
         "manual_cleanup_review": "人工复核 cleanup preview、qB、source/hlink 后再决定下一步",
     }.get(category, "人工复核")
@@ -620,6 +621,26 @@ def _cleanup_remediation_commands(
                     "PYTHONPATH=src python3 -m series_cloud_archiver hlink-empty-root-cleanup "
                     f"--title {_q(title)} --expected-tmdbid {tmdbid} --hlink-root {_q(hlink_root)} "
                     f"--format json --output {_q(prefix + '-hlink-empty-root.json')}"
+                ),
+            }
+        ]
+    if category == "local_already_absent_no_qb_match":
+        source_roots = _unique_strings(list(source_paths))
+        source_args = " ".join(f"--source-root {_q(value)}" for value in source_roots if value)
+        if not source_args or not hlink_root or not strm_root:
+            return []
+        return [
+            {
+                "stage": "no_hash_local_absent_verify_readonly",
+                "command": (
+                    f"PYTHONPATH=src python3 -m series_cloud_archiver no-hash-local-absent-verify {env}"
+                    f"--title {_q(title)} --expected-tmdbid {tmdbid} --expected-season {season} "
+                    f"{source_args} --hlink-root {_q(hlink_root)} --strm-root {_q(strm_root)} "
+                    f"--expected-episode-count {expected_count} --expected-episode-min {expected_min} "
+                    f"--expected-episode-max {expected_max} --expected-title-contains {_q(title)} "
+                    f"--required-target-prefix {_q(required_prefix)} --cloud-media-path {_q(cloud_title_path)} "
+                    f"--cloud-media-storage {_q(cloud_media_storage)} --timeout {timeout} "
+                    f"--format json --output {_q(prefix + '-no-hash-local-absent-verify.json')}"
                 ),
             }
         ]

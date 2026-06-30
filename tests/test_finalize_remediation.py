@@ -458,7 +458,9 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
         self.assertNotIn("--approve-delete", commands_by_title["qB孤儿"])
         self.assertIn("hlink-empty-root-cleanup", commands_by_title["空壳目录"])
         self.assertNotIn("--approve-delete", commands_by_title["空壳目录"])
-        self.assertEqual(commands_by_title["已消失"], "")
+        self.assertIn("no-hash-local-absent-verify", commands_by_title["已消失"])
+        self.assertIn("--source-root /example/source/missing", commands_by_title["已消失"])
+        self.assertIn("--hlink-root /example/hlink/missing", commands_by_title["已消失"])
         self.assertEqual(commands_by_title["错季残留"], "")
 
         rendered_csv = render_finalize_cleanup_remediation_plan(report, "csv")
@@ -538,16 +540,17 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
                 output_path = Path(argv[argv.index("--output") + 1])
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 mode = argv[3]
+                ok = mode in {"qb-orphan-torrent-cleanup-preview", "no-hash-local-absent-verify"}
                 output_path.write_text(
-                    json.dumps({"mode": mode, "ok": mode == "qb-orphan-torrent-cleanup-preview", "blockers": ["approval_required"] if mode == "hlink-empty-root-cleanup" else []}),
+                    json.dumps({"mode": mode, "ok": ok, "blockers": ["approval_required"] if mode == "hlink-empty-root-cleanup" else []}),
                     encoding="utf-8",
                 )
-                return subprocess.CompletedProcess(argv, 0 if mode == "qb-orphan-torrent-cleanup-preview" else 1, stdout="", stderr="")
+                return subprocess.CompletedProcess(argv, 0 if ok else 1, stdout="", stderr="")
 
             run = run_finalize_cleanup_remediation_plan(
                 plan,
                 output_dir=str(output_dir),
-                categories=["qb_orphan_preview_candidate", "empty_hlink_root_review"],
+                categories=["qb_orphan_preview_candidate", "empty_hlink_root_review", "local_already_absent_no_qb_match"],
                 execute_readonly=True,
                 cwd="/example/app",
                 command_runner=fake_runner,
@@ -555,14 +558,15 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
 
         self.assertTrue(run["ok"])
         self.assertEqual(run["mode"], "readonly-finalize-cleanup-remediation-run")
-        self.assertEqual(run["planned_commands"], 2)
-        self.assertEqual(run["executed_commands"], 2)
-        self.assertEqual(run["status_counts"], {"diagnostic_failed": 1, "executed": 1})
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(run["planned_commands"], 3)
+        self.assertEqual(run["executed_commands"], 3)
+        self.assertEqual(run["status_counts"], {"diagnostic_failed": 1, "executed": 2})
+        self.assertEqual(len(calls), 3)
         self.assertEqual(calls[0][0][:3], ["python3", "-m", "series_cloud_archiver"])
         self.assertTrue(all(str(output_dir) in item["command"] for item in run["items"]))
         self.assertTrue(any(item["stage"] == "hlink_empty_root_review" and item["status"] == "diagnostic_failed" for item in run["items"]))
         self.assertTrue(any(item["stage"] == "qb_orphan_preview_readonly" and item["status"] == "executed" for item in run["items"]))
+        self.assertTrue(any(item["stage"] == "no_hash_local_absent_verify_readonly" and item["status"] == "executed" for item in run["items"]))
 
     def test_cleanup_remediation_run_blocks_approval_flags(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -609,7 +613,7 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["mode"], "readonly-finalize-cleanup-remediation-run")
-        self.assertEqual(payload["planned_commands"], 2)
+        self.assertEqual(payload["planned_commands"], 3)
         self.assertEqual(payload["executed_commands"], 0)
 
     def _plan_report(self) -> dict:
