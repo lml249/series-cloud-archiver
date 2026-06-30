@@ -6,6 +6,7 @@ from pathlib import Path
 
 from series_cloud_archiver.cli import main
 from series_cloud_archiver.extra_source_media import (
+    build_extra_source_media_local_path_summary,
     build_extra_source_media_summary,
     build_extra_source_media_plan,
     render_extra_source_media_plan,
@@ -266,6 +267,39 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
         self.assertEqual(summary["items"][0]["cleanup_gate"], "blocked")
         self.assertIn("不能作为已清理证据", render_extra_source_media_summary(summary, "markdown"))
 
+    def test_local_path_summary_marks_existing_empty_scan_as_mapping_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "Demo.S01E01.mkv"
+            source.write_text("video", encoding="utf-8")
+            run = {
+                "mode": "readonly-extra-source-media-run",
+                "selected_items": 1,
+                "executed_commands": 1,
+                "items": [
+                    {
+                        "status": "executed",
+                        "executed": True,
+                        "title": "示例剧",
+                        "tmdbid": 123,
+                        "main_season": 1,
+                        "suggested_season": 1,
+                        "episode": 1,
+                        "source_path": str(source),
+                        "diagnostic_ok": True,
+                        "diagnostic_summary": {"total": 0, "candidate": 0, "in_library": 0},
+                        "diagnostic_warnings": ["no_scan_items_found"],
+                    }
+                ],
+            }
+
+            summary = build_extra_source_media_local_path_summary([run])
+
+        self.assertEqual(summary["mode"], "readonly-extra-source-media-local-path-summary")
+        self.assertEqual(summary["items"][0]["status"], "local_source_exists_but_mv3_scan_empty")
+        self.assertEqual(summary["items"][0]["cleanup_gate"], "blocked")
+        self.assertEqual(summary["items"][0]["local_path_existing_count"], 1)
+        self.assertIn("local_source_exists_but_mv3_scan_empty", render_extra_source_media_summary(summary, "csv"))
+
     def test_summary_clears_when_all_scan_candidates_are_in_library(self) -> None:
         run = {
             "mode": "readonly-extra-source-media-run",
@@ -299,6 +333,8 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
             tmp_path = Path(tmp)
             run_dir = tmp_path / "runs"
             run_dir.mkdir()
+            source = tmp_path / "Demo.S02E03.mkv"
+            source.write_text("video", encoding="utf-8")
             output = tmp_path / "summary.json"
             (run_dir / "one.run.json").write_text(
                 json.dumps(
@@ -315,6 +351,7 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
                                 "main_season": 1,
                                 "suggested_season": 2,
                                 "episode": 3,
+                                "source_path": str(source),
                                 "diagnostic_summary": {"total": 0, "candidate": 0, "in_library": 0},
                                 "diagnostic_warnings": ["no_scan_items_found"],
                             }
@@ -330,6 +367,7 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
                     "extra-source-media-summary",
                     "--run-dir",
                     str(run_dir),
+                    "--check-local-paths",
                     "--format",
                     "json",
                     "--output",
@@ -339,7 +377,8 @@ class ExtraSourceMediaPlanTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(payload["mode"], "readonly-extra-source-media-summary")
+        self.assertEqual(payload["mode"], "readonly-extra-source-media-local-path-summary")
+        self.assertEqual(payload["items"][0]["status"], "local_source_exists_but_mv3_scan_empty")
         self.assertEqual(payload["items"][0]["suggested_seasons"], "2")
         self.assertEqual(payload["items"][0]["episodes"], "3")
 

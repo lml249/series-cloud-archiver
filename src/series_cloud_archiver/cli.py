@@ -79,6 +79,7 @@ from .identity import (
     resolve_identity_overrides_from_scan_report,
 )
 from .extra_source_media import (
+    build_extra_source_media_local_path_summary,
     build_extra_source_media_summary,
     build_extra_source_media_plan,
     render_extra_source_media_plan,
@@ -872,6 +873,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     extra_source_summary_parser.add_argument("--run-report", action="append", default=[], help="JSON report from extra-source-media-run; can be repeated")
     extra_source_summary_parser.add_argument("--run-dir", action="append", default=[], help="Directory containing *.run.json reports; can be repeated")
+    extra_source_summary_parser.add_argument("--check-local-paths", action="store_true", help="Check source_path existence on this host; readonly filesystem stat only")
     extra_source_summary_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     extra_source_summary_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
@@ -3079,7 +3081,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         ]
         if not run_reports:
             parser.error("extra-source-media-summary requires --run-report or --run-dir")
-        report = build_extra_source_media_summary(run_reports)
+        report = (
+            build_extra_source_media_local_path_summary(run_reports)
+            if args.check_local_paths
+            else build_extra_source_media_summary(run_reports)
+        )
         rendered = render_extra_source_media_summary(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)

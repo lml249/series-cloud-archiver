@@ -274,7 +274,7 @@ def render_extra_source_media_run(report: JsonDict, output_format: str) -> str:
 def build_extra_source_media_summary(run_reports: Sequence[JsonDict]) -> JsonDict:
     """Summarize extra-source scan runs into conservative cleanup decisions."""
 
-    rows = [_summary_row(report, index) for index, report in enumerate(run_reports, start=1) if isinstance(report, dict)]
+    rows = [_summary_row(report, index, check_local_paths=False) for index, report in enumerate(run_reports, start=1) if isinstance(report, dict)]
     details: List[JsonDict] = []
     for index, report in enumerate(run_reports, start=1):
         if isinstance(report, dict):
@@ -300,6 +300,35 @@ def build_extra_source_media_summary(run_reports: Sequence[JsonDict]) -> JsonDic
     }
 
 
+def build_extra_source_media_local_path_summary(run_reports: Sequence[JsonDict]) -> JsonDict:
+    """Summarize scan runs and verify local source paths on this host."""
+
+    rows = [_summary_row(report, index, check_local_paths=True) for index, report in enumerate(run_reports, start=1) if isinstance(report, dict)]
+    details: List[JsonDict] = []
+    for index, report in enumerate(run_reports, start=1):
+        if isinstance(report, dict):
+            details.extend(_summary_detail_rows(report, index))
+    status_counts = Counter(str(row.get("status") or "") for row in rows)
+    gate_counts = Counter(str(row.get("cleanup_gate") or "") for row in rows)
+    return {
+        "mode": "readonly-extra-source-media-local-path-summary",
+        "ok": True,
+        "run_report_count": len(rows),
+        "blocked_items": sum(1 for row in rows if row.get("cleanup_gate") == "blocked"),
+        "review_items": sum(1 for row in rows if row.get("cleanup_gate") != "clear"),
+        "clear_items": sum(1 for row in rows if row.get("cleanup_gate") == "clear"),
+        "status_counts": dict(sorted(status_counts.items())),
+        "cleanup_gate_counts": dict(sorted(gate_counts.items())),
+        "items": rows,
+        "details": details,
+        "safety": (
+            "readonly local-path evidence summary only; it checks Path.exists for source paths on this host "
+            "and reads existing extra-source scan run JSON. It does not call MV3/MoviePilot/Emby/qBittorrent, "
+            "write STRM/NFO/JPG, transfer cloud media, or delete hlink/source files."
+        ),
+    }
+
+
 def render_extra_source_media_summary(report: JsonDict, output_format: str) -> str:
     if output_format == "json":
         return json.dumps(report, ensure_ascii=False, indent=2)
@@ -313,14 +342,14 @@ def render_extra_source_media_summary(report: JsonDict, output_format: str) -> s
         f"- Status counts: `{report.get('status_counts', {})}`",
         "- Safety: readonly evidence summary only; no transfer, scraping, Emby refresh, qB action, or deletion is performed.",
         "",
-        "| Status | Gate | TMDB | Main S | Extra S | Extra E | Title | Scan | Candidate | In Library | Next action |",
-        "| --- | --- | ---: | --- | --- | --- | --- | ---: | ---: | ---: | --- |",
+        "| Status | Gate | TMDB | Main S | Extra S | Extra E | Title | Scan | Candidate | In Library | Local Exists | Next action |",
+        "| --- | --- | ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
     ]
     for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
         if not isinstance(item, dict):
             continue
         lines.append(
-            "| {status} | {gate} | {tmdbid} | {main_seasons} | {suggested_seasons} | {episodes} | {title} | {total} | {candidate} | {in_library} | {next_action} |".format(
+            "| {status} | {gate} | {tmdbid} | {main_seasons} | {suggested_seasons} | {episodes} | {title} | {total} | {candidate} | {in_library} | {local_exists} | {next_action} |".format(
                 status=_escape_cell(str(item.get("status") or "")),
                 gate=_escape_cell(str(item.get("cleanup_gate") or "")),
                 tmdbid=item.get("tmdbid") or "",
@@ -331,6 +360,7 @@ def render_extra_source_media_summary(report: JsonDict, output_format: str) -> s
                 total=item.get("scan_total_count") or 0,
                 candidate=item.get("candidate_count") or 0,
                 in_library=item.get("in_library_count") or 0,
+                local_exists=item.get("local_path_existing_count") if item.get("local_path_check") else "",
                 next_action=_escape_cell(str(item.get("next_action") or "")),
             )
         )
@@ -781,7 +811,7 @@ def _render_run_csv(report: JsonDict) -> str:
     return output.getvalue().rstrip("\r\n")
 
 
-def _summary_row(report: JsonDict, report_index: int) -> JsonDict:
+def _summary_row(report: JsonDict, report_index: int, *, check_local_paths: bool) -> JsonDict:
     executed = [item for item in _items(report.get("items")) if bool(item.get("executed"))]
     planned_or_skipped = _items(report.get("items"))
     title_values = sorted({str(item.get("title") or "") for item in planned_or_skipped if str(item.get("title") or "")})
@@ -797,6 +827,16 @@ def _summary_row(report: JsonDict, report_index: int) -> JsonDict:
     failed_count = sum(1 for item in planned_or_skipped if str(item.get("status") or "") in {"diagnostic_failed", "timeout", "runner_error", "unsafe_blocked"})
     no_scan_count = sum(1 for item in executed if "no_scan_items_found" in _strings(item.get("diagnostic_warnings")))
     all_in_library_count = sum(1 for item in executed if "all_scan_items_marked_in_library" in _strings(item.get("diagnostic_warnings")))
+    source_paths = sorted({str(item.get("source_path") or "") for item in executed if str(item.get("source_path") or "")})
+    local_path_count = len(source_paths)
+    local_path_existing_count = 0
+    local_path_missing_count = 0
+    if check_local_paths:
+        for source_path in source_paths:
+            if Path(source_path).exists():
+                local_path_existing_count += 1
+            else:
+                local_path_missing_count += 1
 
     status = "manual_review_required"
     cleanup_gate = "blocked"
@@ -824,9 +864,18 @@ def _summary_row(report: JsonDict, report_index: int) -> JsonDict:
         reason_codes.append("scan_found_not_in_library_candidates")
         next_action = "把这些额外视频作为单独迁移/映射项处理，不允许直接清理"
     elif no_scan_count == len(executed):
-        status = "source_not_visible_to_mv3_or_empty"
-        reason_codes.append("scan_source_returned_no_items")
-        next_action = "复核本地源路径是否仍存在且 MV3 可见；不能作为已清理证据"
+        if check_local_paths and local_path_count and local_path_existing_count == local_path_count:
+            status = "local_source_exists_but_mv3_scan_empty"
+            reason_codes.append("local_source_exists_but_scan_source_returned_no_items")
+            next_action = "这些本地视频仍存在；需要本地映射/其它 season 归属分流，不能清理 source 根"
+        elif check_local_paths and local_path_count and local_path_missing_count == local_path_count:
+            status = "local_source_paths_missing"
+            reason_codes.append("all_local_source_paths_missing")
+            next_action = "重新跑 cleanup preview/no-hash absent 验证；不能仅凭旧 extra-source 报告清理"
+        else:
+            status = "source_not_visible_to_mv3_or_empty"
+            reason_codes.append("scan_source_returned_no_items")
+            next_action = "复核本地源路径是否仍存在且 MV3 可见；不能作为已清理证据"
     else:
         status = "manual_review_required"
         reason_codes.append("scan_result_unclear")
@@ -848,6 +897,10 @@ def _summary_row(report: JsonDict, report_index: int) -> JsonDict:
         "no_scan_items_count": no_scan_count,
         "all_in_library_scan_count": all_in_library_count,
         "failed_command_count": failed_count,
+        "local_path_check": check_local_paths,
+        "local_path_count": local_path_count,
+        "local_path_existing_count": local_path_existing_count,
+        "local_path_missing_count": local_path_missing_count,
         "warnings": warnings,
         "blockers": blockers,
         "reason_codes": reason_codes,
@@ -901,6 +954,10 @@ def _render_summary_csv(report: JsonDict) -> str:
         "in_library_count",
         "no_scan_items_count",
         "failed_command_count",
+        "local_path_check",
+        "local_path_count",
+        "local_path_existing_count",
+        "local_path_missing_count",
         "reason_codes",
         "warnings",
         "blockers",
@@ -929,6 +986,10 @@ def _render_summary_csv(report: JsonDict) -> str:
                 "in_library_count": item.get("in_library_count", ""),
                 "no_scan_items_count": item.get("no_scan_items_count", ""),
                 "failed_command_count": item.get("failed_command_count", ""),
+                "local_path_check": item.get("local_path_check", ""),
+                "local_path_count": item.get("local_path_count", ""),
+                "local_path_existing_count": item.get("local_path_existing_count", ""),
+                "local_path_missing_count": item.get("local_path_missing_count", ""),
                 "reason_codes": "; ".join(_strings(item.get("reason_codes"))),
                 "warnings": "; ".join(_strings(item.get("warnings"))),
                 "blockers": "; ".join(_strings(item.get("blockers"))),
