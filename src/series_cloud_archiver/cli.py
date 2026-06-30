@@ -175,6 +175,9 @@ from .transfer_plan import (
 )
 
 
+DEFAULT_SHARE_SEARCH_FALLBACK_CHANNELS = ["pansou"]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="series-cloud-archiver")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -1388,27 +1391,29 @@ def _combined_mv3_search_report(
         report = search_mv3_resources(mv3_base_url, mv3_token, keyword, channels=channels or [], timeout=timeout)
         if progress:
             progress(f"searched keyword: {keyword} ok={bool(report.get('ok'))} results={int(report.get('result_count') or 0)}")
-        keyword_reports.append(
-            {
-                "keyword": keyword,
-                "ok": bool(report.get("ok")),
-                "result_count": int(report.get("result_count") or 0),
-                "status": int(report.get("status") or 0),
-                "error_type": str(report.get("error_type") or ""),
-                "error": str(report.get("error") or ""),
-                "warnings": report.get("warnings", []) if isinstance(report.get("warnings"), list) else [],
-            }
-        )
-        for row in report.get("items", []) if isinstance(report.get("items"), list) else []:
-            if not isinstance(row, dict):
-                continue
-            key = (str(row.get("title") or ""), str(row.get("channel") or ""), str(row.get("size") or ""))
-            if key in seen:
-                continue
-            seen.add(key)
-            merged = dict(row)
-            merged["search_keyword"] = keyword
-            merged_items.append(merged)
+        keyword_reports.append(_keyword_search_summary(keyword, report, channels or [], fallback=False, fallback_reason=""))
+        _merge_search_items(merged_items, seen, report, keyword)
+        if _should_retry_with_fallback(report, channels or []):
+            for fallback_channel in DEFAULT_SHARE_SEARCH_FALLBACK_CHANNELS:
+                fallback_channels = [fallback_channel]
+                if progress:
+                    progress(f"retrying keyword via fallback channel {fallback_channel}: {keyword}")
+                fallback_report = search_mv3_resources(mv3_base_url, mv3_token, keyword, channels=fallback_channels, timeout=timeout)
+                if progress:
+                    progress(
+                        f"retried keyword via fallback channel {fallback_channel}: {keyword} "
+                        f"ok={bool(fallback_report.get('ok'))} results={int(fallback_report.get('result_count') or 0)}"
+                    )
+                keyword_reports.append(
+                    _keyword_search_summary(
+                        keyword,
+                        fallback_report,
+                        fallback_channels,
+                        fallback=True,
+                        fallback_reason="initial_search_timeout",
+                    )
+                )
+                _merge_search_items(merged_items, seen, fallback_report, keyword)
     return {
         "ok": any(report.get("ok") for report in keyword_reports),
         "result_count": len(merged_items),
@@ -1417,6 +1422,52 @@ def _combined_mv3_search_report(
         "keyword_reports": keyword_reports,
         "warnings": _combined_search_warnings(keyword_reports),
     }
+
+
+def _keyword_search_summary(
+    keyword: str,
+    report: Dict[str, object],
+    channels: Sequence[str],
+    *,
+    fallback: bool,
+    fallback_reason: str,
+) -> Dict[str, object]:
+    return {
+        "keyword": keyword,
+        "ok": bool(report.get("ok")),
+        "result_count": int(report.get("result_count") or 0),
+        "status": int(report.get("status") or 0),
+        "channels": [str(channel) for channel in channels if str(channel)],
+        "fallback": fallback,
+        "fallback_reason": fallback_reason,
+        "error_type": str(report.get("error_type") or ""),
+        "error": str(report.get("error") or ""),
+        "warnings": report.get("warnings", []) if isinstance(report.get("warnings"), list) else [],
+    }
+
+
+def _merge_search_items(
+    merged_items: List[Dict[str, object]],
+    seen: set[tuple[str, str, str]],
+    report: Dict[str, object],
+    keyword: str,
+) -> None:
+    for row in report.get("items", []) if isinstance(report.get("items"), list) else []:
+        if not isinstance(row, dict):
+            continue
+        key = (str(row.get("title") or ""), str(row.get("channel") or ""), str(row.get("size") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged = dict(row)
+        merged["search_keyword"] = keyword
+        merged_items.append(merged)
+
+
+def _should_retry_with_fallback(report: Dict[str, object], channels: Sequence[str]) -> bool:
+    if channels or bool(report.get("ok")):
+        return False
+    return str(report.get("error_type") or "") == "TimeoutError"
 
 
 def _combined_search_warnings(keyword_reports: List[Dict[str, object]]) -> List[str]:
@@ -1429,6 +1480,10 @@ def _combined_search_warnings(keyword_reports: List[Dict[str, object]]) -> List[
         error_type = str(report.get("error_type") or "")
         if error_type:
             text = f"keyword_error:{report.get('keyword')}:{error_type}"
+            if text not in warnings:
+                warnings.append(text)
+        if bool(report.get("fallback")):
+            text = f"keyword_fallback:{report.get('keyword')}:{','.join(str(channel) for channel in report.get('channels', []))}"
             if text not in warnings:
                 warnings.append(text)
     return warnings

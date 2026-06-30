@@ -37,6 +37,7 @@ from .transfer_plan import (
 
 
 JsonDict = Dict[str, object]
+DEFAULT_SHARE_SEARCH_FALLBACK_CHANNELS = ["pansou"]
 
 
 @dataclass
@@ -487,27 +488,22 @@ def _combined_share_search(
         if not clean_keyword:
             continue
         report = search_func(base_url, token, clean_keyword, channels=list(channels), timeout=timeout)
-        keyword_reports.append(
-            {
-                "keyword": clean_keyword,
-                "ok": bool(report.get("ok")),
-                "result_count": int(report.get("result_count") or 0),
-                "status": int(report.get("status") or 0),
-                "error_type": str(report.get("error_type") or ""),
-                "error": str(report.get("error") or ""),
-                "warnings": report.get("warnings", []) if isinstance(report.get("warnings"), list) else [],
-            }
-        )
-        for row in report.get("items", []) if isinstance(report.get("items"), list) else []:
-            if not isinstance(row, dict):
-                continue
-            key = (str(row.get("title") or ""), str(row.get("channel") or ""), str(row.get("size") or ""))
-            if key in seen:
-                continue
-            seen.add(key)
-            merged = dict(row)
-            merged["search_keyword"] = clean_keyword
-            merged_items.append(merged)
+        keyword_reports.append(_keyword_search_summary(clean_keyword, report, list(channels), fallback=False, fallback_reason=""))
+        _merge_search_items(merged_items, seen, report, clean_keyword)
+        if _should_retry_with_fallback(report, channels):
+            for fallback_channel in DEFAULT_SHARE_SEARCH_FALLBACK_CHANNELS:
+                fallback_channels = [fallback_channel]
+                fallback_report = search_func(base_url, token, clean_keyword, channels=fallback_channels, timeout=timeout)
+                keyword_reports.append(
+                    _keyword_search_summary(
+                        clean_keyword,
+                        fallback_report,
+                        fallback_channels,
+                        fallback=True,
+                        fallback_reason="initial_search_timeout",
+                    )
+                )
+                _merge_search_items(merged_items, seen, fallback_report, clean_keyword)
     return {
         "ok": any(report.get("ok") for report in keyword_reports),
         "result_count": len(merged_items),
@@ -516,6 +512,52 @@ def _combined_share_search(
         "keyword_reports": keyword_reports,
         "warnings": _combined_search_warnings(keyword_reports),
     }
+
+
+def _keyword_search_summary(
+    keyword: str,
+    report: JsonDict,
+    channels: Sequence[str],
+    *,
+    fallback: bool,
+    fallback_reason: str,
+) -> JsonDict:
+    return {
+        "keyword": keyword,
+        "ok": bool(report.get("ok")),
+        "result_count": int(report.get("result_count") or 0),
+        "status": int(report.get("status") or 0),
+        "channels": [str(channel) for channel in channels if str(channel)],
+        "fallback": fallback,
+        "fallback_reason": fallback_reason,
+        "error_type": str(report.get("error_type") or ""),
+        "error": str(report.get("error") or ""),
+        "warnings": report.get("warnings", []) if isinstance(report.get("warnings"), list) else [],
+    }
+
+
+def _merge_search_items(
+    merged_items: List[JsonDict],
+    seen: set[tuple[str, str, str]],
+    report: JsonDict,
+    keyword: str,
+) -> None:
+    for row in report.get("items", []) if isinstance(report.get("items"), list) else []:
+        if not isinstance(row, dict):
+            continue
+        key = (str(row.get("title") or ""), str(row.get("channel") or ""), str(row.get("size") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged = dict(row)
+        merged["search_keyword"] = keyword
+        merged_items.append(merged)
+
+
+def _should_retry_with_fallback(report: JsonDict, channels: Sequence[str]) -> bool:
+    if channels or bool(report.get("ok")):
+        return False
+    return str(report.get("error_type") or "") == "TimeoutError"
 
 
 def _combined_search_warnings(keyword_reports: List[JsonDict]) -> List[str]:
@@ -528,6 +570,10 @@ def _combined_search_warnings(keyword_reports: List[JsonDict]) -> List[str]:
         error_type = str(report.get("error_type") or "")
         if error_type:
             text = f"keyword_error:{report.get('keyword')}:{error_type}"
+            if text not in warnings:
+                warnings.append(text)
+        if bool(report.get("fallback")):
+            text = f"keyword_fallback:{report.get('keyword')}:{','.join(str(channel) for channel in report.get('channels', []))}"
             if text not in warnings:
                 warnings.append(text)
     return warnings

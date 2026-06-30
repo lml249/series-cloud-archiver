@@ -1185,6 +1185,87 @@ class TransferPlanTest(unittest.TestCase):
             self.assertEqual(item["search_errors"][0]["keyword"], "东宫")
             self.assertIn("keyword_error:东宫:TimeoutError", item["warnings"])
 
+    def test_cli_share_search_retries_timeout_with_fallback_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            plan_file = tmp_path / "plan.json"
+            output_file = tmp_path / "share-search.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=secret\n", encoding="utf-8")
+            plan_file.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-mv3-transfer-plan",
+                        "items": [
+                            {
+                                "title": "东宫",
+                                "tmdbid": 86857,
+                                "season": 1,
+                                "size_bytes": int(80 * 1024**3),
+                                "expected_count": 55,
+                                "search_keywords": ["东宫"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calls = []
+
+            def fake_search(_base_url, _token, keyword, channels=None, timeout=60):
+                calls.append((keyword, tuple(channels or [])))
+                if not channels:
+                    return {
+                        "ok": False,
+                        "status": 0,
+                        "error_type": "TimeoutError",
+                        "error": "timed out",
+                        "result_count": 0,
+                        "items": [],
+                        "warnings": ["mv3_resource_search_request_failed"],
+                    }
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "result_count": 1,
+                    "items": [
+                        {
+                            "index": 1,
+                            "title": "东宫 S01E01-E55 完结 80GB",
+                            "size": "80GB",
+                            "channel": "pansou",
+                            "share_code_available": True,
+                        }
+                    ],
+                    "warnings": [],
+                }
+
+            with patch("series_cloud_archiver.cli.search_mv3_resources", side_effect=fake_search):
+                status = main(
+                    [
+                        "plan-mv3-share-search",
+                        "--env-file",
+                        str(env_file),
+                        "--transfer-plan",
+                        str(plan_file),
+                        "--limit",
+                        "1",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output_file),
+                    ]
+                )
+
+            payload = json.loads(output_file.read_text(encoding="utf-8"))
+            item = payload["items"][0]
+            self.assertEqual(status, 0)
+            self.assertEqual(calls, [("东宫", ()), ("东宫", ("pansou",))])
+            self.assertEqual(item["keyword_reports"][1]["channels"], ["pansou"])
+            self.assertTrue(item["keyword_reports"][1]["fallback"])
+            self.assertEqual(item["recommended_candidate"]["channel"], "pansou")
+            self.assertIn("keyword_fallback:东宫:pansou", item["warnings"])
+
     def test_renders_share_search_plan_markdown(self) -> None:
         plan = {
             "mode": "readonly-mv3-share-search-plan",

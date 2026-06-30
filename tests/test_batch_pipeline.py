@@ -284,6 +284,55 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertEqual(item["search_errors"][0]["error"], "timed out")
         self.assertIn("keyword_error:干净剧:TimeoutError", item["warnings"])
 
+    def test_pipeline_share_search_retries_timeout_with_fallback_channel(self) -> None:
+        calls = []
+
+        def fake_search(_base_url, _token, keyword, channels=None, timeout=60):
+            calls.append((keyword, tuple(channels or [])))
+            if not channels:
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "error_type": "TimeoutError",
+                    "error": "timed out",
+                    "result_count": 0,
+                    "items": [],
+                    "warnings": ["mv3_resource_search_request_failed"],
+                }
+            return {
+                "ok": True,
+                "status": 200,
+                "result_count": 1,
+                "items": [
+                    {
+                        "index": 1,
+                        "title": f"{keyword} S01E01-E10 完结",
+                        "size": "1GB",
+                        "channel": "pansou",
+                        "share_code_available": True,
+                    }
+                ],
+                "warnings": [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_pipeline(
+                output_dir=tmp,
+                run_id="search-fallback",
+                config=ScanConfig(media_roots=[], mv3_base_url="http://mv3.local", mv3_token="token"),
+                cloud_report=self._cloud_report(),
+                execute_share_search=True,
+                share_search_limit=1,
+                actions=BatchPipelineActions(share_search=fake_search),
+            )
+            share_search = json.loads((Path(report["run_dir"]) / "04-share-search.json").read_text(encoding="utf-8"))
+
+        item = share_search["items"][0]
+        self.assertEqual(calls, [("干净剧", ()), ("干净剧", ("pansou",))])
+        self.assertTrue(item["keyword_reports"][1]["fallback"])
+        self.assertIn("keyword_fallback:干净剧:pansou", item["warnings"])
+        self.assertEqual(report["summary"]["batch_plan"]["auto_transfer_items"], 1)
+
     def test_pipeline_marks_empty_generated_scan_as_failed(self) -> None:
         def empty_scan(_config):
             return {
