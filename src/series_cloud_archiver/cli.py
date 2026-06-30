@@ -12,6 +12,7 @@ from .batch_preview import (
 )
 from .batch_pipeline import render_batch_pipeline_report, run_batch_pipeline
 from .batch_runner import (
+    apply_finalize_expected_updates,
     build_batch_review_report,
     build_batch_finalize_plan,
     build_batch_plan,
@@ -835,6 +836,24 @@ def build_parser() -> argparse.ArgumentParser:
     batch_finalize_parser.add_argument("--limit", type=int, default=0, help="Maximum planned finalize rows; 0 means all")
     batch_finalize_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     batch_finalize_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    batch_finalize_apply_parser = subcommands.add_parser(
+        "batch-finalize-apply-expected-updates",
+        help="Build a readonly finalize plan with reviewed expected episode updates applied",
+    )
+    batch_finalize_apply_parser.add_argument("--finalize-plan", required=True, help="JSON report from batch-finalize-plan")
+    batch_finalize_apply_parser.add_argument(
+        "--expected-update-plan",
+        required=True,
+        help="JSON report from finalize-remediation-expected-update-plan",
+    )
+    batch_finalize_apply_parser.add_argument(
+        "--include-unmatched",
+        action="store_true",
+        help="Keep finalize rows that do not have an expected update; default outputs only updated rows",
+    )
+    batch_finalize_apply_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    batch_finalize_apply_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     batch_finalize_run_parser = subcommands.add_parser("batch-finalize-run", help="Run ordered post-transfer STRM/MP/NFO/Emby/cleanup gates from a finalize plan")
     batch_finalize_run_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -2907,6 +2926,25 @@ def main(argv: Optional[List[str]] = None) -> int:
             forbidden_target_prefixes=args.forbidden_target_prefix,
             offset=args.offset,
             limit=args.limit,
+        )
+        rendered = render_batch_finalize_plan(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "batch-finalize-apply-expected-updates":
+        finalize_plan = load_optional_json_report(args.finalize_plan)
+        if not isinstance(finalize_plan, dict):
+            parser.error("batch-finalize-apply-expected-updates requires a valid --finalize-plan JSON report")
+        expected_update_plan = load_optional_json_report(args.expected_update_plan)
+        if not isinstance(expected_update_plan, dict):
+            parser.error("batch-finalize-apply-expected-updates requires a valid --expected-update-plan JSON report")
+        report = apply_finalize_expected_updates(
+            finalize_plan,
+            expected_update_plan,
+            limit_to_updates=not args.include_unmatched,
         )
         rendered = render_batch_finalize_plan(report, args.format)
         if args.output:

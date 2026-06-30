@@ -373,6 +373,65 @@ def render_batch_finalize_plan(report: Dict[str, object], output_format: str) ->
     return "\n".join(lines)
 
 
+def apply_finalize_expected_updates(
+    finalize_plan: Dict[str, object],
+    expected_update_plan: Dict[str, object],
+    *,
+    limit_to_updates: bool = True,
+) -> Dict[str, object]:
+    """Return a new finalize plan with reviewed expected episode updates applied.
+
+    The input plans are not modified. Only rows whose expected-update status is
+    ready_for_expected_update are changed; the caller must rerun finalize gates.
+    """
+
+    updates = _ready_expected_updates(expected_update_plan)
+    rows: List[Dict[str, object]] = []
+    applied = 0
+    skipped = 0
+    for item in finalize_plan.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        key = _finalize_identity_key(item)
+        update = updates.get(key)
+        if not update:
+            if not limit_to_updates:
+                rows.append(dict(item))
+            continue
+        if item.get("status") != "planned_finalize":
+            skipped += 1
+            if not limit_to_updates:
+                rows.append(dict(item))
+            continue
+        rows.append(_finalize_item_with_expected_update(item, update))
+        applied += 1
+
+    status_counts = Counter(str(row.get("status") or "") for row in rows)
+    settings = dict(finalize_plan.get("settings") if isinstance(finalize_plan.get("settings"), dict) else {})
+    settings.update(
+        {
+            "expected_update_source_mode": str(expected_update_plan.get("mode") or ""),
+            "limit_to_updates": limit_to_updates,
+            "applied_expected_update_items": applied,
+            "skipped_expected_update_items": skipped,
+        }
+    )
+    return {
+        "mode": "readonly-batch-finalize-plan",
+        "source_mode": str(finalize_plan.get("mode") or ""),
+        "planned_items": len(rows),
+        "finalize_ready_items": sum(1 for row in rows if row.get("status") == "planned_finalize"),
+        "skipped_items": sum(1 for row in rows if str(row.get("status") or "").startswith("skipped")),
+        "status_counts": dict(sorted(status_counts.items())),
+        "settings": settings,
+        "items": rows,
+        "safety": (
+            "readonly finalize plan with expected episode updates applied. No command is executed, no service is called, "
+            "and destructive cleanup commands still require explicit approval after rerun gates pass."
+        ),
+    }
+
+
 def run_batch_finalize(
     finalize_plan: Dict[str, object],
     *,
@@ -513,6 +572,63 @@ def render_batch_finalize_run(report: Dict[str, object], output_format: str) -> 
             )
         )
     return "\n".join(lines)
+
+
+def _ready_expected_updates(expected_update_plan: Dict[str, object]) -> Dict[Tuple[int, int], Dict[str, object]]:
+    updates: Dict[Tuple[int, int], Dict[str, object]] = {}
+    for item in expected_update_plan.get("items", []):
+        if not isinstance(item, dict) or item.get("status") != "ready_for_expected_update":
+            continue
+        tmdbid = int(item.get("tmdbid") or 0)
+        season = int(item.get("season") or 0)
+        episodes = _int_list(item.get("new_expected_episodes"))
+        if tmdbid <= 0 or season <= 0 or not episodes:
+            continue
+        updates[(tmdbid, season)] = item
+    return updates
+
+
+def _finalize_identity_key(item: Dict[str, object]) -> Tuple[int, int]:
+    return (int(item.get("tmdbid") or 0), int(item.get("season") or 0))
+
+
+def _finalize_item_with_expected_update(item: Dict[str, object], update: Dict[str, object]) -> Dict[str, object]:
+    row = dict(item)
+    episodes = _int_list(update.get("new_expected_episodes"))
+    expected_count = int(update.get("new_expected_episode_count") or len(episodes))
+    if expected_count <= 0 or not episodes:
+        return row
+    old_count = int(row.get("expected_episode_count") or 0)
+    row["expected_episode_count"] = expected_count
+    row["expected_episodes"] = episodes
+    row["expected_episode_update"] = {
+        "old_expected_episode_count": old_count,
+        "new_expected_episode_count": expected_count,
+        "source_status": str(update.get("status") or ""),
+        "method": "finalize_remediation_expected_update",
+    }
+    if row.get("status") == "planned_finalize":
+        context = row.get("command_context") if isinstance(row.get("command_context"), dict) else {}
+        row["commands"] = _finalize_commands(
+            title=str(row.get("title") or ""),
+            tmdbid=int(row.get("tmdbid") or 0),
+            season=int(row.get("season") or 0),
+            expected_count=expected_count,
+            expected_episodes=episodes,
+            hlink_root=str(row.get("hlink_root") or ""),
+            strm_root=str(row.get("strm_root") or ""),
+            mp_root=str(row.get("mp_strm_root") or row.get("service_strm_root") or row.get("strm_root") or ""),
+            service_root=str(row.get("service_strm_root") or row.get("strm_root") or ""),
+            cloud_title_path=str(row.get("cloud_title_path") or ""),
+            cloud_required_prefix=str(row.get("required_target_prefix") or row.get("strm_target_prefix") or ""),
+            forbidden_target_prefixes=_string_list(row.get("forbidden_target_prefixes")),
+            env_file=str(context.get("env_file") or ""),
+            report_prefix=str(
+                context.get("report_prefix")
+                or _report_prefix(str(row.get("title") or ""), int(row.get("tmdbid") or 0), int(row.get("season") or 0))
+            ),
+        )
+    return row
 
 
 def _finalize_exception_row(item: Dict[str, object], output_dir: Path, exc: Exception) -> Dict[str, object]:

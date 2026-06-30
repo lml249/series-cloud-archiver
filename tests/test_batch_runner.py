@@ -10,6 +10,7 @@ from series_cloud_archiver.batch_runner import (
     AUTO_TRANSFER,
     BatchFinalizeActions,
     MANUAL_REVIEW,
+    apply_finalize_expected_updates,
     build_batch_finalize_plan,
     build_batch_plan,
     build_batch_review_report,
@@ -1041,6 +1042,90 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(data["finalize_ready_items"], 1)
         self.assertIn("cloud_hlink_cleanup_preview", [item["stage"] for item in data["items"][0]["commands"]])
+
+    def test_apply_expected_updates_builds_updated_finalize_plan(self) -> None:
+        finalize_plan = self._finalize_plan()
+        expected_update_plan = {
+            "mode": "readonly-finalize-remediation-expected-update-plan",
+            "items": [
+                {
+                    "status": "ready_for_expected_update",
+                    "title": "折腰",
+                    "tmdbid": 296753,
+                    "season": 1,
+                    "old_expected_episode_count": 36,
+                    "new_expected_episode_count": 40,
+                    "new_expected_episodes": list(range(1, 41)),
+                },
+                {
+                    "status": "manual_review_required",
+                    "title": "跳过",
+                    "tmdbid": 1,
+                    "season": 1,
+                    "new_expected_episode_count": 10,
+                    "new_expected_episodes": list(range(1, 11)),
+                },
+            ],
+        }
+
+        report = apply_finalize_expected_updates(finalize_plan, expected_update_plan)
+        item = report["items"][0]
+        command_text = "\n".join(str(command.get("command") or "") for command in item["commands"])
+
+        self.assertEqual(report["planned_items"], 1)
+        self.assertEqual(report["finalize_ready_items"], 1)
+        self.assertEqual(report["settings"]["applied_expected_update_items"], 1)
+        self.assertEqual(item["expected_episode_count"], 40)
+        self.assertEqual(item["expected_episodes"], list(range(1, 41)))
+        self.assertEqual(item["expected_episode_update"]["old_expected_episode_count"], 36)
+        self.assertIn("--expected-episode-count 40", command_text)
+        self.assertIn("--expected-nfo-count 40", command_text)
+
+    def test_cli_writes_finalize_plan_with_expected_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            finalize = tmp_path / "finalize.json"
+            expected = tmp_path / "expected.json"
+            output = tmp_path / "updated-finalize.json"
+            finalize.write_text(json.dumps(self._finalize_plan(), ensure_ascii=False), encoding="utf-8")
+            expected.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-finalize-remediation-expected-update-plan",
+                        "items": [
+                            {
+                                "status": "ready_for_expected_update",
+                                "title": "折腰",
+                                "tmdbid": 296753,
+                                "season": 1,
+                                "new_expected_episode_count": 40,
+                                "new_expected_episodes": list(range(1, 41)),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code = main(
+                [
+                    "batch-finalize-apply-expected-updates",
+                    "--finalize-plan",
+                    str(finalize),
+                    "--expected-update-plan",
+                    str(expected),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["planned_items"], 1)
+        self.assertEqual(payload["items"][0]["expected_episode_count"], 40)
 
     def test_batch_finalize_plan_and_run_can_offset_ready_rows(self) -> None:
         batch_plan = {
