@@ -1649,9 +1649,13 @@ def _batch_item(
     source_paths = _string_list(transfer_item.get("source_paths")) or _string_list(cloud_item.get("source_paths"))
     source_qb_hashes = _string_list(transfer_item.get("source_qb_hashes")) or _string_list(cloud_item.get("source_qb_hashes"))
     status = str(cloud_item.get("status") or transfer_item.get("source_status") or "")
-    recommended = share_item.get("recommended_candidate") if isinstance(share_item.get("recommended_candidate"), dict) else {}
+    raw_recommended = share_item.get("recommended_candidate") if isinstance(share_item.get("recommended_candidate"), dict) else {}
+    recommended = dict(raw_recommended) if raw_recommended else {}
     share_candidates = share_item.get("candidates") if isinstance(share_item.get("candidates"), list) else []
-    candidate_diagnostics = _candidate_diagnostics(share_item, recommended, share_candidates, season, title)
+    expected_episodes = _int_list(cloud_item.get("expected_episodes")) or _int_list(transfer_item.get("expected_episodes"))
+    if recommended:
+        recommended["blockers"] = _candidate_diagnostic_blockers(recommended, season, title, expected_episodes)
+    candidate_diagnostics = _candidate_diagnostics(share_item, recommended, share_candidates, season, title, expected_episodes)
     strm_root = _strm_root_from_cloud_item(cloud_item, host_strm_root)
     if tmdbid <= 0 and strm_root:
         tmdbid = _tmdbid_from_text(strm_root)
@@ -1686,7 +1690,7 @@ def _batch_item(
             )
     elif status == "cloud_strm_not_found":
         candidate_score = int(recommended.get("score") or 0)
-        candidate_blockers = _string_list(recommended.get("blockers"))
+        candidate_blockers = _candidate_diagnostic_blockers(recommended, season, title, expected_episodes)
         size_delta = recommended.get("size_delta_ratio")
         if not transfer_item:
             review_reasons.append("missing_transfer_plan_row")
@@ -1745,7 +1749,7 @@ def _batch_item(
         "size_bytes": size_bytes,
         "size": human_size(size_bytes),
         "expected_episode_count": expected_count,
-        "expected_episodes": _int_list(cloud_item.get("expected_episodes")),
+        "expected_episodes": expected_episodes,
         "source_paths": source_paths,
         "source_qb_hashes": source_qb_hashes,
         "source_titles": _string_list(transfer_item.get("titles")) or _string_list(cloud_item.get("titles")),
@@ -2220,13 +2224,14 @@ def _candidate_diagnostics(
     candidates: List[object],
     expected_season: int,
     expected_title: str,
+    expected_episodes: Sequence[int],
 ) -> Dict[str, object]:
     candidate_rows = [candidate for candidate in candidates if isinstance(candidate, dict)]
     best = _best_candidate_for_diagnostics(recommended, candidate_rows)
     blocker_counts: Counter = Counter()
     reason_counts: Counter = Counter()
     for candidate in candidate_rows:
-        blocker_counts.update(_candidate_diagnostic_blockers(candidate, expected_season, expected_title))
+        blocker_counts.update(_candidate_diagnostic_blockers(candidate, expected_season, expected_title, expected_episodes))
         reason_counts.update(_string_list(candidate.get("reasons")))
 
     return {
@@ -2234,11 +2239,14 @@ def _candidate_diagnostics(
         "search_result_count": int(share_item.get("search_result_count") or 0) if share_item else 0,
         "search_warnings": _string_list(share_item.get("warnings")) if share_item else [],
         "recommended_candidate_present": bool(recommended),
-        "best_candidate": _candidate_diagnostic_summary(best, expected_season, expected_title) if best else {},
+        "best_candidate": _candidate_diagnostic_summary(best, expected_season, expected_title, expected_episodes) if best else {},
         "candidate_score_max": int(best.get("score") or 0) if best else 0,
         "candidate_blocker_counts": dict(sorted(blocker_counts.items())),
         "candidate_reason_counts": dict(sorted(reason_counts.items())),
-        "top_candidates": [_candidate_diagnostic_summary(candidate, expected_season, expected_title) for candidate in candidate_rows[:3]],
+        "top_candidates": [
+            _candidate_diagnostic_summary(candidate, expected_season, expected_title, expected_episodes)
+            for candidate in candidate_rows[:3]
+        ],
     }
 
 
@@ -2262,8 +2270,13 @@ def _candidate_diagnostic_rank(candidate: Dict[str, object]) -> Tuple[int, int, 
     )
 
 
-def _candidate_diagnostic_summary(candidate: Dict[str, object], expected_season: int, expected_title: str) -> Dict[str, object]:
-    blockers = _candidate_diagnostic_blockers(candidate, expected_season, expected_title)
+def _candidate_diagnostic_summary(
+    candidate: Dict[str, object],
+    expected_season: int,
+    expected_title: str,
+    expected_episodes: Sequence[int],
+) -> Dict[str, object]:
+    blockers = _candidate_diagnostic_blockers(candidate, expected_season, expected_title, expected_episodes)
     return {
         "search_index": int(candidate.get("search_index") or 0),
         "search_keyword": str(candidate.get("search_keyword") or ""),
@@ -2277,13 +2290,34 @@ def _candidate_diagnostic_summary(candidate: Dict[str, object], expected_season:
     }
 
 
-def _candidate_diagnostic_blockers(candidate: Dict[str, object], expected_season: int, expected_title: str) -> List[str]:
+def _candidate_diagnostic_blockers(
+    candidate: Dict[str, object],
+    expected_season: int,
+    expected_title: str,
+    expected_episodes: Sequence[int] = (),
+) -> List[str]:
     blockers = _string_list(candidate.get("blockers"))
     if _candidate_has_explicit_wrong_season(candidate, expected_season) and "season_mismatch" not in blockers:
         blockers.append("season_mismatch")
     for blocker in _candidate_identity_blockers(expected_title, candidate):
         if blocker not in blockers:
             blockers.append(blocker)
+    for blocker in _candidate_episode_blockers(candidate, expected_episodes):
+        if blocker not in blockers:
+            blockers.append(blocker)
+    return blockers
+
+
+def _candidate_episode_blockers(candidate: Dict[str, object], expected_episodes: Sequence[int]) -> List[str]:
+    expected = sorted({int(item) for item in expected_episodes if int(item) > 0})
+    episodes = _int_list(candidate.get("episode_numbers"))
+    if not expected or not episodes:
+        return []
+    blockers: List[str] = []
+    if [episode for episode in expected if episode not in episodes]:
+        blockers.append("missing_expected_episodes")
+    if [episode for episode in episodes if episode not in expected]:
+        blockers.append("unexpected_episodes")
     return blockers
 
 
