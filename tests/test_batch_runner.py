@@ -1228,6 +1228,68 @@ class BatchRunnerTest(unittest.TestCase):
         command_text = "\n".join(command["command"] for command in item["next_actions"])
         self.assertIn('--required-target-prefix "/organized-root/Westworld (2016)/Season 2"', command_text)
 
+    def test_batch_plan_sends_unrecognized_strm_complete_item_to_manual_review(self) -> None:
+        cloud_report = {
+            "mode": "readonly-cloud-check",
+            "items": [
+                {
+                    "status": "cloud_strm_complete",
+                    "title": "南部档案",
+                    "tmdbid": 278605,
+                    "season": 1,
+                    "expected_count": 33,
+                    "expected_episodes": list(range(1, 34)),
+                    "strm_paths_sample": ["/strm/未识别/南部档案 (2026) {tmdbid=278605}/Season 1/南部档案 S01E01.strm"],
+                    "strm_target_prefix": "/已整理/未识别/南部档案 (2026) {tmdbid=278605}/Season 1",
+                    "source_paths": ["/example/local-tv/南部档案/Season 01"],
+                    "source_qb_hashes": ["971e3adf18a67441ef25b6c929f774b7d54657e6"],
+                }
+            ],
+        }
+
+        report = build_batch_plan(
+            cloud_report=cloud_report,
+            host_strm_root="/example/host/strm",
+            cloud_root="/已整理/series",
+        )
+        item = report["items"][0]
+
+        self.assertEqual(item["bucket"], MANUAL_REVIEW)
+        self.assertIn("strm_written_to_unrecognized_root", item["review_reasons"])
+        self.assertIn("strm_written_to_unrecognized_root", item["blockers"])
+        self.assertEqual(item["next_actions"], [])
+
+    def test_batch_finalize_plan_skips_unrecognized_strm_rows_from_old_batch_plan(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "settings": {
+                "cloud_root": "/已整理/series",
+                "host_strm_root": "/example/host/strm",
+                "emby_strm_root": "/example/service/strm",
+            },
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "title": "南部档案",
+                    "tmdbid": 278605,
+                    "season": 1,
+                    "expected_episode_count": 33,
+                    "source_paths": ["/example/local-tv/南部档案/Season 01"],
+                    "cloud_media_path": "/已整理/未识别/南部档案 (2026) {tmdbid=278605}/Season 1",
+                    "strm_root": "/example/host/strm/未识别/南部档案 (2026) {tmdbid=278605}/Season 1",
+                    "strm_target_prefix": "/已整理/未识别/南部档案 (2026) {tmdbid=278605}/Season 1",
+                }
+            ],
+        }
+
+        report = build_batch_finalize_plan(batch_plan)
+        item = report["items"][0]
+
+        self.assertEqual(report["finalize_ready_items"], 0)
+        self.assertEqual(item["status"], "skipped_finalize")
+        self.assertIn("strm_written_to_unrecognized_root", item["blockers"])
+        self.assertEqual(item["commands"], [])
+
     def test_batch_finalize_plan_skips_manual_review_items(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",

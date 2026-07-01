@@ -1726,6 +1726,7 @@ def _batch_item(
         tmdbid = _tmdbid_from_text(strm_root)
     strm_target_prefix = str(cloud_item.get("strm_target_prefix") or "").rstrip("/")
     cloud_media_path = strm_target_prefix or _cloud_media_path(cloud_root, title, tmdbid, season)
+    unrecognized_blockers = _unrecognized_strm_blockers(strm_root, cloud_media_path, strm_target_prefix)
 
     blockers: List[str] = []
     review_reasons: List[str] = []
@@ -1735,6 +1736,9 @@ def _batch_item(
     if status == "cloud_strm_complete":
         if not strm_root:
             review_reasons.append("cloud_complete_but_strm_root_unknown")
+        elif unrecognized_blockers:
+            review_reasons.extend(unrecognized_blockers)
+            blockers.extend(unrecognized_blockers)
         elif cleanup_preview and not _cleanup_preview_ready(cleanup_preview):
             review_reasons.append("cleanup_preview_not_ready")
             blockers.extend(_string_list(cleanup_preview.get("blockers")))
@@ -2000,6 +2004,7 @@ def _finalize_plan_row(
     cloud_required_prefix = required_target_prefix or actual_required_prefix or derived_cloud_season_path or cloud_season_path or cloud_title_path
     mp_root = _map_strm_root(strm_root, host_strm_root, mp_strm_root) if mp_strm_root else _map_strm_root(strm_root, host_strm_root, service_strm_root)
     service_root = _map_strm_root(strm_root, host_strm_root, service_strm_root)
+    unrecognized_blockers = _unrecognized_strm_blockers(strm_root, cloud_season_path, actual_required_prefix)
 
     blockers: List[str] = []
     skip_reasons: List[str] = []
@@ -2026,6 +2031,7 @@ def _finalize_plan_row(
         skip_reasons.append(f"not_ready_for_finalize:{bucket or 'unknown'}")
     if bucket not in {AUTO_CLEANUP, MANUAL_REVIEW, AUTO_TRANSFER}:
         skip_reasons.append("unsupported_batch_bucket")
+    blockers.extend(unrecognized_blockers)
 
     status = "planned_finalize" if not blockers and not skip_reasons else "skipped_finalize"
     command_context = {
@@ -2570,6 +2576,21 @@ def _strm_target_path_from_content(content: str) -> str:
     if parsed.scheme and parsed.netloc:
         return _normalize_cloud_target(urllib.parse.unquote(parsed.path))
     return _normalize_cloud_target(content)
+
+
+def _unrecognized_strm_blockers(*paths: str) -> List[str]:
+    for value in paths:
+        if _path_contains_segment(str(value or ""), "未识别"):
+            return ["strm_written_to_unrecognized_root"]
+    return []
+
+
+def _path_contains_segment(path: str, segment: str) -> bool:
+    if not path or not segment:
+        return False
+    normalized = str(path).replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part]
+    return segment in parts
 
 
 def _normalize_cloud_target(value: str) -> str:
