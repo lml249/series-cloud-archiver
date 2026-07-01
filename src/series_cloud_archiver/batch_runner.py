@@ -1206,7 +1206,7 @@ def _run_finalize_item(
                 _config_value(config, "emby_key"),
                 title=title,
                 updated_paths=_emby_media_updated_paths(service_root),
-                stale_path_prefixes=_emby_stale_path_prefixes(hlink_root, include_season=False),
+                stale_path_prefixes=emby_stale_prefixes,
                 strm_path_prefixes=[_series_service_root(service_root)],
                 update_type="Created",
                 expected_strm_records=0,
@@ -1614,8 +1614,7 @@ def _emby_stale_path_prefixes(hlink_root: str, *, include_season: bool = True) -
     if not service_root:
         return []
     if _cloud_path_looks_like_season(service_root):
-        series_root = service_root.rsplit("/", 1)[0]
-        return [service_root, series_root] if include_season else [series_root]
+        return [service_root]
     return [f"{service_root}/Season 1", service_root] if include_season else [service_root]
 
 

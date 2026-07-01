@@ -1455,16 +1455,16 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(item["cloud_duplicate_video_count_after_cleanup"], 0)
         call_names = [call[0] for call in actions.calls]
         self.assertGreaterEqual(call_names.count("mv3-cloud-duplicate-video-cleanup-result"), 3)
-        self.assertEqual(call_names.count("emby-delete-stale-paths"), 2)
+        self.assertEqual(call_names.count("emby-delete-stale-paths"), 1)
         self.assertNotIn("cloud-hlink-cleanup-execute", call_names)
         cleanup_preview_index = call_names.index("cloud-hlink-cleanup-preview")
         first_stale_delete_index = call_names.index("emby-delete-stale-paths")
         self.assertLess(cleanup_preview_index, first_stale_delete_index)
         stale_calls = [call for call in actions.calls if call[0] == "emby-delete-stale-paths"]
         self.assertEqual(stale_calls[0][1]["kwargs"]["delete_scope"], "season")
-        self.assertEqual(stale_calls[1][1]["kwargs"]["delete_scope"], "root")
         self.assertEqual(stale_calls[0][1]["kwargs"]["stale_path_prefixes"], ["/example/local-tv/折腰 (2025)/Season 1"])
-        self.assertEqual(stale_calls[1][1]["kwargs"]["stale_path_prefixes"], ["/example/local-tv/折腰 (2025)"])
+        emby_verify_after_delete = [call for call in actions.calls if call[0] == "emby-media-updated"][-1]
+        self.assertEqual(emby_verify_after_delete[1]["kwargs"]["stale_path_prefixes"], ["/example/local-tv/折腰 (2025)/Season 1"])
 
     def test_batch_finalize_run_executes_cached_cleanup_preview_after_emby_stale_delete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
