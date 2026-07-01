@@ -5462,7 +5462,7 @@ def _cloud_browse_item_summary(item: Dict[str, object], index: int) -> Dict[str,
         "kind": _cloud_item_kind(item),
         "media_kind": _cloud_item_media_kind(item),
         "episode": _episode_number_from_text(name),
-        "size": _format_size_value(_first_raw_present(item, ["size", "size_text", "file_size", "file_size_text", "s"])),
+        "size": _format_size_value(_first_raw_present(item, ["size", "size_text", "file_size", "file_size_text", "s", "fs"])),
         "file_id": _first_present(item, ["fid", "file_id", "id", "cid", "folder_id"]),
         "raw": _sanitize_json(_sample_json(item, max_keys=30)),
     }
@@ -5473,6 +5473,11 @@ def _cloud_item_kind(item: Dict[str, object]) -> str:
     if raw_type in ("folder", "dir", "directory"):
         return "folder"
     if raw_type in ("file", "video", "subtitle"):
+        return "file"
+    category = str(_first_raw_present(item, ["fc", "file_category"])).strip().lower()
+    if category in ("0", "folder", "dir", "directory"):
+        return "folder"
+    if category in ("1", "file"):
         return "file"
     for key in ("is_dir", "is_folder", "folder", "isdir", "is_directory"):
         value = item.get(key)

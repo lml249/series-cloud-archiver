@@ -2096,6 +2096,24 @@ class MV3ProbeTest(unittest.TestCase):
                             "items": [
                                 {"fn": "繁城之下 (2023) {tmdbid=233959}", "fid": "folder-1", "pid": "0", "fc": "0", "pc": "private-pickcode"},
                                 {"fn": "繁城之下.S01E01.mkv", "fid": "file-1", "pid": "folder-1", "fc": "1", "fs": 1024, "ico": "mkv", "uid": "private-user"},
+                                {
+                                    "file_name": "繁城之下 (2023) {tmdbid=233959}",
+                                    "file_id": "folder-2",
+                                    "parent_id": "0",
+                                    "file_category": "0",
+                                    "path": "/已整理/series/繁城之下 (2023) {tmdbid=233959}",
+                                    "pick_code": "private-pickcode-2",
+                                    "size": 0,
+                                },
+                                {
+                                    "file_name": "繁城之下.S01E02.mkv",
+                                    "file_id": "file-2",
+                                    "parent_id": "folder-2",
+                                    "file_category": "1",
+                                    "path": "/已整理/series/繁城之下 (2023) {tmdbid=233959}/Season 01/繁城之下.S01E02.mkv",
+                                    "pick_code": "private-pickcode-3",
+                                    "size": "2048",
+                                },
                             ]
                         },
                     }
@@ -2107,14 +2125,21 @@ class MV3ProbeTest(unittest.TestCase):
 
         rendered = render_mv3_cloud_search_report(report, "json")
         self.assertTrue(report["ok"])
-        self.assertEqual(report["result_count"], 2)
-        self.assertEqual(report["folder_count"], 1)
-        self.assertEqual(report["file_count"], 1)
+        self.assertEqual(report["result_count"], 4)
+        self.assertEqual(report["folder_count"], 2)
+        self.assertEqual(report["file_count"], 2)
         self.assertEqual(report["items"][0]["kind"], "folder")
         self.assertEqual(report["items"][1]["kind"], "file")
+        self.assertEqual(report["items"][1]["media_kind"], "video")
+        self.assertEqual(report["items"][2]["kind"], "folder")
+        self.assertEqual(report["items"][3]["kind"], "file")
+        self.assertEqual(report["items"][3]["media_kind"], "video")
+        self.assertEqual(report["items"][3]["size"], "2.00 KiB")
         self.assertEqual(seen[0][1]["search_value"], "繁城之下")
         self.assertEqual(seen[0][1]["storage"], "115-default")
         self.assertNotIn("private-pickcode", rendered)
+        self.assertNotIn("private-pickcode-2", rendered)
+        self.assertNotIn("private-pickcode-3", rendered)
         self.assertNotIn("private-user", rendered)
 
     def test_cli_writes_cloud_search_report(self) -> None:
@@ -2206,6 +2231,13 @@ class MV3ProbeTest(unittest.TestCase):
                             "items": [
                                 {"fn": "繁城之下 (2023) {tmdbid=233959}", "fid": "folder-1", "fc": "0", "pc": "secret-pickcode"},
                                 {"fn": "繁城之下.S01E01.mkv", "fid": "file-1", "fc": "1", "fs": 1024},
+                                {
+                                    "file_name": "繁城之下.S01E02.mkv",
+                                    "file_id": "file-2",
+                                    "file_category": "1",
+                                    "path": "/已整理/series/繁城之下 (2023) {tmdbid=233959}/Season 01/繁城之下.S01E02.mkv",
+                                    "size": "2048",
+                                },
                             ]
                         },
                     }
@@ -2225,9 +2257,11 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual([row["search_value"] for row in seen], ["繁城之下", "Ripe Town"])
         self.assertEqual(report["mode"], "readonly-mv3-cloud-search-plan")
         self.assertEqual(report["items_with_results"], 1)
-        self.assertEqual(report["total_result_count"], 2)
+        self.assertEqual(report["total_result_count"], 3)
         self.assertEqual(report["folder_result_count"], 1)
+        self.assertEqual(report["file_result_count"], 2)
         self.assertEqual(report["items"][0]["results"][0]["search_keyword"], "繁城之下")
+        self.assertEqual(report["items"][0]["results"][2]["media_kind"], "video")
         self.assertIn("STRM library side", report["safety"])
         self.assertNotIn("secret-pickcode", rendered)
 
