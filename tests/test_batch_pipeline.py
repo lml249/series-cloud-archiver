@@ -458,11 +458,14 @@ class BatchPipelineTest(unittest.TestCase):
                 actions=BatchPipelineActions(share_preview=fake_preview),
             )
             preview = json.loads((Path(report["run_dir"]) / "06-share-preview.json").read_text(encoding="utf-8"))
+            review = json.loads((Path(report["run_dir"]) / "14-review.json").read_text(encoding="utf-8"))
 
         self.assertEqual(calls, [])
         self.assertEqual(preview["executed_preview_items"], 0)
         self.assertEqual(preview["items"][0]["status"], "skipped_preview")
         self.assertIn("review_decision_blocked:manual_review_transfer_failed", preview["items"][0]["skip_reasons"])
+        self.assertEqual(review["decision_counts"], {"manual_review_transfer_failed": 1})
+        self.assertEqual(review["items"][0]["decision"], "manual_review_transfer_failed")
 
     def test_pipeline_executes_share_search_when_requested(self) -> None:
         calls = []

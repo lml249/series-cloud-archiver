@@ -364,6 +364,7 @@ def run_batch_pipeline(
         share_preview_reports=[share_preview_report],
         transfer_run_reports=[transfer_run_report] if transfer_run_report else [],
         finalize_run_reports=[finalize_run_report] if finalize_run_report else [],
+        prior_review_reports=provided_review_reports,
     )
     phases.append(_write_phase(pipeline_dir, "14-review", review_report))
 

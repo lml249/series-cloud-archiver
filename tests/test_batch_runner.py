@@ -3808,6 +3808,85 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("source_root_check_failed", rendered)
         self.assertIn("manual_review_required", rendered)
 
+    def test_cli_batch_review_report_preserves_prior_review_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            batch = tmp_path / "batch.json"
+            preview = tmp_path / "preview.json"
+            prior = tmp_path / "prior-review.json"
+            output = tmp_path / "review.json"
+            batch.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-batch-state-plan",
+                        "items": [
+                            {
+                                "bucket": AUTO_TRANSFER,
+                                "title": "旧失败剧",
+                                "tmdbid": 111,
+                                "season": 1,
+                                "candidate_diagnostics": {
+                                    "best_candidate": {
+                                        "title": "旧失败剧 全12集",
+                                        "score": 75,
+                                        "search_index": 3,
+                                        "search_keyword": "旧失败剧",
+                                    }
+                                },
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            preview.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-batch-mv3-share-preview",
+                        "items": [{"status": "planned_preview", "title": "旧失败剧", "tmdbid": 111, "season": 1}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            prior.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-batch-human-review-report",
+                        "items": [
+                            {
+                                "decision": "manual_review_preview_blocked",
+                                "title": "旧失败剧",
+                                "tmdbid": 111,
+                                "season": 1,
+                                "reason_summary": "share_selection_missing",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code = main(
+                [
+                    "batch-review-report",
+                    "--batch-plan",
+                    str(batch),
+                    "--share-preview-report",
+                    str(preview),
+                    "--prior-review-report",
+                    str(prior),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+            report = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(report["decision_counts"], {"manual_review_preview_blocked": 1})
+        self.assertEqual(report["items"][0]["prior_review_decision"], "manual_review_preview_blocked")
+
     def test_cli_writes_batch_plan_filter_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -4248,6 +4327,95 @@ class BatchSharePreviewTest(unittest.TestCase):
 
         self.assertEqual(review["decision_counts"], {"manual_review_transfer_failed": 1})
         self.assertEqual(review["items"][0]["decision"], "manual_review_transfer_failed")
+
+    def test_review_preserves_prior_decision_when_limited_preview_does_not_touch_row(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_TRANSFER,
+                    "title": "旧失败剧",
+                    "tmdbid": 111,
+                    "season": 1,
+                    "expected_episode_count": 12,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 3,
+                            "search_keyword": "旧失败剧",
+                            "title": "旧失败剧 全12集",
+                            "score": 75,
+                            "blockers": [],
+                        }
+                    },
+                },
+                {
+                    "bucket": AUTO_TRANSFER,
+                    "title": "本次预览剧",
+                    "tmdbid": 222,
+                    "season": 1,
+                    "expected_episode_count": 25,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 7,
+                            "search_keyword": "本次预览剧",
+                            "title": "本次预览剧 全25集",
+                            "score": 95,
+                            "blockers": [],
+                        }
+                    },
+                },
+            ],
+        }
+        prior_review = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "manual_review_preview_blocked",
+                    "title": "旧失败剧",
+                    "tmdbid": 111,
+                    "season": 1,
+                    "reason_summary": "share_selection_missing",
+                    "next_action": "人工核对分享内容、缺失集和候选标题",
+                    "preview_status": "preview_blocked",
+                    "preview_blockers": "share_selection_missing",
+                }
+            ],
+        }
+        limited_preview = {
+            "mode": "readonly-batch-mv3-share-preview",
+            "items": [
+                {
+                    "status": "planned_preview",
+                    "title": "旧失败剧",
+                    "tmdbid": 111,
+                    "season": 1,
+                    "candidate_score": 75,
+                },
+                {
+                    "status": "preview_blocked",
+                    "title": "本次预览剧",
+                    "tmdbid": 222,
+                    "season": 1,
+                    "preview_blockers": ["share_selection_missing"],
+                    "preview_missing_expected": list(range(1, 26)),
+                },
+            ],
+        }
+
+        review = build_batch_review_report(
+            batch_plan,
+            share_preview_reports=[limited_preview],
+            prior_review_reports=[prior_review],
+        )
+
+        self.assertEqual(review["decision_counts"], {"manual_review_preview_blocked": 2})
+        old_row = next(item for item in review["items"] if item["tmdbid"] == 111)
+        new_row = next(item for item in review["items"] if item["tmdbid"] == 222)
+        self.assertEqual(old_row["decision"], "manual_review_preview_blocked")
+        self.assertEqual(old_row["prior_review_decision"], "manual_review_preview_blocked")
+        self.assertIn("share_selection_missing", old_row["reason_summary"])
+        self.assertEqual(new_row["decision"], "manual_review_preview_blocked")
+        self.assertNotIn("prior_review_decision", new_row)
 
     def test_execute_preview_calls_readonly_preview_func_and_writes_reports(self) -> None:
         batch_plan = {

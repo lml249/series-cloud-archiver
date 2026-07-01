@@ -232,6 +232,7 @@ def build_batch_review_report(
     transfer_run_reports: Optional[Sequence[Dict[str, object]]] = None,
     finalize_run_reports: Optional[Sequence[Dict[str, object]]] = None,
     post_cleanup_reports: Optional[Sequence[Dict[str, object]]] = None,
+    prior_review_reports: Optional[Sequence[Dict[str, object]]] = None,
 ) -> Dict[str, object]:
     """Build a readonly human-review report from batch state and run reports."""
 
@@ -240,22 +241,23 @@ def build_batch_review_report(
     finalize_by_key = _review_finalize_by_identity(finalize_run_reports or [])
     finalize_gate_reports = _post_cleanup_reports_from_finalize_runs(finalize_run_reports or [])
     post_cleanup_by_key = _review_post_cleanup_by_identity([*finalize_gate_reports, *(post_cleanup_reports or [])])
+    prior_review_by_key = _review_report_by_identity_reports(prior_review_reports or [])
     rows: List[Dict[str, object]] = []
 
     for index, item in enumerate(batch_plan.get("items", []), start=1):
         if not isinstance(item, dict):
             continue
         key = _review_identity_key(item)
-        rows.append(
-            _batch_review_row(
-                index,
-                item,
-                preview_by_key.get(key, {}),
-                transfer_by_key.get(key, {}),
-                finalize_by_key.get(key, {}),
-                post_cleanup_by_key.get(key, {}),
-            )
+        row = _batch_review_row(
+            index,
+            item,
+            preview_by_key.get(key, {}),
+            transfer_by_key.get(key, {}),
+            finalize_by_key.get(key, {}),
+            post_cleanup_by_key.get(key, {}),
         )
+        row = _review_row_with_prior_decision(row, prior_review_by_key.get(key, {}))
+        rows.append(row)
 
     decision_counts = Counter(str(row.get("decision") or "") for row in rows)
     bucket_counts = Counter(str(row.get("bucket") or "") for row in rows)
@@ -270,6 +272,7 @@ def build_batch_review_report(
             "transfer_run": len(transfer_run_reports or []),
             "finalize_run": len(finalize_run_reports or []),
             "post_cleanup": len(post_cleanup_reports or []),
+            "prior_review": len(prior_review_reports or []),
         },
         "items": rows,
         "safety": (
@@ -2674,11 +2677,17 @@ def _review_preview_by_identity(reports: Sequence[Dict[str, object]]) -> Dict[Tu
 def _review_preview_rank(item: Dict[str, object]) -> Tuple[int, int, int, int]:
     status = str(item.get("status") or "")
     return (
-        3 if status == "preview_ready_for_receive" else 2 if status == "preview_blocked" else 1 if status == "planned_preview" else 0,
+        3 if status == "preview_ready_for_receive" else 2 if status == "preview_blocked" else 1 if _preview_preserves_prior_decision(item) else 0,
         int(item.get("preview_episode_count") or 0),
         int(item.get("candidate_score") or 0),
         -int(item.get("source_index") or 0),
     )
+
+
+def _preview_preserves_prior_decision(item: Dict[str, object]) -> bool:
+    if str(item.get("status") or "") != "skipped_preview":
+        return False
+    return str(item.get("review_decision") or "") in PRESERVED_PREVIEW_REVIEW_DECISIONS
 
 
 def _review_transfer_by_identity(reports: Sequence[Dict[str, object]]) -> Dict[Tuple[int, int], Dict[str, object]]:
@@ -2771,6 +2780,18 @@ def _review_report_by_identity(report: Dict[str, object]) -> Dict[Tuple[int, int
         if key == (0, 0):
             continue
         result[key] = item
+    return result
+
+
+def _review_report_by_identity_reports(reports: Sequence[Dict[str, object]]) -> Dict[Tuple[int, int], Dict[str, object]]:
+    result: Dict[Tuple[int, int], Dict[str, object]] = {}
+    for report_index, report in enumerate(reports, start=1):
+        if not isinstance(report, dict):
+            continue
+        for key, item in _review_report_by_identity(report).items():
+            row = dict(item)
+            row["prior_review_report_index"] = report_index
+            result[key] = row
     return result
 
 
@@ -3405,6 +3426,87 @@ def _batch_review_row(
         "strm_root": item.get("strm_root", ""),
         "source_paths": " | ".join(_string_list(item.get("source_paths"))),
     }
+
+
+def _review_row_with_prior_decision(row: Dict[str, object], prior: Dict[str, object]) -> Dict[str, object]:
+    prior_decision = str(prior.get("decision") or "")
+    if not prior_decision or not _review_row_can_preserve_prior(row):
+        return row
+    merged = dict(row)
+    merged["decision"] = prior_decision
+    prior_next_action = str(prior.get("next_action") or "")
+    merged["next_action"] = prior_next_action or _review_next_action(prior_decision, _string_list(row.get("reason_summary")))
+    prior_reason = str(prior.get("reason_summary") or "")
+    current_reason = str(merged.get("reason_summary") or "")
+    merged["reason_summary"] = _join_reason_summary(prior_reason, current_reason)
+    for field in (
+        "review_reasons",
+        "preview_status",
+        "preview_episode_count",
+        "preview_missing_expected",
+        "preview_unexpected_episodes",
+        "preview_blockers",
+        "transfer_status",
+        "transfer_last_stage",
+        "transfer_blockers",
+        "transfer_stage_reports",
+        "finalize_status",
+        "finalize_last_stage",
+        "finalize_blockers",
+        "finalize_cleanup_unlinked_videos",
+        "finalize_cleanup_blocked_source_roots",
+        "post_cleanup_status",
+        "post_cleanup_result",
+        "post_cleanup_reports",
+    ):
+        if not merged.get(field) and prior.get(field):
+            merged[field] = prior.get(field)
+    merged["prior_review_decision"] = prior_decision
+    if prior.get("prior_review_report_index"):
+        merged["prior_review_report_index"] = prior.get("prior_review_report_index")
+    return merged
+
+
+def _review_row_can_preserve_prior(row: Dict[str, object]) -> bool:
+    decision = str(row.get("decision") or "")
+    if decision in {
+        "manual_review_preview_blocked",
+        "manual_review_transfer_failed",
+        "blocked_after_transfer_run",
+        "ready_for_receive_plan",
+        "ready_for_transfer_approval",
+        "blocked_after_finalize_gates",
+        "ready_for_cleanup_approval",
+        "done_already_cleaned_noop",
+        "done_cleanup_executed",
+        "done_cleanup_verified",
+        "skipped_manual_exclusion",
+    }:
+        return False
+    preview_status = str(row.get("preview_status") or "")
+    if preview_status and preview_status not in {"planned_preview", "skipped_preview"}:
+        return False
+    evidence_fields = ("transfer_status", "finalize_status", "post_cleanup_status")
+    return not any(str(row.get(field) or "") for field in evidence_fields)
+
+
+def _join_reason_summary(*values: str) -> str:
+    reasons: List[str] = []
+    seen: Set[str] = set()
+    for value in values:
+        for reason in _reason_summary_list(value):
+            if reason and reason not in seen:
+                seen.add(reason)
+                reasons.append(reason)
+    return "; ".join(reasons)
+
+
+def _reason_summary_list(value: object) -> List[str]:
+    if isinstance(value, list):
+        raw = [str(item) for item in value]
+    else:
+        raw = re.split(r"[;|]", str(value or ""))
+    return [item.strip() for item in raw if item.strip()]
 
 
 def _review_decision(
