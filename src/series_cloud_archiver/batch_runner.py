@@ -3334,14 +3334,21 @@ def _post_cleanup_items_from_source_orphan_recovery(report: Dict[str, object]) -
             continue
         execute_report = _stage_report(item, "source_orphan_multiroot_cleanup_execute")
         if not execute_report:
+            execute_report = _stage_report(item, "no_hash_local_absent_noop_verify")
+        if not execute_report:
             continue
-        gate_item = _post_cleanup_item_from_source_multiroot_orphan_cleanup_execute(execute_report)
+        if str(execute_report.get("mode") or "") == "no-hash-local-absent-verify":
+            gate_item = _post_cleanup_item_from_no_hash_local_absent_verify(execute_report)
+            report_label = "batch-source-orphan-recovery-run; no-hash-local-absent-verify"
+        else:
+            gate_item = _post_cleanup_item_from_source_multiroot_orphan_cleanup_execute(execute_report)
+            report_label = "batch-source-orphan-recovery-run; cloud-source-orphan-multiroot-cleanup-execute"
         if not gate_item:
             continue
         gate_item["title"] = item.get("title") or gate_item.get("title", "")
         gate_item["tmdbid"] = int(item.get("tmdbid") or gate_item.get("tmdbid") or 0)
         gate_item["season"] = int(item.get("season") or gate_item.get("season") or 0)
-        gate_item["reports"] = "batch-source-orphan-recovery-run; cloud-source-orphan-multiroot-cleanup-execute"
+        gate_item["reports"] = report_label
         items.append(gate_item)
     return items
 

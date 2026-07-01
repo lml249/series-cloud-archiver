@@ -2450,6 +2450,105 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("batch-finalize-run:strm_nfo_language_audit", item["post_cleanup_reports"])
         self.assertIn("batch-finalize-run:emby_media_updated_verify", item["post_cleanup_reports"])
 
+    def test_batch_review_report_combines_source_orphan_recovery_noop_verify(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "state": "planned_validation_then_cleanup",
+                    "title": "折腰",
+                    "tmdbid": 296753,
+                    "season": 1,
+                    "cloud_status": "cloud_strm_complete",
+                    "expected_episode_count": 36,
+                }
+            ],
+        }
+        finalize_report = {
+            "mode": "batch-finalize-run",
+            "items": [
+                {
+                    "status": "failed_cleanup_execute",
+                    "title": "折腰",
+                    "tmdbid": 296753,
+                    "season": 1,
+                    "expected_episode_count": 36,
+                    "blockers": ["source_root_still_contains_video_files"],
+                    "stages": [
+                        {"stage": "strm_verify", "ok": True},
+                        {"stage": "strm_nfo_language_audit", "ok": True},
+                        {"stage": "emby_media_updated_verify", "ok": True},
+                        {"stage": "cloud_hlink_cleanup_execute", "ok": False, "blockers": ["source_root_still_contains_video_files"]},
+                    ],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            noop_path = tmp_path / "noop.json"
+            noop_path.write_text(
+                json.dumps(
+                    {
+                        "mode": "no-hash-local-absent-verify",
+                        "title": "折腰",
+                        "ok": True,
+                        "expected": {
+                            "tmdbid": 296753,
+                            "season": 1,
+                            "episode_count": 36,
+                            "required_target_prefix": "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                        },
+                        "moviepilot": {"matched_count": 0},
+                        "qbittorrent": {"matched_count": 0},
+                        "filesystem": {
+                            "source_roots": [{"path": "/example/source-a", "exists": False}],
+                            "hlink_roots": [{"path": "/example/hlink/折腰 (2025)/Season 1", "exists": False}],
+                        },
+                        "strm": {
+                            "ok": True,
+                            "strm": {
+                                "roots": [{"path": "/example/strm/series/折腰 (2025) {tmdbid=296753}/Season 1"}],
+                                "combined": {"episode_count": 36, "missing_in_range": []},
+                            },
+                        },
+                        "cloud_media": {"ok": True},
+                        "blockers": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            recovery_report = {
+                "mode": "batch-source-orphan-recovery-run",
+                "items": [
+                    {
+                        "status": "already_cleaned_noop",
+                        "title": "折腰",
+                        "tmdbid": 296753,
+                        "season": 1,
+                        "stages": [
+                            {
+                                "stage": "no_hash_local_absent_noop_verify",
+                                "ok": True,
+                                "output": str(noop_path),
+                            }
+                        ],
+                    }
+                ],
+            }
+            report = build_batch_review_report(
+                batch_plan,
+                finalize_run_reports=[finalize_report],
+                post_cleanup_reports=[recovery_report],
+            )
+
+        self.assertEqual(report["decision_counts"]["done_cleanup_verified"], 1)
+        item = report["items"][0]
+        self.assertEqual(item["post_cleanup_status"], "cleanup_executed_verified")
+        self.assertIn("batch-source-orphan-recovery-run", item["post_cleanup_reports"])
+        self.assertIn("no-hash-local-absent-verify", item["post_cleanup_reports"])
+
     def test_batch_finalize_run_carries_cleanup_unlinked_video_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             actions = FinalizeFakeActions()
