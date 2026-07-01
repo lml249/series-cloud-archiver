@@ -4489,6 +4489,69 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertEqual(review["items"][0]["prior_review_report_index"], 1)
         self.assertIn("share_selection_missing", review["items"][0]["reason_summary"])
 
+    def test_review_preserves_prior_transfer_failure_over_old_preview_ready(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_TRANSFER,
+                    "title": "法证先锋",
+                    "tmdbid": 286997,
+                    "season": 2,
+                    "expected_episode_count": 30,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 2,
+                            "search_keyword": "法证先锋",
+                            "title": "法证先锋 全4季",
+                            "score": 50,
+                            "blockers": ["episode_coverage_unclear"],
+                        }
+                    },
+                }
+            ],
+        }
+        old_preview_ready = {
+            "mode": "readonly-batch-mv3-share-preview",
+            "items": [
+                {
+                    "status": "preview_ready_for_receive",
+                    "title": "法证先锋",
+                    "tmdbid": 286997,
+                    "season": 2,
+                    "preview_episode_count": 30,
+                }
+            ],
+        }
+        prior_failed = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "manual_review_transfer_failed",
+                    "title": "法证先锋",
+                    "tmdbid": 286997,
+                    "season": 2,
+                    "reason_summary": "failed_organize_transfer; strm_written_to_unrecognized_root",
+                    "transfer_status": "failed_organize_transfer",
+                    "transfer_blockers": "strm_written_to_unrecognized_root",
+                }
+            ],
+        }
+
+        review = build_batch_review_report(
+            batch_plan,
+            share_preview_reports=[old_preview_ready],
+            prior_review_reports=[prior_failed],
+        )
+
+        self.assertEqual(review["decision_counts"], {"manual_review_transfer_failed": 1})
+        item = review["items"][0]
+        self.assertEqual(item["decision"], "manual_review_transfer_failed")
+        self.assertEqual(item["preview_status"], "preview_ready_for_receive")
+        self.assertEqual(item["transfer_status"], "failed_organize_transfer")
+        self.assertEqual(item["prior_review_decision"], "manual_review_transfer_failed")
+        self.assertIn("strm_written_to_unrecognized_root", item["reason_summary"])
+
     def test_preview_plan_keeps_stronger_prior_decision_when_later_review_is_ready_only(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",

@@ -3473,7 +3473,7 @@ def _batch_review_row(
 
 def _review_row_with_prior_decision(row: Dict[str, object], prior: Dict[str, object]) -> Dict[str, object]:
     prior_decision = str(prior.get("decision") or "")
-    if not prior_decision or not _review_row_can_preserve_prior(row):
+    if not prior_decision or not _review_row_can_preserve_prior(row, prior):
         return row
     merged = dict(row)
     merged["decision"] = prior_decision
@@ -3510,13 +3510,12 @@ def _review_row_with_prior_decision(row: Dict[str, object], prior: Dict[str, obj
     return merged
 
 
-def _review_row_can_preserve_prior(row: Dict[str, object]) -> bool:
+def _review_row_can_preserve_prior(row: Dict[str, object], prior: Dict[str, object]) -> bool:
     decision = str(row.get("decision") or "")
-    if decision in {
+    preserve_over_current_decisions = {
         "manual_review_preview_blocked",
         "manual_review_transfer_failed",
         "blocked_after_transfer_run",
-        "ready_for_receive_plan",
         "ready_for_transfer_approval",
         "blocked_after_finalize_gates",
         "ready_for_cleanup_approval",
@@ -3524,8 +3523,18 @@ def _review_row_can_preserve_prior(row: Dict[str, object]) -> bool:
         "done_cleanup_executed",
         "done_cleanup_verified",
         "skipped_manual_exclusion",
-    }:
+    }
+    if decision in preserve_over_current_decisions:
         return False
+    if decision == "ready_for_receive_plan":
+        current_rank = PRIOR_REVIEW_DECISION_RANK.get(decision, 0)
+        prior_rank = PRIOR_REVIEW_DECISION_RANK.get(str(prior.get("decision") or ""), 0)
+        return (
+            prior_rank > current_rank
+            and str(row.get("transfer_status") or "") == ""
+            and str(row.get("finalize_status") or "") == ""
+            and str(row.get("post_cleanup_status") or "") == ""
+        )
     preview_status = str(row.get("preview_status") or "")
     if preview_status and preview_status not in {"planned_preview", "skipped_preview"}:
         return False
