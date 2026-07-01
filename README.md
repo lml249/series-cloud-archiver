@@ -810,6 +810,31 @@ PYTHONPATH=src python3 -m series_cloud_archiver cloud-source-orphan-cleanup-prev
 
 这些预览都会重新验证 STRM 集数和目标前缀、检查云盘媒体目录没有 `.nfo/.jpg/.jpeg/.png/.webp` 元数据旁挂，并扫描 qB 当前任务列表。只要 qB 仍然引用目标文件 inode 或源路径，预览就会阻断。真正执行必须从预览 JSON 报告进入，并显式传入标题、TMDB ID、目标根目录和 `--approve-delete`；执行时会再次预检，成功后只删除那个精确 hlink 或 source 根目录，不操作云盘、STRM、Emby 或其他 qB 任务。云盘实体目录仍然只承担转存和生成 STRM，不做刮削；中文 NFO、海报和 Emby 入库只在 STRM 媒体库路径完成。
 
+如果 `batch-finalize-run --approve-delete` 的 `cloud_hlink_cleanup_execute` 已经成功删除 qB 任务和 hlink 根目录，但报告因 `source_root_still_contains_video_files` 停住，不要手工删除 source，也不要直接重跑同一个 finalize。先从上一次 `13-finalize-run.json` 做 source-only 恢复 dry-run：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver batch-source-orphan-recovery-run \
+  --env-file /volume1/docker/series-cloud-archiver/.env \
+  --finalize-run-report outputs/current-20260701/pipeline-runs/<run>/13-finalize-run.json \
+  --output-dir outputs/current-20260701/pipeline-runs/<recovery-run>/source-recovery-stages \
+  --format json \
+  --output outputs/current-20260701/source-orphan-recovery-dryrun.json
+```
+
+确认每个 item 都是 `source_orphan_cleanup_waiting_for_approval` 后，才显式批准 source-only 删除：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver batch-source-orphan-recovery-run \
+  --env-file /volume1/docker/series-cloud-archiver/.env \
+  --finalize-run-report outputs/current-20260701/pipeline-runs/<run>/13-finalize-run.json \
+  --output-dir outputs/current-20260701/pipeline-runs/<recovery-run-approved>/source-recovery-stages \
+  --approve-delete \
+  --format json \
+  --output outputs/current-20260701/source-orphan-recovery-approved.json
+```
+
+这个 runner 只处理旧报告中 qB delete 和 hlink delete 已成功、qB 当前无剩余、hlink 已不存在、唯一阻断为 source 视频残留的行；执行前会重新检查合并后的多 source root 集数、STRM 指向、云盘媒体旁挂和 qB 当前任务。`batch-finalize-run` 里若遇到同样的半成功状态，也只会停在 `source_orphan_cleanup_waiting_for_approval`，真正删除 source 需要额外传入 `--approve-source-orphan-delete`。
+
 还有一种常见残局：STRM 已经完整，本地 source/hlink 已经不存在或只剩旁挂文件，但 qB 里还挂着“文件丢失”的孤儿任务。这个场景不要走 MP 清理，也不要手动点 qB，先用 qB task-only 预览：
 
 ```bash

@@ -22,7 +22,9 @@ from .batch_runner import (
     render_batch_finalize_plan,
     render_batch_finalize_run,
     render_batch_plan,
+    render_batch_source_orphan_recovery,
     run_batch_finalize,
+    run_batch_source_orphan_recovery,
 )
 from .batch_transfer import render_batch_transfer_run, run_batch_transfer
 from .cloud_check import cloud_check_from_owner_plan, cloud_check_from_scan_report, load_scan_report, render_cloud_check_report
@@ -70,10 +72,12 @@ from .hlink_cleanup import (
     execute_cloud_hlink_orphan_cleanup,
     execute_cloud_hlink_cleanup,
     execute_cloud_source_orphan_cleanup,
+    execute_cloud_source_orphan_multiroot_cleanup,
     preview_cloud_hlink_orphan_multiseason_cleanup,
     preview_cloud_hlink_orphan_cleanup,
     preview_cloud_hlink_cleanup,
     preview_cloud_source_orphan_cleanup,
+    preview_cloud_source_orphan_multiroot_cleanup,
     render_cloud_hlink_cleanup,
 )
 from .identity import (
@@ -1072,6 +1076,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_finalize_run_parser.add_argument("--approve-cloud-duplicate-delete", action="store_true", help="Actually delete duplicate cloud videos after STRM target protection verifies")
     batch_finalize_run_parser.add_argument("--approve-emby-stale-delete", action="store_true", help="Actually delete stale Emby local-source items after STRM replacement verifies")
     batch_finalize_run_parser.add_argument("--approve-delete", action="store_true", help="Actually execute qB+hlink cleanup after all gates pass")
+    batch_finalize_run_parser.add_argument("--approve-source-orphan-delete", action="store_true", help="Actually delete source roots after a prior qB+hlink cleanup partially succeeded and fresh source-orphan preview passes")
     batch_finalize_run_parser.add_argument("--min-seed-days", type=int, default=7, help="Minimum qB seed days for cleanup preview")
     batch_finalize_run_parser.add_argument("--cloud-media-storage", default="115-default", help="MV3 cloud storage slug for cloud sidecar verification")
     batch_finalize_run_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
@@ -1080,6 +1085,20 @@ def build_parser() -> argparse.ArgumentParser:
     batch_finalize_run_parser.add_argument("--nfo-sample-limit", type=int, default=50, help="NFO sample limit per STRM root")
     batch_finalize_run_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     batch_finalize_run_parser.add_argument("--output", default=None, help="Write aggregate report to file instead of stdout")
+
+    batch_source_recovery_parser = subcommands.add_parser(
+        "batch-source-orphan-recovery-run",
+        help="Recover prior partial cleanup runs where qB+hlink were deleted but explicit source roots remain",
+    )
+    batch_source_recovery_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    batch_source_recovery_parser.add_argument("--finalize-run-report", required=True, help="JSON report from the prior batch-finalize-run with failed cleanup execute rows")
+    batch_source_recovery_parser.add_argument("--output-dir", required=True, help="Directory for per-stage JSON reports")
+    batch_source_recovery_parser.add_argument("--title", action="append", default=[], help="Only process titles containing this text; can be repeated")
+    batch_source_recovery_parser.add_argument("--limit", type=int, default=0, help="Maximum recovery rows to process; 0 means all")
+    batch_source_recovery_parser.add_argument("--approve-delete", action="store_true", help="Actually delete explicit orphan source roots after fresh preview passes")
+    batch_source_recovery_parser.add_argument("--cloud-media-storage", default="115-default", help="MV3 cloud storage slug for cloud sidecar verification")
+    batch_source_recovery_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    batch_source_recovery_parser.add_argument("--output", default=None, help="Write aggregate report to file instead of stdout")
 
     batch_pipeline_parser = subcommands.add_parser("batch-pipeline", help="Run the resumable batch state machine and write all stage reports")
     batch_pipeline_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -3465,6 +3484,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             approve_cloud_duplicate_delete=args.approve_cloud_duplicate_delete,
             approve_emby_stale_delete=args.approve_emby_stale_delete,
             approve_delete=args.approve_delete,
+            approve_source_orphan_delete=args.approve_source_orphan_delete,
             min_seed_days=args.min_seed_days,
             cloud_media_storage=args.cloud_media_storage,
             timeout=args.timeout,
@@ -3473,6 +3493,27 @@ def main(argv: Optional[List[str]] = None) -> int:
             nfo_sample_limit=args.nfo_sample_limit,
         )
         rendered = render_batch_finalize_run(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "batch-source-orphan-recovery-run":
+        finalize_report = load_optional_json_report(args.finalize_run_report)
+        if not isinstance(finalize_report, dict):
+            parser.error("batch-source-orphan-recovery-run requires a valid --finalize-run-report JSON report")
+        config = config_from_env(args.env_file, [])
+        report = run_batch_source_orphan_recovery(
+            finalize_report,
+            output_dir=args.output_dir,
+            config=config,
+            title_filters=args.title,
+            limit=args.limit,
+            approve_delete=args.approve_delete,
+            cloud_media_storage=args.cloud_media_storage,
+        )
+        rendered = render_batch_source_orphan_recovery(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:

@@ -14,7 +14,13 @@ from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from .cleanup_verify import audit_strm_nfo_language, verify_strm_paths
 from .emby import delete_stale_emby_paths, notify_and_verify_emby_media_updated
-from .hlink_cleanup import cleanup_empty_hlink_root, execute_cloud_hlink_cleanup, preview_cloud_hlink_cleanup
+from .hlink_cleanup import (
+    cleanup_empty_hlink_root,
+    execute_cloud_hlink_cleanup,
+    execute_cloud_source_orphan_multiroot_cleanup,
+    preview_cloud_hlink_cleanup,
+    preview_cloud_source_orphan_multiroot_cleanup,
+)
 from .moviepilot import scrape_mp_strm_path
 from .mv3 import cleanup_mv3_cloud_duplicate_videos
 from .qb_orphan_cleanup import preview_qb_orphan_torrent_cleanup, verify_no_hash_local_absent_cleanup
@@ -70,6 +76,8 @@ class BatchFinalizeActions:
     cleanup_preview: Callable[..., Dict[str, object]] = preview_cloud_hlink_cleanup
     cleanup_execute: Callable[..., Dict[str, object]] = execute_cloud_hlink_cleanup
     empty_hlink_root_cleanup: Callable[..., Dict[str, object]] = cleanup_empty_hlink_root
+    source_orphan_multiroot_preview: Callable[..., Dict[str, object]] = preview_cloud_source_orphan_multiroot_cleanup
+    source_orphan_multiroot_execute: Callable[..., Dict[str, object]] = execute_cloud_source_orphan_multiroot_cleanup
     qb_orphan_preview: Callable[..., Dict[str, object]] = preview_qb_orphan_torrent_cleanup
     no_hash_local_absent_verify: Callable[..., Dict[str, object]] = verify_no_hash_local_absent_cleanup
 
@@ -605,6 +613,7 @@ def run_batch_finalize(
     approve_cloud_duplicate_delete: bool = False,
     approve_emby_stale_delete: bool = False,
     approve_delete: bool = False,
+    approve_source_orphan_delete: bool = False,
     min_seed_days: int = 7,
     cloud_media_storage: str = "115-default",
     timeout: int = 20,
@@ -642,6 +651,7 @@ def run_batch_finalize(
                 approve_cloud_duplicate_delete=approve_cloud_duplicate_delete,
                 approve_emby_stale_delete=approve_emby_stale_delete,
                 approve_delete=approve_delete,
+                approve_source_orphan_delete=approve_source_orphan_delete,
                 min_seed_days=min_seed_days,
                 cloud_media_storage=cloud_media_storage,
                 timeout=timeout,
@@ -653,7 +663,7 @@ def run_batch_finalize(
         except Exception as exc:  # pragma: no cover - exact exception classes depend on external services
             row = _finalize_exception_row(item, output_path, exc)
         rows.append(row)
-        if row.get("status") not in {"cleanup_executed", "cleanup_waiting_for_approval", "already_cleaned_noop"} and not continue_on_error:
+        if row.get("status") not in {"cleanup_executed", "cleanup_waiting_for_approval", "source_orphan_cleanup_waiting_for_approval", "already_cleaned_noop"} and not continue_on_error:
             halted = True
             break
 
@@ -667,7 +677,7 @@ def run_batch_finalize(
     return {
         "mode": "batch-finalize-run",
         "source_mode": finalize_plan.get("mode", ""),
-        "ok": all(row.get("status") in {"cleanup_executed", "cleanup_waiting_for_approval", "already_cleaned_noop", "skipped_manual_exclusion"} for row in rows) and not halted,
+        "ok": all(row.get("status") in {"cleanup_executed", "cleanup_waiting_for_approval", "source_orphan_cleanup_waiting_for_approval", "already_cleaned_noop", "skipped_manual_exclusion"} for row in rows) and not halted,
         "halted": halted,
         "planned_items": len(candidates) + len(candidate_exclusions),
         "processed_items": len(rows),
@@ -684,6 +694,7 @@ def run_batch_finalize(
             "approve_cloud_duplicate_delete": approve_cloud_duplicate_delete,
             "approve_emby_stale_delete": approve_emby_stale_delete,
             "approve_delete": approve_delete,
+            "approve_source_orphan_delete": approve_source_orphan_delete,
             "min_seed_days": min_seed_days,
             "cloud_media_storage": cloud_media_storage,
             "timeout": timeout,
@@ -694,9 +705,111 @@ def run_batch_finalize(
         "items": rows,
         "safety": (
             "batch finalize runner executes ordered gates only. MoviePilot scraping requires execute_scrape=true; "
-            "qB/hlink cleanup requires approve_delete=true and a fresh ready cloud-hlink cleanup preview."
+            "qB/hlink cleanup requires approve_delete=true and a fresh ready cloud-hlink cleanup preview; "
+            "source-only recovery after partial cleanup requires approve_source_orphan_delete=true."
         ),
     }
+
+
+def run_batch_source_orphan_recovery(
+    finalize_run_report: Dict[str, object],
+    *,
+    output_dir: str,
+    config: object,
+    title_filters: Optional[Sequence[str]] = None,
+    limit: int = 0,
+    approve_delete: bool = False,
+    cloud_media_storage: str = "115-default",
+    actions: Optional[BatchFinalizeActions] = None,
+) -> Dict[str, object]:
+    actions = actions or BatchFinalizeActions()
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    filters = [str(value) for value in (title_filters or []) if str(value)]
+    candidates = [
+        item
+        for item in (finalize_run_report.get("items") if isinstance(finalize_run_report.get("items"), list) else [])
+        if isinstance(item, dict) and _source_orphan_recovery_candidate(item, filters)
+    ]
+    if limit > 0:
+        candidates = candidates[:limit]
+
+    rows: List[Dict[str, object]] = []
+    for item in candidates:
+        rows.append(
+            _run_source_orphan_recovery_item(
+                item,
+                output_dir=output_path,
+                config=config,
+                approve_delete=approve_delete,
+                cloud_media_storage=cloud_media_storage,
+                actions=actions,
+            )
+        )
+
+    status_counts = Counter(str(row.get("status") or "") for row in rows)
+    stage_counts = Counter(
+        str(stage.get("stage") or "")
+        for row in rows
+        for stage in row.get("stages", [])
+        if isinstance(stage, dict)
+    )
+    return {
+        "mode": "batch-source-orphan-recovery-run",
+        "source_mode": finalize_run_report.get("mode", ""),
+        "ok": all(row.get("status") in {"source_orphan_cleanup_waiting_for_approval", "cleanup_executed"} for row in rows),
+        "planned_items": len(candidates),
+        "processed_items": len(rows),
+        "status_counts": dict(sorted(status_counts.items())),
+        "stage_counts": dict(sorted(stage_counts.items())),
+        "settings": {
+            "output_dir": str(output_path),
+            "title_filters": filters,
+            "limit": limit,
+            "approve_delete": approve_delete,
+            "cloud_media_storage": cloud_media_storage,
+        },
+        "items": rows,
+        "safety": (
+            "batch source-orphan recovery only processes prior failed cloud-hlink cleanup executions where qB delete "
+            "and hlink delete already succeeded and the only remaining blocker is explicit source roots with videos. "
+            "Source deletion requires approve_delete=true after fresh source-orphan preview passes."
+        ),
+    }
+
+
+def render_batch_source_orphan_recovery(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# Batch Source Orphan Recovery",
+        "",
+        f"- Mode: `{report.get('mode', '')}`",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Processed: `{report.get('processed_items', 0)}` / `{report.get('planned_items', 0)}`",
+        f"- Status counts: `{report.get('status_counts', {})}`",
+        "- Safety: source deletion runs only with explicit approval after fresh source-orphan preview.",
+        "",
+        "| Status | TMDB | S | Episodes | Title | Last stage | Blockers |",
+        "| --- | ---: | ---: | ---: | --- | --- | --- |",
+    ]
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        stages = item.get("stages") if isinstance(item.get("stages"), list) else []
+        last_stage = str(stages[-1].get("stage") or "") if stages and isinstance(stages[-1], dict) else ""
+        lines.append(
+            "| {status} | {tmdbid} | {season} | {episodes} | {title} | {stage} | {blockers} |".format(
+                status=item.get("status", ""),
+                tmdbid=item.get("tmdbid") or "",
+                season=item.get("season") or "",
+                episodes=item.get("expected_episode_count") or "",
+                title=_escape_cell(str(item.get("title") or "")),
+                stage=_escape_cell(last_stage),
+                blockers=_escape_cell(", ".join(_string_list(item.get("blockers")))),
+            )
+        )
+    return "\n".join(lines)
 
 
 def render_batch_finalize_run(report: Dict[str, object], output_format: str) -> str:
@@ -734,6 +847,144 @@ def render_batch_finalize_run(report: Dict[str, object], output_format: str) -> 
             )
         )
     return "\n".join(lines)
+
+
+def _source_orphan_recovery_candidate(item: Dict[str, object], filters: Sequence[str]) -> bool:
+    if str(item.get("status") or "") not in {"failed_cleanup_execute", "source_orphan_cleanup_waiting_for_approval"}:
+        return False
+    title = str(item.get("title") or "")
+    if filters and not any(value.lower() in title.lower() for value in filters):
+        return False
+    report = _stage_report(item, "cloud_hlink_cleanup_execute")
+    return _cleanup_execute_left_only_source_videos(report)
+
+
+def _run_source_orphan_recovery_item(
+    item: Dict[str, object],
+    *,
+    output_dir: Path,
+    config: object,
+    approve_delete: bool,
+    cloud_media_storage: str,
+    actions: BatchFinalizeActions,
+) -> Dict[str, object]:
+    title = str(item.get("title") or "")
+    tmdbid = int(item.get("tmdbid") or 0)
+    season = int(item.get("season") or 0)
+    expected_count = int(item.get("expected_episode_count") or 0)
+    source_paths = _string_list(item.get("source_paths"))
+    hlink_root = str(item.get("hlink_root") or "").rstrip("/")
+    strm_root = str(item.get("strm_root") or "").rstrip("/")
+    required_prefix = str(item.get("required_target_prefix") or item.get("strm_target_prefix") or "").rstrip("/")
+    if not required_prefix:
+        required_prefix = _detect_single_strm_target_prefix(strm_root) or _cloud_target_prefix_from_strm_root(strm_root)
+    forbidden_prefixes = _string_list(item.get("forbidden_target_prefixes"))
+    cloud_title_path = str(item.get("cloud_title_path") or _cloud_title_path_from_cloud_path(required_prefix) or _cloud_title_path_from_strm_root(strm_root)).rstrip("/")
+    execute_report = _stage_report(item, "cloud_hlink_cleanup_execute")
+    report_prefix = str((item.get("command_context") or {}).get("report_prefix") if isinstance(item.get("command_context"), dict) else "") or _report_prefix(title, tmdbid, season)
+    expected_min, expected_max = _expected_range_from_execute_report(execute_report, expected_count)
+
+    row: Dict[str, object] = {
+        "status": "running",
+        "title": title,
+        "tmdbid": tmdbid,
+        "season": season,
+        "expected_episode_count": expected_count,
+        "source_paths": source_paths,
+        "hlink_root": hlink_root,
+        "strm_root": strm_root,
+        "cloud_title_path": cloud_title_path,
+        "required_target_prefix": required_prefix,
+        "stages": [],
+        "blockers": [],
+        "warnings": [],
+    }
+    if not _cleanup_execute_left_only_source_videos(execute_report):
+        row["status"] = "not_recoverable"
+        row["blockers"] = ["source_orphan_recovery_candidate_required"]
+        return row
+
+    preview = _source_orphan_recovery_preview(
+        execute_report,
+        actions=actions,
+        config=config,
+        title=title,
+        tmdbid=tmdbid,
+        source_paths=source_paths,
+        hlink_root=hlink_root,
+        strm_root=strm_root,
+        expected_count=expected_count,
+        expected_min=expected_min,
+        expected_max=expected_max,
+        required_prefix=required_prefix,
+        forbidden_prefixes=forbidden_prefixes,
+        cloud_title_path=cloud_title_path,
+        cloud_media_storage=cloud_media_storage,
+    )
+    if not preview:
+        row["status"] = "failed_source_orphan_cleanup_preview"
+        row["blockers"] = ["source_orphan_preview_not_available"]
+        return row
+    if not _append_stage(
+        row,
+        _stage_report_path(output_dir, report_prefix, "07-source-orphan-multiroot-preview"),
+        "source_orphan_multiroot_cleanup_preview",
+        preview,
+        ok_key="ready_for_execute",
+    ):
+        row["status"] = "failed_source_orphan_cleanup_preview"
+        return row
+    if not approve_delete:
+        row["status"] = "source_orphan_cleanup_waiting_for_approval"
+        return row
+    execute = actions.source_orphan_multiroot_execute(
+        preview,
+        _config_value(config, "qb_base_url"),
+        _config_value(config, "qb_user"),
+        _config_value(config, "qb_pass"),
+        path_aliases=getattr(config, "path_aliases", {}) or {},
+        mv3_base_url=_config_value(config, "mv3_base_url"),
+        mv3_token=_config_value(config, "mv3_token"),
+    )
+    if not _append_stage(
+        row,
+        _stage_report_path(output_dir, report_prefix, "08-source-orphan-multiroot-execute"),
+        "source_orphan_multiroot_cleanup_execute",
+        execute,
+    ):
+        row["status"] = "failed_source_orphan_cleanup_execute"
+        return row
+    row["status"] = "cleanup_executed"
+    return row
+
+
+def _stage_report(item: Dict[str, object], stage_name: str) -> Dict[str, object]:
+    stages = item.get("stages") if isinstance(item.get("stages"), list) else []
+    for stage in reversed(stages):
+        if not isinstance(stage, dict) or str(stage.get("stage") or "") != stage_name:
+            continue
+        output = str(stage.get("output") or "")
+        if not output:
+            return {}
+        try:
+            data = json.loads(Path(output).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _expected_range_from_execute_report(report: Dict[str, object], expected_count: int) -> Tuple[int, int]:
+    verification = report.get("verification") if isinstance(report.get("verification"), dict) else {}
+    strm_report = verification.get("strm") if isinstance(verification.get("strm"), dict) else {}
+    expected = strm_report.get("expected") if isinstance(strm_report.get("expected"), dict) else {}
+    expected_min = int(expected.get("episode_min") or 0)
+    expected_max = int(expected.get("episode_max") or 0)
+    if not expected_min:
+        expected_min = 1 if expected_count else 0
+    if not expected_max:
+        expected_max = expected_count
+    return expected_min, expected_max
 
 
 def _ready_expected_updates(expected_update_plan: Dict[str, object]) -> Dict[Tuple[int, int], Dict[str, object]]:
@@ -932,6 +1183,7 @@ def _run_finalize_item(
     approve_cloud_duplicate_delete: bool,
     approve_emby_stale_delete: bool,
     approve_delete: bool,
+    approve_source_orphan_delete: bool,
     min_seed_days: int,
     cloud_media_storage: str,
     timeout: int,
@@ -1308,6 +1560,59 @@ def _run_finalize_item(
         "cloud_hlink_cleanup_execute",
         execute_report,
     ):
+        recovery_preview = _source_orphan_recovery_preview(
+            execute_report,
+            actions=actions,
+            config=config,
+            title=title,
+            tmdbid=tmdbid,
+            source_paths=source_paths,
+            hlink_root=hlink_root,
+            strm_root=strm_root,
+            expected_count=expected_count,
+            expected_min=expected_min,
+            expected_max=expected_max,
+            required_prefix=required_prefix,
+            forbidden_prefixes=forbidden_prefixes,
+            cloud_title_path=cloud_title_path,
+            cloud_media_storage=cloud_media_storage,
+        )
+        if recovery_preview:
+            if _append_stage(
+                row,
+                _stage_report_path(output_dir, report_prefix, "07-source-orphan-multiroot-preview"),
+                "source_orphan_multiroot_cleanup_preview",
+                recovery_preview,
+                ok_key="ready_for_execute",
+            ):
+                if not approve_source_orphan_delete:
+                    _remove_row_blockers(row, _string_list(execute_report.get("blockers")))
+                    _remove_row_blockers(row, _string_list((execute_report.get("verification") or {}).get("blockers")) if isinstance(execute_report.get("verification"), dict) else [])
+                    row["warnings"] = sorted(set(_string_list(row.get("warnings")) + ["source_orphan_cleanup_waiting_for_approval"]))
+                    row["status"] = "source_orphan_cleanup_waiting_for_approval"
+                    return row
+                recovery_execute = actions.source_orphan_multiroot_execute(
+                    recovery_preview,
+                    _config_value(config, "qb_base_url"),
+                    _config_value(config, "qb_user"),
+                    _config_value(config, "qb_pass"),
+                    path_aliases=getattr(config, "path_aliases", {}) or {},
+                    mv3_base_url=_config_value(config, "mv3_base_url"),
+                    mv3_token=_config_value(config, "mv3_token"),
+                )
+                if _append_stage(
+                    row,
+                    _stage_report_path(output_dir, report_prefix, "08-source-orphan-multiroot-execute"),
+                    "source_orphan_multiroot_cleanup_execute",
+                    recovery_execute,
+                ):
+                    _remove_row_blockers(row, _string_list(execute_report.get("blockers")))
+                    _remove_row_blockers(row, _string_list((execute_report.get("verification") or {}).get("blockers")) if isinstance(execute_report.get("verification"), dict) else [])
+                    row["warnings"] = sorted(set(_string_list(row.get("warnings")) + ["source_orphan_cleanup_recovered_after_qb_hlink_delete"]))
+                    row["status"] = "cleanup_executed"
+                    return row
+                row["status"] = "failed_source_orphan_cleanup_execute"
+                return row
         row["status"] = "failed_cleanup_execute"
         return row
     parent_hlink_root = str(PurePosixPath(hlink_root).parent) if hlink_root else ""
@@ -1356,6 +1661,75 @@ def _append_stage(
     row["blockers"] = sorted(set(_string_list(row.get("blockers")) + blockers))
     row["warnings"] = sorted(set(_string_list(row.get("warnings")) + warnings))
     return ok
+
+
+def _source_orphan_recovery_preview(
+    execute_report: Dict[str, object],
+    *,
+    actions: BatchFinalizeActions,
+    config: object,
+    title: str,
+    tmdbid: int,
+    source_paths: Sequence[str],
+    hlink_root: str,
+    strm_root: str,
+    expected_count: int,
+    expected_min: int,
+    expected_max: int,
+    required_prefix: str,
+    forbidden_prefixes: Sequence[str],
+    cloud_title_path: str,
+    cloud_media_storage: str,
+) -> Dict[str, object]:
+    if not _cleanup_execute_left_only_source_videos(execute_report):
+        return {}
+    verification = execute_report.get("verification") if isinstance(execute_report.get("verification"), dict) else {}
+    source_checks = verification.get("source_roots") if isinstance(verification.get("source_roots"), list) else []
+    source_roots = _unique_nonempty([str(item.get("path") or "") for item in source_checks if isinstance(item, dict)])
+    if not source_roots:
+        source_roots = _cleanup_source_root_variants(source_paths, getattr(config, "path_aliases", {}) or {})
+    hlink_roots = _cleanup_hlink_root_variants(hlink_root, source_paths)
+    if not source_roots:
+        return {}
+    return actions.source_orphan_multiroot_preview(
+        title=title.split(" (", 1)[0].strip() or title,
+        source_roots=source_roots,
+        strm_root=strm_root,
+        expected_tmdbid=tmdbid,
+        expected_episode_count=expected_count,
+        expected_episode_min=expected_min,
+        expected_episode_max=expected_max,
+        hlink_roots=hlink_roots,
+        qb_base_url=_config_value(config, "qb_base_url"),
+        qb_user=_config_value(config, "qb_user"),
+        qb_pass=_config_value(config, "qb_pass"),
+        path_aliases=getattr(config, "path_aliases", {}) or {},
+        required_target_prefix=required_prefix,
+        forbidden_target_prefixes=forbidden_prefixes,
+        mv3_base_url=_config_value(config, "mv3_base_url"),
+        mv3_token=_config_value(config, "mv3_token"),
+        cloud_media_path=cloud_title_path,
+        cloud_media_storage=cloud_media_storage,
+    )
+
+
+def _cleanup_execute_left_only_source_videos(report: Dict[str, object]) -> bool:
+    if str(report.get("mode") or "") != "cloud-hlink-cleanup-execute":
+        return False
+    blockers = set(_string_list(report.get("blockers")))
+    if blockers != {"source_root_still_contains_video_files"}:
+        return False
+    qb_delete = report.get("qb_delete") if isinstance(report.get("qb_delete"), dict) else {}
+    hlink_delete = report.get("hlink_delete") if isinstance(report.get("hlink_delete"), dict) else {}
+    verification = report.get("verification") if isinstance(report.get("verification"), dict) else {}
+    if not qb_delete.get("ok") or not hlink_delete.get("ok"):
+        return False
+    if bool(verification.get("hlink_exists")):
+        return False
+    if verification.get("qb_remaining"):
+        return False
+    source_checks = verification.get("source_roots") if isinstance(verification.get("source_roots"), list) else []
+    return any(isinstance(item, dict) and int(item.get("video_count") or 0) > 0 for item in source_checks)
 
 
 def _mp_scrape_timeout_report(report: Dict[str, object]) -> bool:
@@ -2846,6 +3220,12 @@ def _review_post_cleanup_items(report: Dict[str, object]) -> List[Dict[str, obje
             for item in _post_cleanup_items_from_cloud_complete_execute(report)
             if isinstance(item, dict)
         ]
+    if str(report.get("mode") or "") == "batch-source-orphan-recovery-run":
+        return [
+            _normalize_post_cleanup_item(item)
+            for item in _post_cleanup_items_from_source_orphan_recovery(report)
+            if isinstance(item, dict)
+        ]
     raw_items = report.get("items")
     if isinstance(raw_items, list):
         return [_normalize_post_cleanup_item(item) for item in raw_items if isinstance(item, dict)]
@@ -2853,6 +3233,25 @@ def _review_post_cleanup_items(report: Dict[str, object]) -> List[Dict[str, obje
     if evidence:
         return [_normalize_post_cleanup_item(evidence)]
     return [_normalize_post_cleanup_item(report)]
+
+
+def _post_cleanup_items_from_source_orphan_recovery(report: Dict[str, object]) -> List[Dict[str, object]]:
+    items: List[Dict[str, object]] = []
+    for item in report.get("items", []) if isinstance(report.get("items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        execute_report = _stage_report(item, "source_orphan_multiroot_cleanup_execute")
+        if not execute_report:
+            continue
+        gate_item = _post_cleanup_item_from_source_multiroot_orphan_cleanup_execute(execute_report)
+        if not gate_item:
+            continue
+        gate_item["title"] = item.get("title") or gate_item.get("title", "")
+        gate_item["tmdbid"] = int(item.get("tmdbid") or gate_item.get("tmdbid") or 0)
+        gate_item["season"] = int(item.get("season") or gate_item.get("season") or 0)
+        gate_item["reports"] = "batch-source-orphan-recovery-run; cloud-source-orphan-multiroot-cleanup-execute"
+        items.append(gate_item)
+    return items
 
 
 def _post_cleanup_reports_from_finalize_runs(reports: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
@@ -2962,12 +3361,16 @@ def _post_cleanup_gate_item(report: Dict[str, object]) -> Dict[str, object]:
         return _post_cleanup_item_from_hlink_cleanup_execute(report)
     if mode == "cloud-hlink-orphan-cleanup-execute":
         return _post_cleanup_item_from_hlink_orphan_cleanup_execute(report)
+    if mode == "cloud-source-orphan-multiroot-cleanup-execute":
+        return _post_cleanup_item_from_source_multiroot_orphan_cleanup_execute(report)
     if mode == "qb-orphan-torrent-cleanup-preview":
         return _post_cleanup_item_from_qb_orphan_preview(report)
     if mode == "no-hash-local-absent-verify":
         return _post_cleanup_item_from_no_hash_local_absent_verify(report)
     if mode == "hlink-empty-root-cleanup":
         return _post_cleanup_item_from_empty_hlink_cleanup(report)
+    if mode == "batch-source-orphan-recovery-run":
+        return {}
     return {}
 
 
@@ -3170,6 +3573,40 @@ def _post_cleanup_item_from_hlink_orphan_cleanup_execute(report: Dict[str, objec
         "episode_count": int(combined.get("episode_count") or expected.get("episode_count") or 0),
         "blockers": sorted(set(_string_list(report.get("blockers")) + _string_list(verification.get("blockers")) + _string_list(current_precheck.get("blockers")))),
         "reports": "cloud-hlink-orphan-cleanup-execute",
+    }
+
+
+def _post_cleanup_item_from_source_multiroot_orphan_cleanup_execute(report: Dict[str, object]) -> Dict[str, object]:
+    current_precheck = report.get("current_precheck") if isinstance(report.get("current_precheck"), dict) else {}
+    verification = report.get("verification") if isinstance(report.get("verification"), dict) else {}
+    expected = current_precheck.get("expected") if isinstance(current_precheck.get("expected"), dict) else {}
+    strm_report = verification.get("strm") if isinstance(verification.get("strm"), dict) else current_precheck.get("strm") if isinstance(current_precheck.get("strm"), dict) else {}
+    strm_section = strm_report.get("strm") if isinstance(strm_report.get("strm"), dict) else {}
+    combined = strm_section.get("combined") if isinstance(strm_section.get("combined"), dict) else {}
+    roots = strm_section.get("roots") if isinstance(strm_section.get("roots"), list) else []
+    source_roots = verification.get("source_roots") if isinstance(verification.get("source_roots"), list) else []
+    hlink_roots = verification.get("hlink_roots") if isinstance(verification.get("hlink_roots"), list) else []
+    qb = current_precheck.get("qbittorrent") if isinstance(current_precheck.get("qbittorrent"), dict) else {}
+    linked_count = int(qb.get("linked_count") or qb.get("matched_count") or 0)
+    identity = _post_cleanup_identity_from_paths(
+        _paths_from_strm_roots(roots)
+        + _string_list(expected.get("source_roots") if isinstance(expected.get("source_roots"), list) else [])
+        + [str(expected.get("required_target_prefix") or ""), str(report.get("title") or "")]
+    )
+    return {
+        "mode": "post-cleanup-gate-summary",
+        "source_mode": "cloud-source-orphan-multiroot-cleanup-execute",
+        "title": report.get("title", ""),
+        "tmdbid": int(expected.get("tmdbid") or identity[0] or 0),
+        "season": int(identity[1] or 0),
+        "status": "post_cleanup_gates_partial",
+        "qb_remaining": "0" if bool(report.get("ok")) and linked_count == 0 else str(linked_count),
+        "hlink_exists": _bool_string(any(bool(item.get("exists")) for item in hlink_roots if isinstance(item, dict))),
+        "source_exists": _bool_string(any(bool(item.get("exists")) for item in source_roots if isinstance(item, dict))),
+        "strm_ok": _bool_string(bool(report.get("ok")) and bool(strm_report.get("ok")) and int(combined.get("episode_count") or 0) > 0 and not combined.get("missing_in_range")),
+        "episode_count": int(combined.get("episode_count") or expected.get("episode_count") or 0),
+        "blockers": sorted(set(_string_list(report.get("blockers")) + _string_list(verification.get("blockers")) + _string_list(current_precheck.get("blockers")))),
+        "reports": "cloud-source-orphan-multiroot-cleanup-execute",
     }
 
 

@@ -13,10 +13,12 @@ from series_cloud_archiver.hlink_cleanup import (
     execute_cloud_hlink_orphan_cleanup,
     execute_cloud_hlink_cleanup,
     execute_cloud_source_orphan_cleanup,
+    execute_cloud_source_orphan_multiroot_cleanup,
     preview_cloud_hlink_orphan_multiseason_cleanup,
     preview_cloud_hlink_orphan_cleanup,
     preview_cloud_hlink_cleanup,
     preview_cloud_source_orphan_cleanup,
+    preview_cloud_source_orphan_multiroot_cleanup,
 )
 from series_cloud_archiver.models import QBTorrentEvidence
 
@@ -1530,6 +1532,97 @@ class CloudHlinkCleanupTest(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertFalse(source_root.exists())
         self.assertTrue(report["current_precheck"]["ok"])
+        self.assertTrue(report["verification"]["ok"])
+
+    def test_source_orphan_multiroot_preview_allows_split_sources_after_hlink_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_a = tmp_path / "volume3" / "TV" / "Show.S01.PartA"
+            source_b = tmp_path / "volume3" / "TV" / "Show.S01.PartB"
+            write(source_a / "Show.S01E01.mkv")
+            write(source_b / "Show.S01E02.mkv")
+            strm_root = tmp_path / "strm" / "series" / "Show (2026) {tmdbid=100}" / "Season 01"
+            write(strm_root / "Show.S01E01.strm", "/已整理/series/Show (2026) {tmdbid=100}/Season 01/E01.mkv")
+            write(strm_root / "Show.S01E02.strm", "/已整理/series/Show (2026) {tmdbid=100}/Season 01/E02.mkv")
+
+            class EmptyClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", EmptyClient), patch(
+                "series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[]
+            ):
+                report = preview_cloud_source_orphan_multiroot_cleanup(
+                    "Show",
+                    [str(source_a), str(source_b)],
+                    str(strm_root),
+                    expected_tmdbid=100,
+                    expected_episode_count=2,
+                    expected_episode_min=1,
+                    expected_episode_max=2,
+                    hlink_roots=[str(tmp_path / "hlink" / "TV" / "Show (2026) {tmdbid=100}" / "Season 01")],
+                    qb_base_url="http://qb.example",
+                    required_target_prefix="/已整理/series/Show (2026) {tmdbid=100}/Season",
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(sum(item["video_count"] for item in report["source_roots"]), 2)
+        self.assertEqual(report["qbittorrent"]["linked_count"], 0)
+
+    def test_source_orphan_multiroot_execute_deletes_directories_and_single_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_dir = tmp_path / "volume3" / "TV" / "Show.S01.PartA"
+            source_file = tmp_path / "volume3" / "TV" / "Show.S01.PartB" / "Show.S01E02.mkv"
+            write(source_dir / "Show.S01E01.mkv")
+            write(source_file)
+            strm_root = tmp_path / "strm" / "series" / "Show (2026) {tmdbid=100}" / "Season 01"
+            write(strm_root / "Show.S01E01.strm", "/已整理/series/Show (2026) {tmdbid=100}/Season 01/E01.mkv")
+            write(strm_root / "Show.S01E02.strm", "/已整理/series/Show (2026) {tmdbid=100}/Season 01/E02.mkv")
+            preview = {
+                "mode": "cloud-source-orphan-multiroot-cleanup-preview",
+                "title": "Show",
+                "ready_for_execute": True,
+                "blockers": [],
+                "warnings": [],
+                "expected": {
+                    "tmdbid": 100,
+                    "episode_count": 2,
+                    "episode_min": 1,
+                    "episode_max": 2,
+                    "source_roots": [str(source_dir), str(source_file)],
+                    "hlink_roots": [str(tmp_path / "hlink" / "TV" / "Show (2026) {tmdbid=100}" / "Season 01")],
+                    "required_target_prefix": "/已整理/series",
+                    "forbidden_target_prefixes": [],
+                },
+                "strm": {"strm": {"roots": [{"path": str(strm_root)}]}},
+                "qbittorrent": {"hashes": [], "linked_count": 0},
+            }
+
+            class EmptyClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=15):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", EmptyClient), patch(
+                "series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[]
+            ):
+                report = execute_cloud_source_orphan_multiroot_cleanup(preview, "http://qb.example")
+
+        self.assertTrue(report["ok"])
+        self.assertFalse(source_dir.exists())
+        self.assertFalse(source_file.exists())
         self.assertTrue(report["verification"]["ok"])
 
     def test_cli_requires_approval_before_source_orphan_cleanup_execute(self) -> None:

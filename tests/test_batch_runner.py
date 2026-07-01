@@ -22,7 +22,9 @@ from series_cloud_archiver.batch_runner import (
     render_batch_finalize_run,
     render_batch_plan,
     render_batch_review_report,
+    render_batch_source_orphan_recovery,
     run_batch_finalize,
+    run_batch_source_orphan_recovery,
 )
 from series_cloud_archiver.batch_preview import (
     build_batch_share_preview_plan,
@@ -60,6 +62,7 @@ class FinalizeFakeActions:
         self.cloud_duplicate_count = 0
         self.mp_scrape_timeout = False
         self.cleanup_already_absent = False
+        self.cleanup_execute_source_left = False
 
     def _ok(self, stage: str, **extra: object) -> dict:
         self.calls.append((stage, dict(extra)))
@@ -234,10 +237,123 @@ class FinalizeFakeActions:
         }
 
     def cleanup_execute(self, *args: object, **kwargs: object) -> dict:
+        if self.cleanup_execute_source_left:
+            self.calls.append(("cloud-hlink-cleanup-execute", {"args": list(args), "kwargs": kwargs}))
+            preview = args[0] if args and isinstance(args[0], dict) else {}
+            expected = preview.get("expected") if isinstance(preview.get("expected"), dict) else {}
+            hlink = preview.get("hlink") if isinstance(preview.get("hlink"), dict) else {}
+            strm_root = "/example/host/strm/series/折腰 (2025) {tmdbid=296753}/Season 1"
+            return {
+                "mode": "cloud-hlink-cleanup-execute",
+                "title": "折腰",
+                "ok": False,
+                "approved": True,
+                "qb_delete": {"http_status": 200, "ok": True},
+                "hlink_delete": {"path": hlink.get("path"), "ok": True},
+                "verification": {
+                    "ok": False,
+                    "hlink_exists": False,
+                    "qb_remaining": [],
+                    "strm": {
+                        "mode": "strm-verify",
+                        "title": "折腰",
+                        "ok": True,
+                        "expected": {
+                            "episode_count": expected.get("episode_count"),
+                            "episode_min": expected.get("episode_min"),
+                            "episode_max": expected.get("episode_max"),
+                            "required_target_prefix": expected.get("required_target_prefix", ""),
+                        },
+                        "strm": {
+                            "roots": [{"path": strm_root, "exists": True}],
+                            "combined": {"episode_count": expected.get("episode_count"), "missing_in_range": []},
+                        },
+                        "blockers": [],
+                    },
+                    "source_roots": [
+                        {"path": "/example/local-tv/source-a", "exists": True, "video_count": 35},
+                        {"path": "/example/local-tv/source-b/episode36.mkv", "exists": True, "video_count": 1},
+                    ],
+                    "blockers": ["source_root_still_contains_video_files"],
+                },
+                "blockers": ["source_root_still_contains_video_files"],
+                "warnings": [],
+            }
         return self._ok("cloud-hlink-cleanup-execute", args=list(args), kwargs=kwargs)
 
     def empty_hlink_root_cleanup(self, **kwargs: object) -> dict:
         return self._ok("hlink-empty-root-cleanup", kwargs=kwargs)
+
+    def source_orphan_multiroot_preview(self, **kwargs: object) -> dict:
+        self.calls.append(("cloud-source-orphan-multiroot-cleanup-preview", {"kwargs": kwargs}))
+        return {
+            "mode": "cloud-source-orphan-multiroot-cleanup-preview",
+            "title": kwargs.get("title", ""),
+            "ok": self.fail_stage != "cloud-source-orphan-multiroot-cleanup-preview",
+            "ready_for_execute": self.fail_stage != "cloud-source-orphan-multiroot-cleanup-preview",
+            "expected": {
+                "tmdbid": kwargs.get("expected_tmdbid"),
+                "episode_count": kwargs.get("expected_episode_count"),
+                "episode_min": kwargs.get("expected_episode_min"),
+                "episode_max": kwargs.get("expected_episode_max"),
+                "source_roots": kwargs.get("source_roots"),
+                "hlink_roots": kwargs.get("hlink_roots"),
+                "required_target_prefix": kwargs.get("required_target_prefix"),
+            },
+            "source_roots": [{"path": path, "exists": True, "video_count": 1} for path in kwargs.get("source_roots", [])],
+            "hlink_roots": [{"path": path, "exists": False, "video_count": 0} for path in kwargs.get("hlink_roots", [])],
+            "strm": {
+                "ok": True,
+                "strm": {
+                    "roots": [{"path": kwargs.get("strm_root"), "exists": True}],
+                    "combined": {"episode_count": kwargs.get("expected_episode_count"), "missing_in_range": []},
+                },
+            },
+            "cloud_media": {"ok": True},
+            "qbittorrent": {"linked_count": 0, "hashes": []},
+            "blockers": [] if self.fail_stage != "cloud-source-orphan-multiroot-cleanup-preview" else ["source_orphan_preview_failed"],
+            "warnings": [],
+        }
+
+    def source_orphan_multiroot_execute(self, *args: object, **kwargs: object) -> dict:
+        self.calls.append(("cloud-source-orphan-multiroot-cleanup-execute", {"args": list(args), "kwargs": kwargs}))
+        preview = args[0] if args and isinstance(args[0], dict) else {}
+        expected = preview.get("expected") if isinstance(preview.get("expected"), dict) else {}
+        strm = preview.get("strm") if isinstance(preview.get("strm"), dict) else {}
+        strm_section = strm.get("strm") if isinstance(strm.get("strm"), dict) else {}
+        roots = strm_section.get("roots") if isinstance(strm_section.get("roots"), list) else []
+        return {
+            "mode": "cloud-source-orphan-multiroot-cleanup-execute",
+            "title": preview.get("title", ""),
+            "ok": self.fail_stage != "cloud-source-orphan-multiroot-cleanup-execute",
+            "approved": True,
+            "current_precheck": preview,
+            "source_delete": [{"path": path, "ok": True} for path in expected.get("source_roots", [])],
+            "verification": {
+                "ok": self.fail_stage != "cloud-source-orphan-multiroot-cleanup-execute",
+                "strm": {
+                    "mode": "strm-verify",
+                    "title": preview.get("title", ""),
+                    "ok": True,
+                    "expected": {
+                        "episode_count": expected.get("episode_count"),
+                        "episode_min": expected.get("episode_min"),
+                        "episode_max": expected.get("episode_max"),
+                        "required_target_prefix": expected.get("required_target_prefix", ""),
+                    },
+                    "strm": {
+                        "roots": roots,
+                        "combined": {"episode_count": expected.get("episode_count"), "missing_in_range": []},
+                    },
+                    "blockers": [],
+                },
+                "source_roots": [{"path": path, "exists": False, "video_count": 0} for path in expected.get("source_roots", [])],
+                "hlink_roots": [{"path": path, "exists": False, "video_count": 0} for path in expected.get("hlink_roots", [])],
+                "blockers": [],
+            },
+            "blockers": [] if self.fail_stage != "cloud-source-orphan-multiroot-cleanup-execute" else ["source_orphan_execute_failed"],
+            "warnings": [],
+        }
 
 
 class TransferFakeActions:
@@ -570,6 +686,8 @@ def _batch_finalize_actions(actions: FinalizeFakeActions) -> BatchFinalizeAction
         cleanup_preview=actions.cleanup_preview,
         cleanup_execute=actions.cleanup_execute,
         empty_hlink_root_cleanup=actions.empty_hlink_root_cleanup,
+        source_orphan_multiroot_preview=actions.source_orphan_multiroot_preview,
+        source_orphan_multiroot_execute=actions.source_orphan_multiroot_execute,
         qb_orphan_preview=actions.qb_orphan_preview,
         no_hash_local_absent_verify=actions.no_hash_local_absent_verify,
     )
@@ -1975,6 +2093,257 @@ class BatchRunnerTest(unittest.TestCase):
         empty_root_call = next(call for call in actions.calls if call[0] == "hlink-empty-root-cleanup")
         self.assertEqual(empty_root_call[1]["kwargs"]["hlink_root"], "/example/local-tv/折腰 (2025)")
         self.assertTrue(empty_root_call[1]["kwargs"]["approve_delete"])
+
+    def test_batch_finalize_run_waits_for_source_orphan_approval_after_partial_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            actions.cleanup_execute_source_left = True
+            report = run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=True,
+                actions=_batch_finalize_actions(actions),
+            )
+
+        item = report["items"][0]
+        self.assertTrue(report["ok"])
+        self.assertEqual(item["status"], "source_orphan_cleanup_waiting_for_approval")
+        call_names = [call[0] for call in actions.calls]
+        self.assertIn("cloud-hlink-cleanup-execute", call_names)
+        self.assertIn("cloud-source-orphan-multiroot-cleanup-preview", call_names)
+        self.assertNotIn("cloud-source-orphan-multiroot-cleanup-execute", call_names)
+        self.assertNotIn("source_root_still_contains_video_files", item["blockers"])
+        preview_call = next(call for call in actions.calls if call[0] == "cloud-source-orphan-multiroot-cleanup-preview")
+        self.assertEqual(
+            preview_call[1]["kwargs"]["source_roots"],
+            ["/example/local-tv/source-a", "/example/local-tv/source-b/episode36.mkv"],
+        )
+
+    def test_batch_finalize_run_recovers_partial_cleanup_with_source_orphan_execute(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            actions.cleanup_execute_source_left = True
+            report = run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                execute_scrape=True,
+                approve_delete=True,
+                approve_source_orphan_delete=True,
+                approve_emby_stale_delete=True,
+                actions=_batch_finalize_actions(actions),
+            )
+
+        item = report["items"][0]
+        self.assertTrue(report["ok"])
+        self.assertEqual(item["status"], "cleanup_executed")
+        call_names = [call[0] for call in actions.calls]
+        self.assertIn("cloud-source-orphan-multiroot-cleanup-preview", call_names)
+        self.assertIn("cloud-source-orphan-multiroot-cleanup-execute", call_names)
+        self.assertNotIn("source_root_still_contains_video_files", item["blockers"])
+
+    def test_batch_source_orphan_recovery_run_uses_prior_failed_execute_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            prior_stage = tmp_path / "old-execute.json"
+            prior_stage.write_text(
+                json.dumps(
+                    {
+                        "mode": "cloud-hlink-cleanup-execute",
+                        "title": "折腰",
+                        "ok": False,
+                        "qb_delete": {"ok": True},
+                        "hlink_delete": {"ok": True, "path": "/example/local-tv/折腰 (2025)/Season 1"},
+                        "verification": {
+                            "ok": False,
+                            "hlink_exists": False,
+                            "qb_remaining": [],
+                            "strm": {
+                                "mode": "strm-verify",
+                                "ok": True,
+                                "expected": {
+                                    "episode_count": 36,
+                                    "episode_min": 1,
+                                    "episode_max": 36,
+                                    "required_target_prefix": "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                                },
+                                "strm": {
+                                    "roots": [
+                                        {
+                                            "path": "/example/host/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                                            "exists": True,
+                                        }
+                                    ],
+                                    "combined": {"episode_count": 36, "missing_in_range": []},
+                                },
+                            },
+                            "source_roots": [
+                                {"path": "/example/local-tv/source-a", "exists": True, "video_count": 35},
+                                {"path": "/example/local-tv/source-b/episode36.mkv", "exists": True, "video_count": 1},
+                            ],
+                            "blockers": ["source_root_still_contains_video_files"],
+                        },
+                        "blockers": ["source_root_still_contains_video_files"],
+                        "warnings": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            finalize = self._finalize_plan()
+            finalize["items"][0]["status"] = "failed_cleanup_execute"
+            finalize["items"][0]["stages"] = [
+                {"stage": "strm_verify", "ok": True},
+                {"stage": "strm_nfo_language_audit", "ok": True},
+                {"stage": "emby_media_updated_verify", "ok": True},
+                {
+                    "stage": "cloud_hlink_cleanup_execute",
+                    "ok": False,
+                    "output": str(prior_stage),
+                    "blockers": ["source_root_still_contains_video_files"],
+                },
+            ]
+            actions = FinalizeFakeActions()
+            report = run_batch_source_orphan_recovery(
+                finalize,
+                output_dir=str(tmp_path / "recovery-stages"),
+                config=FinalizeFakeConfig(path_aliases={}),
+                approve_delete=False,
+                actions=_batch_finalize_actions(actions),
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["status_counts"], {"source_orphan_cleanup_waiting_for_approval": 1})
+        self.assertIn("Batch Source Orphan Recovery", render_batch_source_orphan_recovery(report, "markdown"))
+        call_names = [call[0] for call in actions.calls]
+        self.assertEqual(call_names, ["cloud-source-orphan-multiroot-cleanup-preview"])
+        preview_call = actions.calls[0]
+        self.assertEqual(
+            preview_call[1]["kwargs"]["source_roots"],
+            ["/example/local-tv/source-a", "/example/local-tv/source-b/episode36.mkv"],
+        )
+
+    def test_batch_review_report_combines_source_orphan_recovery_run(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "state": "planned_validation_then_cleanup",
+                    "title": "折腰",
+                    "tmdbid": 296753,
+                    "season": 1,
+                    "cloud_status": "cloud_strm_complete",
+                    "expected_episode_count": 36,
+                }
+            ],
+        }
+        finalize_report = {
+            "mode": "batch-finalize-run",
+            "items": [
+                {
+                    "status": "failed_cleanup_execute",
+                    "title": "折腰",
+                    "tmdbid": 296753,
+                    "season": 1,
+                    "expected_episode_count": 36,
+                    "blockers": ["source_root_still_contains_video_files"],
+                    "stages": [
+                        {"stage": "strm_verify", "ok": True},
+                        {"stage": "strm_nfo_language_audit", "ok": True},
+                        {"stage": "emby_media_updated_verify", "ok": True},
+                        {"stage": "cloud_hlink_cleanup_execute", "ok": False, "blockers": ["source_root_still_contains_video_files"]},
+                    ],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            execute_path = tmp_path / "source-execute.json"
+            execute_path.write_text(
+                json.dumps(
+                    {
+                        "mode": "cloud-source-orphan-multiroot-cleanup-execute",
+                        "title": "折腰",
+                        "ok": True,
+                        "current_precheck": {
+                            "mode": "cloud-source-orphan-multiroot-cleanup-preview",
+                            "title": "折腰",
+                            "ok": True,
+                            "expected": {
+                                "tmdbid": 296753,
+                                "episode_count": 36,
+                                "episode_min": 1,
+                                "episode_max": 36,
+                                "source_roots": ["/example/source-a", "/example/source-b/episode36.mkv"],
+                                "hlink_roots": ["/example/hlink/折腰 (2025)/Season 1"],
+                                "required_target_prefix": "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                            },
+                            "qbittorrent": {"linked_count": 0},
+                        },
+                        "verification": {
+                            "ok": True,
+                            "source_roots": [
+                                {"path": "/example/source-a", "exists": False},
+                                {"path": "/example/source-b/episode36.mkv", "exists": False},
+                            ],
+                            "hlink_roots": [{"path": "/example/hlink/折腰 (2025)/Season 1", "exists": False}],
+                            "strm": {
+                                "mode": "strm-verify",
+                                "title": "折腰",
+                                "ok": True,
+                                "expected": {"episode_count": 36},
+                                "strm": {
+                                    "roots": [
+                                        {
+                                            "path": "/example/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                                            "exists": True,
+                                        }
+                                    ],
+                                    "combined": {"episode_count": 36, "missing_in_range": []},
+                                },
+                                "blockers": [],
+                            },
+                            "blockers": [],
+                        },
+                        "blockers": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            recovery_report = {
+                "mode": "batch-source-orphan-recovery-run",
+                "items": [
+                    {
+                        "status": "cleanup_executed",
+                        "title": "折腰",
+                        "tmdbid": 296753,
+                        "season": 1,
+                        "stages": [
+                            {
+                                "stage": "source_orphan_multiroot_cleanup_execute",
+                                "ok": True,
+                                "output": str(execute_path),
+                            }
+                        ],
+                    }
+                ],
+            }
+            report = build_batch_review_report(
+                batch_plan,
+                finalize_run_reports=[finalize_report],
+                post_cleanup_reports=[recovery_report],
+            )
+
+        self.assertEqual(report["decision_counts"]["done_cleanup_verified"], 1)
+        item = report["items"][0]
+        self.assertEqual(item["post_cleanup_status"], "cleanup_executed_verified")
+        self.assertIn("batch-source-orphan-recovery-run", item["post_cleanup_reports"])
+        self.assertIn("batch-finalize-run:strm_nfo_language_audit", item["post_cleanup_reports"])
+        self.assertIn("batch-finalize-run:emby_media_updated_verify", item["post_cleanup_reports"])
 
     def test_batch_finalize_run_carries_cleanup_unlinked_video_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
