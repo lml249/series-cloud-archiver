@@ -4076,6 +4076,7 @@ class BatchSharePreviewTest(unittest.TestCase):
                             {"kind": "folder", "media_kind": "folder", "name": "Season 4", "file_id": "season-4", "index": 4},
                             {"kind": "file", "media_kind": "metadata_sidecar", "name": "tvshow.nfo", "file_id": "nfo"},
                             {"kind": "file", "media_kind": "metadata_sidecar", "name": "poster.jpg", "file_id": "poster"},
+                            {"kind": "file", "media_kind": "file", "name": "theme.mp3", "file_id": "theme"},
                         ],
                     },
                 }

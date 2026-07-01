@@ -192,15 +192,13 @@ def _run_preview(
 def _nested_folder_for_preview(report: Dict[str, object], *, expected_season: int) -> Dict[str, str]:
     browse = report.get("browse") if isinstance(report.get("browse"), dict) else {}
     items = browse.get("items") if isinstance(browse.get("items"), list) else []
-    material_items = [
-        item
-        for item in items
-        if isinstance(item, dict) and str(item.get("media_kind") or item.get("kind") or "") != "metadata_sidecar"
-    ]
-    folders = [item for item in material_items if isinstance(item, dict) and str(item.get("kind") or "") == "folder"]
-    if len(folders) == 1 and len(material_items) == 1:
+    candidate_items = [item for item in items if isinstance(item, dict)]
+    if any(_preview_item_is_video(item) for item in candidate_items):
+        return {}
+    folders = [item for item in candidate_items if str(item.get("kind") or "") == "folder"]
+    if len(folders) == 1:
         return _nested_folder_summary(folders[0])
-    if len(folders) != len(material_items):
+    if not folders:
         return {}
 
     season_matches = [
@@ -218,6 +216,31 @@ def _nested_folder_summary(folder: Dict[str, object]) -> Dict[str, str]:
     name = str(folder.get("name") or "")
     index = str(folder.get("index") or "")
     return {"cid": cid, "name": name, "index": index} if cid else {}
+
+
+def _preview_item_is_video(item: Dict[str, object]) -> bool:
+    media_kind = str(item.get("media_kind") or "").lower()
+    if media_kind == "video":
+        return True
+    if media_kind in {"folder", "subtitle_sidecar", "metadata_sidecar"}:
+        return False
+    name = str(item.get("name") or "")
+    return Path(name).suffix.lower() in {
+        ".avi",
+        ".flv",
+        ".m2ts",
+        ".m4v",
+        ".mkv",
+        ".mov",
+        ".mp4",
+        ".mpeg",
+        ".mpg",
+        ".mts",
+        ".rmvb",
+        ".ts",
+        ".webm",
+        ".wmv",
+    }
 
 
 def _season_folder_number(name: str) -> int:
