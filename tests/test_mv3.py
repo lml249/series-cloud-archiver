@@ -8071,7 +8071,7 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertNotIn("magnet:?", text)
 
 
-def _cloud_browse_report(path: str, names: list[str]) -> dict:
+def _cloud_browse_report(path: str, names: list) -> dict:
     return {
         "mode": "readonly-mv3-cloud-browse",
         "ok": True,
