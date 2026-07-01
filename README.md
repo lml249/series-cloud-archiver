@@ -377,6 +377,47 @@ PYTHONPATH=src python3 -m series_cloud_archiver extra-source-media-plan \
 
 这个计划仍然只读：它只把额外视频整理成 `mv3-organize-scan-source --local-source --file` 命令。像 `SP1/SP2` 这种特辑不会自动假设成 `Season 00` 的第几集，必须先确认 TMDB Season 00 的映射，再进入转存、生成 STRM、STRM 侧刮削和 Emby 验证。
 
+如果同一个 qB 源目录同时包含正片季和特辑，例如 S01 正片已经有 hlink、S00 特辑没有 hlink 但已经通过受控 staging 转存到云盘并生成 STRM，不要把单季 cleanup 放宽。先分别确认每个 STRM season 的 STRM/NFO/Emby 门禁都已通过；然后用显式多季同源 cleanup preview，把 qB hash、source root、hlink root、每个 season 的 STRM root、每个 season 的云盘 target prefix、以及没有 hlink 的特辑源文件逐一写明：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver cloud-hlink-source-multiseason-cleanup-preview \
+  --env-file /example/app/series-cloud-archiver/.env \
+  --title "Example Show" \
+  --expected-tmdbid 12345 \
+  --source-root "/media/local-series/Example.Show.S01.Specials" \
+  --hlink-root "/media/hlink/TV/Example Show (2025) {tmdbid=12345}/Season 01" \
+  --expected-qb-hash 0123456789abcdef0123456789abcdef01234567 \
+  --season "1:/media/cloud-strm/series/Example Show (2025) {tmdbid=12345}/Season 01:10:1:10:target=/已整理/series/Example Show (2025) {tmdbid=12345}/Season 01" \
+  --season "0:/media/cloud-strm/series/Example Show (2025) {tmdbid=12345}/Season 00:2:1:2:target=/已整理/series/Example Show (2025) {tmdbid=12345}/Season 00:source=/media/local-series/Example.Show.S01.Specials/Example.Show.Special.1.mkv:source=/media/local-series/Example.Show.S01.Specials/Example.Show.Special.2.mkv" \
+  --forbidden-target-prefix /未整理 \
+  --forbidden-target-prefix /series/series \
+  --forbidden-target-prefix /已整理/series/series \
+  --cloud-media-path "/已整理/series/Example Show (2025) {tmdbid=12345}" \
+  --cloud-media-storage 115-default \
+  --format json \
+  --output reports/example-multiseason-source-cleanup-preview.json
+```
+
+这个 preview 是只读的。它要求完整 qB hash 命中当前 qB 任务、qB content path 精确匹配 source root、source root 是窄目录、seed 天数达标、source root 里每个视频 inode 都被 hlink hardlink 或显式 season source path 覆盖、每个 STRM season 集数和 target prefix 正确、云盘实体目录无 NFO/JPG/PNG/WEBP sidecar。preview 全绿后，才可以带审批执行：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver cloud-hlink-source-multiseason-cleanup-execute \
+  --env-file /example/app/series-cloud-archiver/.env \
+  --preview-report reports/example-multiseason-source-cleanup-preview.json \
+  --expected-title "Example Show" \
+  --expected-tmdbid 12345 \
+  --expected-source-root "/media/local-series/Example.Show.S01.Specials" \
+  --expected-hlink-root "/media/hlink/TV/Example Show (2025) {tmdbid=12345}/Season 01" \
+  --expected-qb-hash 0123456789abcdef0123456789abcdef01234567 \
+  --expected-season 0 \
+  --expected-season 1 \
+  --approve-delete \
+  --format json \
+  --output reports/example-multiseason-source-cleanup-execute.json
+```
+
+execute 会先重跑 fresh preview；只有 fresh preview 仍全绿时，才对显式 qB hash 调用 `deleteFiles=true`，再删除显式 hlink root，并验证 qB hash 已消失、source root 已不存在或没有视频、hlink root 已不存在、STRM 仍完整。它不刮削云盘实体目录，不刷新全库，不写 NFO/JPG，不删除任何未显式传入的路径。
+
 如果 `13-finalize-run.json` 里某一季是 `already_cleaned_noop`，表示 STRM、NFO、Emby 和云盘侧检查已经通过，同时扫描报告里的完整 qB hash 已确认不在 qB，source/hlink 根也没有视频可删。这个状态不会执行 qB 删除或文件删除，只是把“本地早已清完”的季节从失败项中摘出来，避免后续批量复跑时反复卡在已经不存在的本地目录。
 
 如果 `batch-review-report` 里还有 `blocked_after_finalize_gates`，先生成统一的只读修复计划，再用 runner 按类别批量收集诊断证据。默认 runner 仍然只 dry-run，不执行诊断命令：

@@ -68,11 +68,13 @@ from .emby import (
 )
 from .hlink_cleanup import (
     cleanup_empty_hlink_root,
+    execute_cloud_hlink_source_multiseason_cleanup,
     execute_cloud_hlink_orphan_multiseason_cleanup,
     execute_cloud_hlink_orphan_cleanup,
     execute_cloud_hlink_cleanup,
     execute_cloud_source_orphan_cleanup,
     execute_cloud_source_orphan_multiroot_cleanup,
+    preview_cloud_hlink_source_multiseason_cleanup,
     preview_cloud_hlink_orphan_multiseason_cleanup,
     preview_cloud_hlink_orphan_cleanup,
     preview_cloud_hlink_cleanup,
@@ -465,6 +467,53 @@ def build_parser() -> argparse.ArgumentParser:
     hlink_cleanup_exec_parser.add_argument("--approve-delete", action="store_true", help="Required: actually delete qB torrents/files and the explicit hlink root")
     hlink_cleanup_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     hlink_cleanup_exec_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    hlink_source_multi_preview_parser = subcommands.add_parser(
+        "cloud-hlink-source-multiseason-cleanup-preview",
+        help="Readonly qB+hlink/source cleanup preview for one qB source root containing multiple verified STRM seasons",
+    )
+    hlink_source_multi_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    hlink_source_multi_preview_parser.add_argument("--title", required=True, help="Series title for reporting")
+    hlink_source_multi_preview_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Expected TMDB ID")
+    hlink_source_multi_preview_parser.add_argument("--source-root", required=True, help="Explicit qB source root to remove after qB delete")
+    hlink_source_multi_preview_parser.add_argument("--hlink-root", required=True, help="Explicit hlink root to remove after checks pass")
+    hlink_source_multi_preview_parser.add_argument("--expected-qb-hash", action="append", required=True, help="Expected full qB hash; can be repeated or comma-separated")
+    hlink_source_multi_preview_parser.add_argument(
+        "--season",
+        action="append",
+        type=_parse_hlink_source_multiseason_spec,
+        required=True,
+        help=(
+            "Season spec. Use season:strm_root:count:min:max, optionally with "
+            ":target=/已整理/... and :source=/host/file.mkv; repeat per season"
+        ),
+    )
+    hlink_source_multi_preview_parser.add_argument("--min-seed-days", type=int, default=7, help="Minimum qB seed days")
+    hlink_source_multi_preview_parser.add_argument("--required-target-prefix", default="", help="Default STRM target prefix when a season spec omits target=")
+    hlink_source_multi_preview_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
+    hlink_source_multi_preview_parser.add_argument("--cloud-media-path", default="", help="MV3 cloud media path that must not contain NFO/JPG/PNG/WEBP before cleanup")
+    hlink_source_multi_preview_parser.add_argument("--cloud-media-folder-id", default="", help="MV3 cloud media folder id that must not contain NFO/JPG/PNG/WEBP before cleanup")
+    hlink_source_multi_preview_parser.add_argument("--cloud-media-storage", default="115-default", help="MV3 cloud storage slug for cloud media sidecar verification")
+    hlink_source_multi_preview_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    hlink_source_multi_preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    hlink_source_multi_preview_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    hlink_source_multi_exec_parser = subcommands.add_parser(
+        "cloud-hlink-source-multiseason-cleanup-execute",
+        help="Execute approved qB+hlink/source cleanup from a validated multiseason source preview",
+    )
+    hlink_source_multi_exec_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    hlink_source_multi_exec_parser.add_argument("--preview-report", required=True, help="JSON report from cloud-hlink-source-multiseason-cleanup-preview")
+    hlink_source_multi_exec_parser.add_argument("--expected-title", required=True, help="Safety check: title must exactly match preview")
+    hlink_source_multi_exec_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Safety check: expected TMDB ID")
+    hlink_source_multi_exec_parser.add_argument("--expected-source-root", required=True, help="Safety check: source root must exactly match preview")
+    hlink_source_multi_exec_parser.add_argument("--expected-hlink-root", required=True, help="Safety check: hlink root must exactly match preview")
+    hlink_source_multi_exec_parser.add_argument("--expected-qb-hash", action="append", required=True, help="Expected full qB hash from preview; can be repeated or comma-separated")
+    hlink_source_multi_exec_parser.add_argument("--expected-season", action="append", type=int, required=True, help="Safety check: expected season number; repeat per season")
+    hlink_source_multi_exec_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    hlink_source_multi_exec_parser.add_argument("--approve-delete", action="store_true", help="Required: actually delete qB torrent files and the explicit hlink root")
+    hlink_source_multi_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    hlink_source_multi_exec_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     hlink_orphan_preview_parser = subcommands.add_parser("cloud-hlink-orphan-cleanup-preview", help="Readonly hlink-only cleanup preview when cloud STRM is complete and qB no longer tracks the files")
     hlink_orphan_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -1705,6 +1754,47 @@ def _parse_hlink_multiseason_spec(value: str) -> Dict[str, object]:
     }
 
 
+def _parse_hlink_source_multiseason_spec(value: str) -> Dict[str, object]:
+    parts = str(value or "").split(":")
+    if len(parts) < 5:
+        raise argparse.ArgumentTypeError(
+            "season spec must be season:strm_root:count:min:max[:target=prefix][:source=path]"
+        )
+    try:
+        season = int(parts[0].strip())
+        count = int(parts[2].strip())
+        episode_min = int(parts[3].strip())
+        episode_max = int(parts[4].strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid season episode spec: {value}") from exc
+    strm_root = parts[1].strip()
+    if season < 0 or count <= 0 or episode_min <= 0 or episode_max <= 0 or episode_min > episode_max:
+        raise argparse.ArgumentTypeError(f"invalid season episode spec: {value}")
+    if not strm_root:
+        raise argparse.ArgumentTypeError("season spec strm_root is required")
+    row: Dict[str, object] = {
+        "season": season,
+        "strm_root": strm_root,
+        "expected_episode_count": count,
+        "expected_episode_min": episode_min,
+        "expected_episode_max": episode_max,
+        "expected_episodes": list(range(episode_min, episode_max + 1)),
+        "source_paths": [],
+    }
+    source_paths: List[str] = []
+    for token in parts[5:]:
+        if token.startswith("target="):
+            row["required_target_prefix"] = token.split("=", 1)[1].strip()
+        elif token.startswith("source="):
+            source_paths.append(token.split("=", 1)[1].strip())
+        elif token.startswith("sources="):
+            source_paths.extend(item.strip() for item in token.split("=", 1)[1].split(","))
+        elif token:
+            raise argparse.ArgumentTypeError(f"unknown season spec segment: {token}")
+    row["source_paths"] = [path for path in source_paths if path]
+    return row
+
+
 def _write_text_output(path: str, text: str) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(text + "\n", encoding="utf-8")
@@ -1837,6 +1927,16 @@ def _parse_int_list_args(values: List[str]) -> List[int]:
     for value in values:
         items.update(_parse_episode_list(str(value or "")))
     return sorted(item for item in items if item > 0)
+
+
+def _parse_string_list_args(values: Sequence[str]) -> List[str]:
+    result: List[str] = []
+    for value in values or []:
+        for token in str(value or "").replace("|", ",").split(","):
+            cleaned = token.strip()
+            if cleaned and cleaned not in result:
+                result.append(cleaned)
+    return result
 
 
 def _load_manual_exclusions(paths: Sequence[str]) -> List[Dict[str, object]]:
@@ -2422,6 +2522,82 @@ def main(argv: Optional[List[str]] = None) -> int:
         if preview_hashes != expected_hashes:
             parser.error("cloud-hlink-cleanup-execute expected qB hashes mismatch")
         report = execute_cloud_hlink_cleanup(
+            preview,
+            config.qb_base_url,
+            config.qb_user,
+            config.qb_pass,
+            path_aliases=config.path_aliases,
+            mv3_base_url=config.mv3_base_url,
+            mv3_token=config.mv3_token,
+            timeout=args.timeout,
+        )
+        rendered = render_cloud_hlink_cleanup(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "cloud-hlink-source-multiseason-cleanup-preview":
+        config = config_from_env(args.env_file, [])
+        if not config.qb_base_url:
+            parser.error("cloud-hlink-source-multiseason-cleanup-preview requires QB_BASE_URL")
+        report = preview_cloud_hlink_source_multiseason_cleanup(
+            title=args.title,
+            source_root=args.source_root,
+            hlink_root=args.hlink_root,
+            season_specs=args.season,
+            expected_qb_hashes=args.expected_qb_hash,
+            expected_tmdbid=args.expected_tmdbid,
+            qb_base_url=config.qb_base_url,
+            qb_user=config.qb_user,
+            qb_pass=config.qb_pass,
+            path_aliases=config.path_aliases,
+            min_seed_days=args.min_seed_days,
+            required_target_prefix=args.required_target_prefix,
+            forbidden_target_prefixes=args.forbidden_target_prefix,
+            mv3_base_url=config.mv3_base_url,
+            mv3_token=config.mv3_token,
+            cloud_media_path=args.cloud_media_path,
+            cloud_media_folder_id=args.cloud_media_folder_id,
+            cloud_media_storage=args.cloud_media_storage,
+            timeout=args.timeout,
+        )
+        rendered = render_cloud_hlink_cleanup(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "cloud-hlink-source-multiseason-cleanup-execute":
+        if not args.approve_delete:
+            parser.error("cloud-hlink-source-multiseason-cleanup-execute requires --approve-delete")
+        config = config_from_env(args.env_file, [])
+        if not config.qb_base_url:
+            parser.error("cloud-hlink-source-multiseason-cleanup-execute requires QB_BASE_URL")
+        preview = load_optional_json_report(args.preview_report)
+        if not isinstance(preview, dict):
+            parser.error("preview report must be a JSON object")
+        preview_expected = preview.get("expected") if isinstance(preview.get("expected"), dict) else {}
+        expected_hashes = sorted({str(item).lower() for item in _parse_string_list_args(args.expected_qb_hash) if str(item)})
+        preview_hashes = sorted({str(item).lower() for item in preview_expected.get("qb_hashes", [])}) if isinstance(preview_expected.get("qb_hashes"), list) else []
+        preview_seasons = preview_expected.get("seasons") if isinstance(preview_expected.get("seasons"), list) else []
+        expected_seasons = sorted({int(item) for item in args.expected_season if int(item) >= 0})
+        report_seasons = sorted({int(item.get("season") or 0) for item in preview_seasons if isinstance(item, dict) and int(item.get("season") or 0) >= 0})
+        if str(preview.get("title") or "") != args.expected_title:
+            parser.error("cloud-hlink-source-multiseason-cleanup-execute expected title mismatch")
+        if int(preview_expected.get("tmdbid") or 0) != args.expected_tmdbid:
+            parser.error("cloud-hlink-source-multiseason-cleanup-execute expected TMDB ID mismatch")
+        if str(preview_expected.get("source_root") or "").rstrip("/") != args.expected_source_root.rstrip("/"):
+            parser.error("cloud-hlink-source-multiseason-cleanup-execute expected source root mismatch")
+        if str(preview_expected.get("hlink_root") or "").rstrip("/") != args.expected_hlink_root.rstrip("/"):
+            parser.error("cloud-hlink-source-multiseason-cleanup-execute expected hlink root mismatch")
+        if preview_hashes != expected_hashes:
+            parser.error("cloud-hlink-source-multiseason-cleanup-execute expected qB hashes mismatch")
+        if report_seasons != expected_seasons:
+            parser.error("cloud-hlink-source-multiseason-cleanup-execute expected seasons mismatch")
+        report = execute_cloud_hlink_source_multiseason_cleanup(
             preview,
             config.qb_base_url,
             config.qb_user,

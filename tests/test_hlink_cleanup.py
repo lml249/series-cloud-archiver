@@ -9,11 +9,13 @@ from unittest.mock import patch
 from series_cloud_archiver.cli import main
 from series_cloud_archiver.hlink_cleanup import (
     cleanup_empty_hlink_root,
+    execute_cloud_hlink_source_multiseason_cleanup,
     execute_cloud_hlink_orphan_multiseason_cleanup,
     execute_cloud_hlink_orphan_cleanup,
     execute_cloud_hlink_cleanup,
     execute_cloud_source_orphan_cleanup,
     execute_cloud_source_orphan_multiroot_cleanup,
+    preview_cloud_hlink_source_multiseason_cleanup,
     preview_cloud_hlink_orphan_multiseason_cleanup,
     preview_cloud_hlink_orphan_cleanup,
     preview_cloud_hlink_cleanup,
@@ -201,6 +203,415 @@ class CloudHlinkCleanupTest(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertIn("source_root_check_failed", report["blockers"])
         self.assertEqual(report["filesystem"]["source_roots"][0]["linked_hlink_video_count"], 1)
+
+    def test_multiseason_source_preview_allows_qb_source_when_specials_are_explicitly_covered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "qb" / "TV" / "Band.of.Brothers.E01-E10.SP"
+            regular_files = []
+            for episode in range(1, 11):
+                file_path = source / f"Band.of.Brothers.S01E{episode:02d}.mkv"
+                write(file_path)
+                regular_files.append(file_path)
+            sp1 = source / "Band.of.Brothers.SP1.We.Stand.Alone.mkv"
+            sp2 = source / "Band.of.Brothers.SP2.The.Making.mkv"
+            write(sp1)
+            write(sp2)
+            hlink_root = tmp_path / "hlink" / "TV" / "兄弟连 (2001) {tmdbid=4613}"
+            season1_hlink = hlink_root / "Season 01"
+            season1_hlink.mkdir(parents=True)
+            for episode, file_path in enumerate(regular_files, start=1):
+                os.link(file_path, season1_hlink / f"兄弟连 S01E{episode:02d}.mkv")
+            s01_strm = tmp_path / "strm" / "series" / "兄弟连 (2001) {tmdbid=4613}" / "Season 1"
+            s00_strm = tmp_path / "strm" / "series" / "兄弟连 (2001) {tmdbid=4613}" / "Season 00"
+            for episode in range(1, 11):
+                write(s01_strm / f"兄弟连 S01E{episode:02d}.strm", f"/已整理/series/兄弟连 (2001) {{tmdbid=4613}}/Season 1/E{episode:02d}.mkv")
+            write(s00_strm / "Band of Brothers - S00E01.strm", "/已整理/series/兄弟连 (2001) {tmdbid=4613}/Season 00/S00E01.mkv")
+            write(s00_strm / "Band of Brothers - S00E02.strm", "/已整理/series/兄弟连 (2001) {tmdbid=4613}/Season 00/S00E02.mkv")
+            torrent = {
+                "name": "兄弟连.Band.of.Brothers.E01-E10+SP",
+                "hash": "0123456789abcdef0123456789abcdef01234567",
+                "state": "stalledUP",
+                "save_path": str(tmp_path / "qb" / "TV"),
+                "content_path": str(source),
+                "progress": 1.0,
+                "seeding_time": 86400 * 9,
+                "size": 12,
+            }
+            torrent_files = [{"name": str(path.relative_to(source))} for path in regular_files + [sp1, sp2]]
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return [torrent]
+
+                def torrent_files(self, torrent_hash):
+                    return torrent_files
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", FakeClient):
+                report = preview_cloud_hlink_source_multiseason_cleanup(
+                    "兄弟连",
+                    str(source),
+                    str(hlink_root),
+                    [
+                        {
+                            "season": 1,
+                            "strm_root": str(s01_strm),
+                            "required_target_prefix": "/已整理/series/兄弟连 (2001) {tmdbid=4613}/Season 1",
+                            "expected_episode_count": 10,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 10,
+                        },
+                        {
+                            "season": 0,
+                            "strm_root": str(s00_strm),
+                            "required_target_prefix": "/已整理/series/兄弟连 (2001) {tmdbid=4613}/Season 00",
+                            "expected_episode_count": 2,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 2,
+                            "source_paths": [str(sp1), str(sp2)],
+                        },
+                    ],
+                    ["0123456789abcdef0123456789abcdef01234567"],
+                    expected_tmdbid=4613,
+                    qb_base_url="http://qb.example",
+                    min_seed_days=7,
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["ready_for_execute"])
+        self.assertEqual(report["source_coverage"]["source_video_count"], 12)
+        self.assertEqual(report["source_coverage"]["covered_source_video_count"], 12)
+        self.assertEqual(report["qbittorrent"]["matched_count"], 1)
+
+    def test_multiseason_source_preview_blocks_when_special_source_paths_are_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "qb" / "TV" / "Band.of.Brothers.E01-E10.SP"
+            regular_files = []
+            for episode in range(1, 11):
+                file_path = source / f"Band.of.Brothers.S01E{episode:02d}.mkv"
+                write(file_path)
+                regular_files.append(file_path)
+            sp1 = source / "Band.of.Brothers.SP1.We.Stand.Alone.mkv"
+            sp2 = source / "Band.of.Brothers.SP2.The.Making.mkv"
+            write(sp1)
+            write(sp2)
+            hlink_root = tmp_path / "hlink" / "TV" / "兄弟连 (2001) {tmdbid=4613}"
+            season1_hlink = hlink_root / "Season 01"
+            season1_hlink.mkdir(parents=True)
+            for episode, file_path in enumerate(regular_files, start=1):
+                os.link(file_path, season1_hlink / f"兄弟连 S01E{episode:02d}.mkv")
+            s01_strm = tmp_path / "strm" / "series" / "兄弟连 (2001) {tmdbid=4613}" / "Season 1"
+            s00_strm = tmp_path / "strm" / "series" / "兄弟连 (2001) {tmdbid=4613}" / "Season 00"
+            for episode in range(1, 11):
+                write(s01_strm / f"兄弟连 S01E{episode:02d}.strm", f"/已整理/series/兄弟连 (2001) {{tmdbid=4613}}/Season 1/E{episode:02d}.mkv")
+            write(s00_strm / "Band of Brothers - S00E01.strm", "/已整理/series/兄弟连 (2001) {tmdbid=4613}/Season 00/S00E01.mkv")
+            write(s00_strm / "Band of Brothers - S00E02.strm", "/已整理/series/兄弟连 (2001) {tmdbid=4613}/Season 00/S00E02.mkv")
+            torrent = {
+                "name": "兄弟连.Band.of.Brothers.E01-E10+SP",
+                "hash": "0123456789abcdef0123456789abcdef01234567",
+                "state": "stalledUP",
+                "save_path": str(tmp_path / "qb" / "TV"),
+                "content_path": str(source),
+                "progress": 1.0,
+                "seeding_time": 86400 * 9,
+                "size": 12,
+            }
+            torrent_files = [{"name": str(path.relative_to(source))} for path in regular_files + [sp1, sp2]]
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return [torrent]
+
+                def torrent_files(self, torrent_hash):
+                    return torrent_files
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", FakeClient):
+                report = preview_cloud_hlink_source_multiseason_cleanup(
+                    "兄弟连",
+                    str(source),
+                    str(hlink_root),
+                    [
+                        {
+                            "season": 1,
+                            "strm_root": str(s01_strm),
+                            "required_target_prefix": "/已整理/series/兄弟连 (2001) {tmdbid=4613}/Season 1",
+                            "expected_episode_count": 10,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 10,
+                        },
+                        {
+                            "season": 0,
+                            "strm_root": str(s00_strm),
+                            "required_target_prefix": "/已整理/series/兄弟连 (2001) {tmdbid=4613}/Season 00",
+                            "expected_episode_count": 2,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 2,
+                        },
+                    ],
+                    ["0123456789abcdef0123456789abcdef01234567"],
+                    expected_tmdbid=4613,
+                    qb_base_url="http://qb.example",
+                    min_seed_days=7,
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("season_explicit_source_path_count_mismatch", report["blockers"])
+        self.assertIn("source_videos_not_covered_by_hlink_or_explicit_season_sources", report["blockers"])
+
+    def test_multiseason_source_preview_blocks_when_qb_content_root_is_not_exact_source_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "qb" / "TV" / "Show.S01.SP"
+            e01 = source / "Show.S01E01.mkv"
+            sp1 = source / "Show.SP1.mkv"
+            write(e01)
+            write(sp1)
+            hlink_root = tmp_path / "hlink" / "TV" / "Show"
+            hlink_root.mkdir(parents=True)
+            os.link(e01, hlink_root / "Show.S01E01.mkv")
+            s01_strm = tmp_path / "strm" / "Show" / "Season 1"
+            s00_strm = tmp_path / "strm" / "Show" / "Season 00"
+            write(s01_strm / "Show.S01E01.strm", "/已整理/series/Show/Season 1/E01.mkv")
+            write(s00_strm / "Show.S00E01.strm", "/已整理/series/Show/Season 00/S00E01.mkv")
+            torrent = {
+                "name": "Show.S01.SP",
+                "hash": "0123456789abcdef0123456789abcdef01234567",
+                "state": "stalledUP",
+                "save_path": str(tmp_path / "qb"),
+                "content_path": str(tmp_path / "qb" / "TV"),
+                "progress": 1.0,
+                "seeding_time": 86400 * 9,
+                "size": 2,
+            }
+            torrent_files = [{"name": "TV/Show.S01.SP/Show.S01E01.mkv"}, {"name": "TV/Show.S01.SP/Show.SP1.mkv"}]
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return [torrent]
+
+                def torrent_files(self, torrent_hash):
+                    return torrent_files
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", FakeClient):
+                report = preview_cloud_hlink_source_multiseason_cleanup(
+                    "Show",
+                    str(source),
+                    str(hlink_root),
+                    [
+                        {
+                            "season": 1,
+                            "strm_root": str(s01_strm),
+                            "required_target_prefix": "/已整理/series/Show/Season 1",
+                            "expected_episode_count": 1,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 1,
+                        },
+                        {
+                            "season": 0,
+                            "strm_root": str(s00_strm),
+                            "required_target_prefix": "/已整理/series/Show/Season 00",
+                            "expected_episode_count": 1,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 1,
+                            "source_paths": [str(sp1)],
+                        },
+                    ],
+                    ["0123456789abcdef0123456789abcdef01234567"],
+                    expected_tmdbid=1,
+                    qb_base_url="http://qb.example",
+                    min_seed_days=7,
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("qb_content_path_mismatch", report["blockers"])
+
+    def test_multiseason_source_preview_uses_content_path_for_qb_file_inode_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "qb" / "TV" / "Show.S01.SP"
+            e01 = source / "Show.S01E01.mkv"
+            sp1 = source / "Show.SP1.mkv"
+            write(e01)
+            write(sp1)
+            hlink_root = tmp_path / "hlink" / "TV" / "Show"
+            hlink_root.mkdir(parents=True)
+            os.link(e01, hlink_root / "Show.S01E01.mkv")
+            s01_strm = tmp_path / "strm" / "Show" / "Season 1"
+            s00_strm = tmp_path / "strm" / "Show" / "Season 00"
+            write(s01_strm / "Show.S01E01.strm", "/已整理/series/Show/Season 1/E01.mkv")
+            write(s00_strm / "Show.S00E01.strm", "/已整理/series/Show/Season 00/S00E01.mkv")
+            torrent = {
+                "name": "Show.S01.SP",
+                "hash": "0123456789abcdef0123456789abcdef01234567",
+                "state": "stalledUP",
+                "save_path": str(tmp_path / "qb" / "TV"),
+                "content_path": str(source),
+                "progress": 1.0,
+                "seeding_time": 86400 * 9,
+                "size": 2,
+            }
+            torrent_files = [{"name": "Show.S01E01.mkv"}, {"name": "Show.SP1.mkv"}]
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return [torrent]
+
+                def torrent_files(self, torrent_hash):
+                    return torrent_files
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", FakeClient):
+                report = preview_cloud_hlink_source_multiseason_cleanup(
+                    "Show",
+                    str(source),
+                    str(hlink_root),
+                    [
+                        {
+                            "season": 1,
+                            "strm_root": str(s01_strm),
+                            "required_target_prefix": "/已整理/series/Show/Season 1",
+                            "expected_episode_count": 1,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 1,
+                        },
+                        {
+                            "season": 0,
+                            "strm_root": str(s00_strm),
+                            "required_target_prefix": "/已整理/series/Show/Season 00",
+                            "expected_episode_count": 1,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 1,
+                            "source_paths": [str(sp1)],
+                        },
+                    ],
+                    ["0123456789abcdef0123456789abcdef01234567"],
+                    expected_tmdbid=1,
+                    qb_base_url="http://qb.example",
+                    min_seed_days=7,
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertNotIn("qb_source_video_inode_set_missing", report["blockers"])
+
+    def test_multiseason_source_execute_deletes_qb_files_and_explicit_hlink_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "qb" / "TV" / "Show.S01.SP"
+            e01 = source / "Show.S01E01.mkv"
+            sp1 = source / "Show.SP1.mkv"
+            write(e01)
+            write(sp1)
+            hlink_root = tmp_path / "hlink" / "TV" / "Show"
+            hlink_root.mkdir(parents=True)
+            os.link(e01, hlink_root / "Show.S01E01.mkv")
+            s01_strm = tmp_path / "strm" / "Show" / "Season 1"
+            s00_strm = tmp_path / "strm" / "Show" / "Season 00"
+            write(s01_strm / "Show.S01E01.strm", "/已整理/series/Show/Season 1/E01.mkv")
+            write(s00_strm / "Show.S00E01.strm", "/已整理/series/Show/Season 00/S00E01.mkv")
+            torrent_hash = "0123456789abcdef0123456789abcdef01234567"
+            torrent = {
+                "name": "Show.S01.SP",
+                "hash": torrent_hash,
+                "state": "stalledUP",
+                "save_path": str(tmp_path / "qb" / "TV"),
+                "content_path": str(source),
+                "progress": 1.0,
+                "seeding_time": 86400 * 9,
+                "size": 2,
+            }
+            torrent_files = [{"name": "Show.S01E01.mkv"}, {"name": "Show.SP1.mkv"}]
+            deleted = {"value": False}
+
+            class FakeClient:
+                calls = []
+
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return [] if deleted["value"] else [torrent]
+
+                def torrent_files(self, torrent_hash_arg):
+                    return torrent_files
+
+                def delete_torrents(self, hashes, delete_files=True):
+                    self.calls.append((hashes, delete_files))
+                    deleted["value"] = True
+                    shutil.rmtree(source)
+                    return {"http_status": 200, "ok": True, "response": ""}
+
+            preview = {
+                "mode": "cloud-hlink-source-multiseason-cleanup-preview",
+                "title": "Show",
+                "ready_for_execute": True,
+                "blockers": [],
+                "warnings": [],
+                "expected": {
+                    "tmdbid": 1,
+                    "qb_hashes": [torrent_hash],
+                    "source_root": str(source),
+                    "hlink_root": str(hlink_root),
+                    "seasons": [
+                        {
+                            "season": 1,
+                            "strm_root": str(s01_strm),
+                            "required_target_prefix": "/已整理/series/Show/Season 1",
+                            "expected_episode_count": 1,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 1,
+                            "expected_episodes": [1],
+                            "source_paths": [],
+                        },
+                        {
+                            "season": 0,
+                            "strm_root": str(s00_strm),
+                            "required_target_prefix": "/已整理/series/Show/Season 00",
+                            "expected_episode_count": 1,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 1,
+                            "expected_episodes": [1],
+                            "source_paths": [str(sp1)],
+                        },
+                    ],
+                    "min_seed_days": 7,
+                    "forbidden_target_prefixes": [],
+                },
+            }
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", FakeClient):
+                report = execute_cloud_hlink_source_multiseason_cleanup(preview, "http://qb.example")
+
+        self.assertTrue(report["ok"])
+        self.assertFalse(hlink_root.exists())
+        self.assertFalse(source.exists())
+        self.assertEqual(FakeClient.calls, [([torrent_hash], True)])
 
     def test_preview_allows_duplicate_episode_formats_when_unique_episodes_are_complete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
