@@ -8,6 +8,7 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 from .mv3 import (
     browse_mv3_cloud_folder,
+    ensure_mv3_115_path,
     execute_mv3_organize_transfer_from_browse_report,
     receive_mv3_share,
 )
@@ -21,6 +22,7 @@ class BatchTransferActions:
     receive_share: TransferFunc = receive_mv3_share
     browse_cloud: TransferFunc = browse_mv3_cloud_folder
     organize_transfer: TransferFunc = execute_mv3_organize_transfer_from_browse_report
+    ensure_path: Optional[TransferFunc] = None
 
 
 def run_batch_transfer(
@@ -42,7 +44,7 @@ def run_batch_transfer(
     host_strm_root: str = "",
     actions: Optional[BatchTransferActions] = None,
 ) -> Dict[str, object]:
-    actions = actions or BatchTransferActions()
+    actions = actions or BatchTransferActions(ensure_path=ensure_mv3_115_path)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     filters = [str(item) for item in (title_filters or []) if str(item)]
@@ -81,6 +83,7 @@ def run_batch_transfer(
         "dry_run_items": sum(1 for item in results if item.get("status") == "approval_required"),
         "failed_items": sum(1 for item in results if str(item.get("status") or "").startswith("failed")),
         "staging_preflight_items": sum(1 for item in results if item.get("staging_preflight_ok") is not None),
+        "staging_target_ensure_items": sum(1 for item in results if item.get("staging_target_ensure_ok") is not None),
         "settings": {
             "approve_receive": approve_receive,
             "approve_transfer": approve_transfer,
@@ -96,10 +99,11 @@ def run_batch_transfer(
         "items": results,
         "safety": (
             "batch transfer runner is approval-gated: receive requires approve_receive=True and organize transfer "
-            "requires approve_transfer=True. It only receives to the staging root, browses cloud folders, and asks MV3 "
-            "to organize videos plus STRM under approved roots. It does not scrape cloud media, refresh Emby, touch "
-            "qBittorrent, delete hlinks/source files, or clean local storage. With preflight_staging=True and no "
-            "receive approval it only browses the expected staging target paths."
+            "requires approve_transfer=True. With receive approval it may ensure the staging root exists, receive to "
+            "that staging root, browse cloud folders, and ask MV3 to organize videos plus STRM under approved roots. "
+            "It does not scrape cloud media, refresh Emby, touch qBittorrent, delete hlinks/source files, or clean "
+            "local storage. With preflight_staging=True and no receive approval it only browses the expected staging "
+            "target paths."
         ),
     }
 
@@ -223,6 +227,24 @@ def _run_transfer_item(
         row["blockers"] = ["receive_approval_required"]
         row["warnings"] = sorted(set(_string_list(row.get("warnings")) + ["staging_preflight_ok"]))
         return row
+
+    ensure_path = getattr(actions, "ensure_path", None)
+    if ensure_path:
+        staging_target_ensure_report = ensure_path(
+            _config_value(config, "mv3_base_url"),
+            _config_value(config, "mv3_token"),
+            target_path,
+            storage=storage,
+            timeout=timeout,
+        )
+        staging_target_ensure_path = _stage_report_path(output_dir, prefix, "staging-target-ensure")
+        _write_json(staging_target_ensure_path, staging_target_ensure_report)
+        row["stage_reports"]["staging_target_ensure"] = str(staging_target_ensure_path)
+        row["staging_target_ensure_ok"] = bool(staging_target_ensure_report.get("ok"))
+        if not row["staging_target_ensure_ok"]:
+            row["status"] = "failed_staging_target_ensure"
+            row["blockers"] = _report_blockers(staging_target_ensure_report) or ["staging_target_ensure_failed"]
+            return row
 
     receive_report = actions.receive_share(
         _config_value(config, "mv3_base_url"),

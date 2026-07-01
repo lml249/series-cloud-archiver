@@ -285,6 +285,20 @@ class TransferFakeActions:
             },
         }
 
+    def ensure_path(self, *args: object, **kwargs: object) -> dict:
+        self.calls.append(("ensure", {"args": list(args), "kwargs": kwargs}))
+        return {
+            "mode": "mv3-ensure-115-path-result",
+            "ok": True,
+            "target_path": args[2] if len(args) >= 3 else "",
+            "steps": [
+                {
+                    "path": args[2] if len(args) >= 3 else "",
+                    "action": "reused",
+                }
+            ],
+        }
+
     def browse_cloud(self, *args: object, **kwargs: object) -> dict:
         self.calls.append(("browse", {"args": list(args), "kwargs": kwargs}))
         path = str(kwargs.get("path") or "")
@@ -686,6 +700,7 @@ class BatchRunnerTest(unittest.TestCase):
                     receive_share=actions.receive_share,
                     browse_cloud=actions.browse_cloud,
                     organize_transfer=actions.organize_transfer,
+                    ensure_path=actions.ensure_path,
                 ),
             )
             stage_files = [
@@ -697,19 +712,21 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(report["received_items"], 1)
         self.assertEqual(report["organized_items"], 1)
-        self.assertEqual([call[0] for call in actions.calls], ["browse", "receive", "browse", "organize", "browse", "browse"])
+        self.assertEqual([call[0] for call in actions.calls], ["browse", "ensure", "receive", "browse", "organize", "browse", "browse"])
         self.assertEqual(actions.calls[0][1]["kwargs"]["path"], "/未整理/折腰")
-        self.assertEqual(actions.calls[1][1]["kwargs"]["target_path"], "/未整理")
-        self.assertEqual(actions.calls[1][1]["kwargs"]["channels"], ["pansou"])
-        self.assertEqual(actions.calls[2][1]["kwargs"]["path"], "/未整理/折腰")
-        self.assertEqual(actions.calls[3][1]["kwargs"]["target_dir"], "/已整理")
-        self.assertEqual(actions.calls[3][1]["kwargs"]["strm_dir"], "/strm")
-        self.assertEqual(actions.calls[4][1]["kwargs"]["path"], "/已整理/series/折腰 {tmdbid=296753}/Season 1")
-        self.assertEqual(actions.calls[5][1]["kwargs"]["path"], "/未整理/折腰")
+        self.assertEqual(actions.calls[1][1]["args"][2], "/未整理")
+        self.assertEqual(actions.calls[2][1]["kwargs"]["target_path"], "/未整理")
+        self.assertEqual(actions.calls[2][1]["kwargs"]["channels"], ["pansou"])
+        self.assertEqual(actions.calls[3][1]["kwargs"]["path"], "/未整理/折腰")
+        self.assertEqual(actions.calls[4][1]["kwargs"]["target_dir"], "/已整理")
+        self.assertEqual(actions.calls[4][1]["kwargs"]["strm_dir"], "/strm")
+        self.assertEqual(actions.calls[5][1]["kwargs"]["path"], "/已整理/series/折腰 {tmdbid=296753}/Season 1")
+        self.assertEqual(actions.calls[6][1]["kwargs"]["path"], "/未整理/折腰")
         self.assertEqual(report["items"][0]["status"], "organized_requires_finalize")
         self.assertIn("staging_preflight", report["items"][0]["stage_reports"])
+        self.assertIn("staging_target_ensure", report["items"][0]["stage_reports"])
         self.assertIn("strm_output_verify", report["items"][0]["stage_reports"])
-        self.assertEqual(len(stage_files), 7)
+        self.assertEqual(len(stage_files), 8)
 
     def test_batch_transfer_run_blocks_when_expected_staging_path_exists_before_receive(self) -> None:
         actions = TransferFakeActions(staging_preexists=True)
@@ -734,6 +751,41 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("staging_target_video_files_present", item["blockers"])
         self.assertIn("staging_preflight", item["stage_reports"])
         self.assertEqual([call[0] for call in actions.calls], ["browse"])
+
+    def test_batch_transfer_run_blocks_when_staging_target_ensure_fails(self) -> None:
+        actions = TransferFakeActions()
+
+        def fail_ensure(*args: object, **kwargs: object) -> dict:
+            actions.calls.append(("ensure", {"args": list(args), "kwargs": kwargs}))
+            return {
+                "mode": "mv3-ensure-115-path-result",
+                "ok": False,
+                "target_path": args[2] if len(args) >= 3 else "",
+                "warnings": ["ensure_path_failed"],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_transfer(
+                self._receive_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(),
+                approve_receive=True,
+                approve_transfer=True,
+                actions=BatchTransferActions(
+                    receive_share=actions.receive_share,
+                    browse_cloud=actions.browse_cloud,
+                    organize_transfer=actions.organize_transfer,
+                    ensure_path=fail_ensure,
+                ),
+            )
+
+        item = report["items"][0]
+        self.assertFalse(report["ok"])
+        self.assertEqual(item["status"], "failed_staging_target_ensure")
+        self.assertFalse(item["staging_target_ensure_ok"])
+        self.assertIn("ensure_path_failed", item["blockers"])
+        self.assertIn("staging_target_ensure", item["stage_reports"])
+        self.assertEqual([call[0] for call in actions.calls], ["browse", "ensure"])
 
     def test_batch_transfer_run_resolves_received_folder_by_root_listing_when_path_has_slash(self) -> None:
         actions = TransferFakeActions(
