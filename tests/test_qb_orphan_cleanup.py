@@ -212,6 +212,47 @@ class QbOrphanTorrentCleanupTest(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertIn("source_root_contains_video_files", report["blockers"])
 
+    def test_no_hash_local_absent_verify_blocks_single_file_source_video(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_file = tmp_path / "volume3" / "TV" / "Show.S01E01.mkv"
+            write(source_file)
+            hlink_root = tmp_path / "volume3" / "hlink" / "TV" / "Show"
+            strm_root = tmp_path / "strm" / "series" / "Show (2026) {tmdbid=123}" / "Season 01"
+            write(strm_root / "Show.S01E01.strm", "/已整理/series/Show (2026) {tmdbid=123}/Season 01/E01.mkv")
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.qb_orphan_cleanup.QBClient", FakeClient), patch(
+                "series_cloud_archiver.qb_orphan_cleanup.MoviePilotClient.transfer_history", return_value=[]
+            ):
+                report = verify_no_hash_local_absent_cleanup(
+                    "Show",
+                    [str(source_file)],
+                    [str(hlink_root)],
+                    [str(strm_root)],
+                    expected_tmdbid=123,
+                    expected_season=1,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    qb_base_url="http://qb.example",
+                    mp_base_url="http://mp.example",
+                    mp_token="token",
+                    required_target_prefix="/已整理/series/Show (2026) {tmdbid=123}/Season 01",
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("source_root_contains_video_files", report["blockers"])
+
     def test_cli_writes_no_hash_local_absent_verify_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

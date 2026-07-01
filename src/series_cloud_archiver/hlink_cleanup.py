@@ -1369,9 +1369,9 @@ def _source_root_check(source_root: str) -> Dict[str, object]:
     root = Path(source_root)
     if not root.exists():
         return {"path": source_root, "exists": False, "narrow": False, "video_count": 0, "file_count": 0, "episodes": [], "sample_files": [], "inodes": []}
-    files = [item for item in root.rglob("*") if item.is_file()]
+    files = [root] if root.is_file() else [item for item in root.rglob("*") if item.is_file()]
     videos = [item for item in files if is_video_file(item)]
-    signal = episode_signal(str(item.relative_to(root)) for item in videos)
+    signal = episode_signal(item.name if root.is_file() else str(item.relative_to(root)) for item in videos)
     inode_rows = []
     for item in videos:
         try:

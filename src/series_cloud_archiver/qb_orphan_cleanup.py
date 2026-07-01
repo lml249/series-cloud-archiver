@@ -971,9 +971,9 @@ def _media_root_check(path: str, require_narrow: bool) -> Dict[str, object]:
             "episodes": [],
             "sample_files": [],
         }
-    files = [item for item in root.rglob("*") if item.is_file()]
+    files = [root] if root.is_file() else [item for item in root.rglob("*") if item.is_file()]
     videos = [item for item in files if is_video_file(item)]
-    signal = episode_signal(str(item.relative_to(root)) for item in videos)
+    signal = episode_signal(item.name if root.is_file() else str(item.relative_to(root)) for item in videos)
     return {
         "path": path,
         "exists": True,

@@ -707,6 +707,48 @@ class CloudHlinkCleanupTest(unittest.TestCase):
             self.assertFalse(hlink_root.exists())
             self.assertTrue(source_root.exists())
 
+    def test_execute_blocks_when_single_file_source_survives(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_file = tmp_path / "qb" / "TV" / "Show.S01E01.mkv"
+            write(source_file)
+            hlink_root = tmp_path / "hlink" / "TV" / "Show"
+            write(hlink_root / "Show S01E01.mkv")
+            strm_root = tmp_path / "strm" / "Show" / "Season 01"
+            write(strm_root / "Show S01E01.strm")
+            preview = {
+                "mode": "cloud-hlink-cleanup-preview",
+                "title": "Show",
+                "ready_for_execute": True,
+                "blockers": [],
+                "warnings": [],
+                "expected": {"tmdbid": 1, "episode_count": 1, "episode_min": 1, "episode_max": 1},
+                "hlink": {"path": str(hlink_root)},
+                "strm": {"strm": {"roots": [{"path": str(strm_root)}]}},
+                "qbittorrent": {"hashes": ["feedface00001234567890"]},
+                "filesystem": {"source_roots": [{"path": str(source_file)}]},
+            }
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def delete_torrents(self, hashes, delete_files=True):
+                    return {"http_status": 200, "ok": True, "response": ""}
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", FakeClient), patch(
+                "series_cloud_archiver.hlink_cleanup.fetch_qb_evidence", return_value=[]
+            ):
+                report = execute_cloud_hlink_cleanup(preview, "http://qb.example")
+
+            self.assertFalse(report["ok"])
+            self.assertIn("source_root_still_contains_video_files", report["blockers"])
+            self.assertFalse(hlink_root.exists())
+            self.assertTrue(source_file.exists())
+
     def test_cli_requires_approval_before_hlink_cleanup_execute(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
