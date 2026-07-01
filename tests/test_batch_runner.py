@@ -3687,6 +3687,100 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertIn("Batch MV3 Share Preview", rendered)
         self.assertIn("折腰", rendered)
 
+    def test_preview_plan_skips_rows_blocked_by_prior_review(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "半成品剧",
+                    "tmdbid": 2468,
+                    "season": 1,
+                    "expected_episode_count": 12,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 2,
+                            "search_keyword": "半成品剧",
+                            "title": "半成品剧 S01E01-E12",
+                            "score": 75,
+                            "blockers": ["episode_coverage_unclear"],
+                        }
+                    },
+                },
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "可预览剧",
+                    "tmdbid": 1357,
+                    "season": 1,
+                    "expected_episode_count": 8,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 1,
+                            "search_keyword": "可预览剧",
+                            "title": "可预览剧 S01E01-E08",
+                            "score": 75,
+                            "blockers": ["episode_coverage_unclear"],
+                        }
+                    },
+                },
+            ],
+        }
+        review_report = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "manual_review_transfer_failed",
+                    "title": "半成品剧",
+                    "tmdbid": 2468,
+                    "season": 1,
+                    "next_action": "转存或整理失败；换分享源/重新搜索后再跑，不要清理本地",
+                }
+            ],
+        }
+
+        report = build_batch_share_preview_plan(batch_plan, env_file="/safe/.env", limit=10, review_reports=[review_report])
+
+        blocked, ready = report["items"]
+        self.assertEqual(report["settings"]["review_report_count"], 1)
+        self.assertEqual(report["executable_preview_items"], 1)
+        self.assertEqual(blocked["status"], "skipped_preview")
+        self.assertEqual(blocked["review_decision"], "manual_review_transfer_failed")
+        self.assertIn("review_decision_blocked:manual_review_transfer_failed", blocked["skip_reasons"])
+        self.assertEqual(ready["status"], "planned_preview")
+
+    def test_review_preserves_prior_decision_when_preview_skips_from_review(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "半成品剧",
+                    "tmdbid": 2468,
+                    "season": 1,
+                    "expected_episode_count": 12,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 2,
+                            "search_keyword": "半成品剧",
+                            "title": "半成品剧 S01E01-E12",
+                            "score": 75,
+                            "blockers": ["episode_coverage_unclear"],
+                        }
+                    },
+                }
+            ],
+        }
+        prior_review = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [{"decision": "manual_review_transfer_failed", "title": "半成品剧", "tmdbid": 2468, "season": 1}],
+        }
+        preview = build_batch_share_preview_plan(batch_plan, env_file="/safe/.env", review_reports=[prior_review])
+
+        review = build_batch_review_report(batch_plan, share_preview_reports=[preview])
+
+        self.assertEqual(review["decision_counts"], {"manual_review_transfer_failed": 1})
+        self.assertEqual(review["items"][0]["decision"], "manual_review_transfer_failed")
+
     def test_execute_preview_calls_readonly_preview_func_and_writes_reports(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",

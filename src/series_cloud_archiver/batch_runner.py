@@ -27,6 +27,20 @@ AUTO_CLEANUP = "auto_ready_for_validation_cleanup"
 MANUAL_REVIEW = "manual_review"
 SKIPPED = "skipped"
 MANUAL_EXCLUSION = "manual_exclusion"
+PRESERVED_PREVIEW_REVIEW_DECISIONS = {
+    "blocked_after_finalize_gates",
+    "blocked_after_transfer_run",
+    "done_already_cleaned_noop",
+    "done_cleanup_executed",
+    "done_cleanup_verified",
+    "manual_review_preview_blocked",
+    "manual_review_transfer_failed",
+    "ready_for_cleanup_approval",
+    "ready_for_finalize_gates",
+    "ready_for_receive_plan",
+    "ready_for_transfer_approval",
+    "skipped_manual_exclusion",
+}
 
 
 @dataclass
@@ -3322,6 +3336,9 @@ def _review_decision(
         return "blocked_after_transfer_run"
 
     preview_status = str(preview_item.get("status") or "")
+    prior_review_decision = str(preview_item.get("review_decision") or "")
+    if preview_status == "skipped_preview" and prior_review_decision in PRESERVED_PREVIEW_REVIEW_DECISIONS:
+        return prior_review_decision
     if preview_status == "preview_ready_for_receive":
         return "ready_for_receive_plan"
     if preview_status == "preview_blocked":

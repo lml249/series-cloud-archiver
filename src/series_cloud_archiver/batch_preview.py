@@ -10,6 +10,7 @@ DEFAULT_ALLOWED_BEST_BLOCKERS = ["episode_coverage_unclear"]
 AUTO_TRANSFER = "auto_ready_for_transfer_preview"
 MANUAL_REVIEW = "manual_review"
 DEFAULT_PREVIEW_BUCKETS = [AUTO_TRANSFER, MANUAL_REVIEW]
+DEFAULT_REVIEW_PREVIEW_DECISIONS = ["manual_review_required", "ready_for_share_preview"]
 
 
 PreviewFunc = Callable[..., Dict[str, object]]
@@ -31,12 +32,18 @@ def build_batch_share_preview_plan(
     timeout: int = 60,
     preview_output_dir: str = "",
     max_nested_depth: int = 3,
+    review_reports: Optional[Sequence[Dict[str, object]]] = None,
+    review_preview_decisions: Optional[Sequence[str]] = None,
     preview_func: Optional[PreviewFunc] = None,
 ) -> Dict[str, object]:
     """Build or execute readonly MV3 share previews for batch-plan candidates."""
 
     wanted_buckets = set(str(item) for item in (buckets or DEFAULT_PREVIEW_BUCKETS) if str(item))
     allowed_blockers = set(str(item) for item in (allowed_best_blockers or DEFAULT_ALLOWED_BEST_BLOCKERS) if str(item))
+    allowed_review_decisions = set(
+        str(item) for item in (review_preview_decisions or DEFAULT_REVIEW_PREVIEW_DECISIONS) if str(item)
+    )
+    review_by_key = _preview_review_by_identity(review_reports or [])
     rows: List[Dict[str, object]] = []
     executed = 0
     preview_dir = Path(preview_output_dir) if preview_output_dir else None
@@ -53,6 +60,8 @@ def build_batch_share_preview_plan(
             wanted_buckets=wanted_buckets,
             min_candidate_score=min_candidate_score,
             allowed_blockers=allowed_blockers,
+            review_item=review_by_key.get(_identity_key(item), {}),
+            allowed_review_decisions=allowed_review_decisions,
             storage=storage,
         )
         if execute_preview and row["status"] == "planned_preview":
@@ -134,6 +143,8 @@ def build_batch_share_preview_plan(
             "buckets": sorted(wanted_buckets),
             "min_candidate_score": min_candidate_score,
             "allowed_best_blockers": sorted(allowed_blockers),
+            "review_report_count": len(review_reports or []),
+            "review_preview_decisions": sorted(allowed_review_decisions),
             "limit": limit,
             "execute_preview": execute_preview,
             "storage": storage,
@@ -319,6 +330,8 @@ def _preview_row(
     wanted_buckets: set[str],
     min_candidate_score: int,
     allowed_blockers: set[str],
+    review_item: Dict[str, object],
+    allowed_review_decisions: set[str],
     storage: str,
 ) -> Dict[str, object]:
     diagnostics = item.get("candidate_diagnostics") if isinstance(item.get("candidate_diagnostics"), dict) else {}
@@ -333,6 +346,10 @@ def _preview_row(
     blockers = set(_string_list(best.get("blockers")))
     skip_reasons: List[str] = []
 
+    if review_item:
+        review_decision = str(review_item.get("decision") or "")
+        if review_decision and review_decision not in allowed_review_decisions:
+            skip_reasons.append(f"review_decision_blocked:{review_decision}")
     if str(item.get("bucket") or "") not in wanted_buckets:
         skip_reasons.append("bucket_not_selected")
     if not best:
@@ -367,6 +384,8 @@ def _preview_row(
         "candidate_score": int(best.get("score") or 0) if best else 0,
         "candidate_size_delta_ratio": best.get("size_delta_ratio") if best else None,
         "candidate_blockers": sorted(blockers),
+        "review_decision": str(review_item.get("decision") or "") if review_item else "",
+        "review_next_action": str(review_item.get("next_action") or "") if review_item else "",
         "cloud_media_path": str(item.get("cloud_media_path") or ""),
         "cloud_title_path": str(item.get("cloud_title_path") or ""),
         "required_target_prefix": str(item.get("required_target_prefix") or ""),
@@ -375,6 +394,25 @@ def _preview_row(
     if status == "planned_preview":
         row["command"] = _preview_command(row, env_file=env_file, storage=storage)
     return row
+
+
+def _preview_review_by_identity(review_reports: Sequence[Dict[str, object]]) -> Dict[tuple[int, int], Dict[str, object]]:
+    result: Dict[tuple[int, int], Dict[str, object]] = {}
+    for report_index, report in enumerate(review_reports, start=1):
+        for item in report.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            key = _identity_key(item)
+            if key == (0, 0):
+                continue
+            row = dict(item)
+            row["review_report_index"] = report_index
+            result[key] = row
+    return result
+
+
+def _identity_key(item: Dict[str, object]) -> tuple[int, int]:
+    return int(item.get("tmdbid") or item.get("tmdb_id") or 0), int(item.get("season") or item.get("season_number") or 0)
 
 
 def _preview_command(row: Dict[str, object], *, env_file: str, storage: str) -> str:

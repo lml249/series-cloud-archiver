@@ -61,6 +61,7 @@ def run_batch_pipeline(
     transfer_plan: Optional[JsonDict] = None,
     share_search_plans: Optional[Sequence[JsonDict]] = None,
     share_preview_report: Optional[JsonDict] = None,
+    review_reports: Optional[Sequence[JsonDict]] = None,
     cleanup_preview_reports: Optional[Sequence[JsonDict]] = None,
     media_roots: Optional[Sequence[str]] = None,
     strm_roots: Optional[Sequence[str]] = None,
@@ -132,6 +133,7 @@ def run_batch_pipeline(
     warnings: List[str] = []
     generated_share_search_plans: List[JsonDict] = []
     provided_share_search_plans = [dict(item) for item in (share_search_plans or []) if isinstance(item, dict)]
+    provided_review_reports = [dict(item) for item in (review_reports or []) if isinstance(item, dict)]
     cleanup_reports = [dict(item) for item in (cleanup_preview_reports or []) if isinstance(item, dict)]
 
     if scan_report is None and cloud_report is None:
@@ -241,6 +243,7 @@ def run_batch_pipeline(
             timeout=preview_timeout,
             preview_output_dir=str(preview_dir) if execute_preview else "",
             max_nested_depth=max_nested_depth,
+            review_reports=provided_review_reports,
             preview_func=actions.share_preview if execute_preview else None,
         )
         phases.append(_write_phase(pipeline_dir, "06-share-preview", share_preview_report))

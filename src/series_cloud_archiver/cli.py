@@ -919,6 +919,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_share_preview_parser = subcommands.add_parser("batch-share-preview", help="Build or execute readonly MV3 share previews from a batch-plan report")
     batch_share_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
     batch_share_preview_parser.add_argument("--batch-plan", required=True, help="JSON report from batch-plan")
+    batch_share_preview_parser.add_argument("--review-report", action="append", default=[], help="Optional batch-review-report JSON; blocked decisions are skipped")
     batch_share_preview_parser.add_argument(
         "--bucket",
         action="append",
@@ -1043,6 +1044,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_pipeline_parser.add_argument("--transfer-plan", default="", help="Optional JSON report from plan-mv3-transfer")
     batch_pipeline_parser.add_argument("--share-search-plan", action="append", default=[], help="Optional JSON report from plan-mv3-share-search; can be repeated")
     batch_pipeline_parser.add_argument("--share-preview-report", default="", help="Optional JSON report from a prior batch-pipeline/batch-share-preview execution")
+    batch_pipeline_parser.add_argument("--review-report", action="append", default=[], help="Optional batch-review-report JSON used to skip already blocked preview rows")
     batch_pipeline_parser.add_argument("--cleanup-preview-report", action="append", default=[], help="Optional cleanup preview JSON; can be repeated")
     batch_pipeline_parser.add_argument("--media-root", action="append", default=[], help="Media root to scan when no scan/cloud report is supplied")
     batch_pipeline_parser.add_argument("--strm-root", action="append", default=[], help="STRM root for cloud-check when cloud report is omitted")
@@ -3225,6 +3227,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
             preview_output_dir=args.preview_output_dir,
             max_nested_depth=args.max_nested_depth,
+            review_reports=[
+                report
+                for report in (load_optional_json_report(path) for path in args.review_report)
+                if isinstance(report, dict)
+            ],
             preview_func=preview_mv3_share if args.execute_preview else None,
         )
         rendered = render_batch_share_preview_report(report, args.format)
@@ -3370,6 +3377,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             for report in (load_optional_json_report(path) for path in args.share_search_plan)
             if isinstance(report, dict)
         ]
+        review_reports = [
+            report
+            for report in (load_optional_json_report(path) for path in args.review_report)
+            if isinstance(report, dict)
+        ]
         cleanup_preview_reports = [
             report
             for report in (load_optional_json_report(path) for path in args.cleanup_preview_report)
@@ -3392,6 +3404,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             transfer_plan=transfer_plan,
             share_search_plans=share_search_plans,
             share_preview_report=share_preview_report if isinstance(share_preview_report, dict) else None,
+            review_reports=review_reports,
             cleanup_preview_reports=cleanup_preview_reports,
             media_roots=args.media_root,
             strm_roots=args.strm_root,

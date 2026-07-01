@@ -347,6 +347,50 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertIn("mv3_transfer_request_failed", item["transfer_blockers"])
         self.assertIn("不要清理本地", item["next_action"])
 
+    def test_pipeline_skips_preview_rows_blocked_by_existing_review(self) -> None:
+        calls = []
+
+        def fake_preview(_base_url, _token, keyword, **_kwargs):
+            calls.append(keyword)
+            return {
+                "ok": True,
+                "episode_count": 10,
+                "episodes": list(range(1, 11)),
+                "blockers": [],
+                "missing_expected": [],
+                "unexpected_episodes": [],
+            }
+
+        review_report = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "manual_review_transfer_failed",
+                    "title": "干净剧 (2025) {tmdbid=456}",
+                    "tmdbid": 456,
+                    "season": 1,
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_pipeline(
+                output_dir=tmp,
+                run_id="review-preview-skip",
+                config=ScanConfig(media_roots=[], mv3_base_url="http://mv3.local", mv3_token="token"),
+                cloud_report=self._cloud_report(),
+                share_search_plans=[self._share_search_plan()],
+                review_reports=[review_report],
+                execute_preview=True,
+                actions=BatchPipelineActions(share_preview=fake_preview),
+            )
+            preview = json.loads((Path(report["run_dir"]) / "06-share-preview.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(calls, [])
+        self.assertEqual(preview["executed_preview_items"], 0)
+        self.assertEqual(preview["items"][0]["status"], "skipped_preview")
+        self.assertIn("review_decision_blocked:manual_review_transfer_failed", preview["items"][0]["skip_reasons"])
+
     def test_pipeline_executes_share_search_when_requested(self) -> None:
         calls = []
 
