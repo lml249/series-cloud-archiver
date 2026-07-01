@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
@@ -81,7 +82,7 @@ def build_batch_share_preview_plan(
             root_report = report
             depth = 0
             while not bool(report.get("ok")) and depth < max_nested_depth:
-                nested = _single_nested_folder(report)
+                nested = _nested_folder_for_preview(report, expected_season=int(row.get("season") or 0))
                 if not nested:
                     break
                 depth += 1
@@ -188,7 +189,7 @@ def _run_preview(
     )
 
 
-def _single_nested_folder(report: Dict[str, object]) -> Dict[str, str]:
+def _nested_folder_for_preview(report: Dict[str, object], *, expected_season: int) -> Dict[str, str]:
     browse = report.get("browse") if isinstance(report.get("browse"), dict) else {}
     items = browse.get("items") if isinstance(browse.get("items"), list) else []
     material_items = [
@@ -197,13 +198,34 @@ def _single_nested_folder(report: Dict[str, object]) -> Dict[str, str]:
         if isinstance(item, dict) and str(item.get("media_kind") or item.get("kind") or "") != "metadata_sidecar"
     ]
     folders = [item for item in material_items if isinstance(item, dict) and str(item.get("kind") or "") == "folder"]
-    if len(folders) != 1 or len(material_items) != 1:
+    if len(folders) == 1 and len(material_items) == 1:
+        return _nested_folder_summary(folders[0])
+    if len(folders) != len(material_items):
         return {}
-    folder = folders[0]
+
+    season_matches = [
+        folder
+        for folder in folders
+        if expected_season > 0 and _season_folder_number(str(folder.get("name") or "")) == expected_season
+    ]
+    if len(season_matches) == 1:
+        return _nested_folder_summary(season_matches[0])
+    return {}
+
+
+def _nested_folder_summary(folder: Dict[str, object]) -> Dict[str, str]:
     cid = str(folder.get("file_id") or "")
     name = str(folder.get("name") or "")
     index = str(folder.get("index") or "")
     return {"cid": cid, "name": name, "index": index} if cid else {}
+
+
+def _season_folder_number(name: str) -> int:
+    for pattern in (r"(?i)\bSeason\s*0?(\d{1,2})\b", r"(?i)\bS0?(\d{1,2})\b", r"第\s*0?(\d{1,2})\s*季"):
+        match = re.search(pattern, name)
+        if match:
+            return int(match.group(1))
+    return 0
 
 
 def render_batch_share_preview_report(report: Dict[str, object], output_format: str) -> str:

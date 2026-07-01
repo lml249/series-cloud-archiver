@@ -4033,6 +4033,140 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertEqual(calls[1].get("browse_cid"), "folder-1")
         self.assertEqual(calls[2].get("browse_cid"), "season-1")
 
+    def test_execute_preview_auto_enters_matching_season_folder(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "9号秘事",
+                    "tmdbid": 61746,
+                    "season": 3,
+                    "expected_episode_count": 6,
+                    "expected_episodes": [1, 2, 3, 4, 5, 6],
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 3,
+                            "search_keyword": "9号秘事",
+                            "title": "名称: 9号秘事",
+                            "score": 45,
+                            "blockers": ["episode_coverage_unclear"],
+                        }
+                    },
+                }
+            ],
+        }
+        calls = []
+
+        def fake_preview(base_url, token, keyword, **kwargs):
+            calls.append(kwargs)
+            if not kwargs.get("browse_cid"):
+                return {
+                    "ok": False,
+                    "episode_count": 0,
+                    "blockers": ["episode_count_mismatch"],
+                    "missing_expected": [1, 2, 3, 4, 5, 6],
+                    "unexpected_episodes": [],
+                    "browse": {
+                        "ok": True,
+                        "items": [
+                            {"kind": "folder", "media_kind": "folder", "name": "Season 1", "file_id": "season-1", "index": 1},
+                            {"kind": "folder", "media_kind": "folder", "name": "Season 2", "file_id": "season-2", "index": 2},
+                            {"kind": "folder", "media_kind": "folder", "name": "Season 3", "file_id": "season-3", "index": 3},
+                            {"kind": "folder", "media_kind": "folder", "name": "Season 4", "file_id": "season-4", "index": 4},
+                            {"kind": "file", "media_kind": "metadata_sidecar", "name": "tvshow.nfo", "file_id": "nfo"},
+                            {"kind": "file", "media_kind": "metadata_sidecar", "name": "poster.jpg", "file_id": "poster"},
+                        ],
+                    },
+                }
+            self.assertEqual(kwargs.get("browse_cid"), "season-3")
+            return {
+                "ok": True,
+                "episode_count": 6,
+                "episodes": [1, 2, 3, 4, 5, 6],
+                "blockers": [],
+                "missing_expected": [],
+                "unexpected_episodes": [],
+                "browse_cid": kwargs.get("browse_cid"),
+            }
+
+        report = build_batch_share_preview_plan(
+            batch_plan,
+            execute_preview=True,
+            base_url="http://mv3.example",
+            token="token",
+            min_candidate_score=45,
+            preview_func=fake_preview,
+        )
+
+        item = report["items"][0]
+        self.assertEqual(report["ready_for_receive_items"], 1)
+        self.assertEqual(item["status"], "preview_ready_for_receive")
+        self.assertEqual(item["nested_preview_cid"], "season-3")
+        self.assertEqual(item["nested_preview_folder_name"], "Season 3")
+        self.assertEqual(item["nested_previews"][0]["index"], "3")
+        self.assertEqual(calls[0].get("browse_cid"), "")
+        self.assertEqual(calls[1].get("browse_cid"), "season-3")
+
+    def test_execute_preview_keeps_mixed_folder_and_video_blocked(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "9号秘事",
+                    "tmdbid": 61746,
+                    "season": 3,
+                    "expected_episode_count": 6,
+                    "expected_episodes": [1, 2, 3, 4, 5, 6],
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 3,
+                            "search_keyword": "9号秘事",
+                            "title": "名称: 9号秘事",
+                            "score": 45,
+                            "blockers": ["episode_coverage_unclear"],
+                        }
+                    },
+                }
+            ],
+        }
+        calls = []
+
+        def fake_preview(base_url, token, keyword, **kwargs):
+            calls.append(kwargs)
+            return {
+                "ok": False,
+                "episode_count": 1,
+                "blockers": ["episode_count_mismatch"],
+                "missing_expected": [2, 3, 4, 5, 6],
+                "unexpected_episodes": [],
+                "browse": {
+                    "ok": True,
+                    "items": [
+                        {"kind": "folder", "media_kind": "folder", "name": "Season 3", "file_id": "season-3", "index": 3},
+                        {"kind": "file", "media_kind": "video", "name": "Inside.No.9.S01E01.mkv", "file_id": "video-1"},
+                    ],
+                },
+            }
+
+        report = build_batch_share_preview_plan(
+            batch_plan,
+            execute_preview=True,
+            base_url="http://mv3.example",
+            token="token",
+            min_candidate_score=45,
+            preview_func=fake_preview,
+        )
+
+        item = report["items"][0]
+        self.assertEqual(report["blocked_preview_items"], 1)
+        self.assertEqual(item["status"], "preview_blocked")
+        self.assertFalse(item["nested_preview_attempted"])
+        self.assertEqual(len(item["nested_previews"]), 0)
+        self.assertEqual(calls[0].get("browse_cid"), "")
+        self.assertEqual(len(calls), 1)
+
     def test_receive_plan_uses_verified_nested_folder_preview(self) -> None:
         preview_report = {
             "mode": "readonly-batch-mv3-share-preview",
