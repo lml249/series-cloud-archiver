@@ -3161,6 +3161,131 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("batch-finalize-run:emby_media_updated_verify", item["post_cleanup_reports"])
         self.assertIn("已完成清理", item["post_cleanup_result"])
 
+    def test_batch_review_report_combines_finalize_gates_with_hlink_orphan_execute(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "state": "planned_validation_then_cleanup",
+                    "title": "9号秘事",
+                    "tmdbid": 61746,
+                    "season": 3,
+                    "cloud_status": "cloud_strm_complete",
+                    "expected_episode_count": 6,
+                }
+            ],
+        }
+        finalize_report = {
+            "mode": "batch-finalize-run",
+            "items": [
+                {
+                    "status": "failed_cleanup_execute",
+                    "title": "9号秘事",
+                    "tmdbid": 61746,
+                    "season": 3,
+                    "expected_episode_count": 6,
+                    "blockers": ["hlink_delete_failed"],
+                    "stages": [
+                        {"stage": "strm_verify", "ok": True},
+                        {"stage": "strm_nfo_language_audit", "ok": True},
+                        {"stage": "emby_media_updated_verify", "ok": True},
+                        {"stage": "cloud_hlink_cleanup_execute", "ok": False, "blockers": ["hlink_delete_failed"]},
+                    ],
+                }
+            ],
+        }
+        orphan_execute = {
+            "mode": "cloud-hlink-orphan-cleanup-execute",
+            "title": "9号秘事",
+            "ok": True,
+            "approved": True,
+            "current_precheck": {
+                "mode": "cloud-hlink-orphan-cleanup-preview",
+                "title": "9号秘事",
+                "ok": True,
+                "ready_for_execute": True,
+                "expected": {
+                    "tmdbid": 61746,
+                    "episode_count": 6,
+                    "episode_min": 1,
+                    "episode_max": 6,
+                    "required_target_prefix": "/已整理/series/9号秘事 (2014) {tmdbid=61746}/Season 3",
+                },
+                "qbittorrent": {"linked_count": 0, "hashes": []},
+                "filesystem": {"source_roots": []},
+                "strm": {
+                    "mode": "strm-verify",
+                    "title": "9号秘事",
+                    "ok": True,
+                    "expected": {
+                        "episode_count": 6,
+                        "episode_min": 1,
+                        "episode_max": 6,
+                        "required_target_prefix": "/已整理/series/9号秘事 (2014) {tmdbid=61746}/Season 3",
+                    },
+                    "strm": {
+                        "roots": [
+                            {
+                                "path": "/example/mv3/strm/series/9号秘事 (2014) {tmdbid=61746}/Season 3",
+                                "exists": True,
+                            }
+                        ],
+                        "combined": {"episode_count": 6, "episode_min": 1, "episode_max": 6, "missing_in_range": []},
+                    },
+                    "blockers": [],
+                },
+                "blockers": [],
+            },
+            "hlink_delete": {
+                "path": "/example/hlink/TV/9号秘事 (2014) {tmdbid=61746}/Season 03",
+                "ok": True,
+            },
+            "verification": {
+                "ok": True,
+                "hlink_exists": False,
+                "strm": {
+                    "mode": "strm-verify",
+                    "title": "9号秘事",
+                    "ok": True,
+                    "expected": {
+                        "episode_count": 6,
+                        "episode_min": 1,
+                        "episode_max": 6,
+                        "required_target_prefix": "/已整理/series/9号秘事 (2014) {tmdbid=61746}/Season 3",
+                    },
+                    "strm": {
+                        "roots": [
+                            {
+                                "path": "/example/mv3/strm/series/9号秘事 (2014) {tmdbid=61746}/Season 3",
+                                "exists": True,
+                            }
+                        ],
+                        "combined": {"episode_count": 6, "episode_min": 1, "episode_max": 6, "missing_in_range": []},
+                    },
+                    "blockers": [],
+                },
+                "blockers": [],
+            },
+            "blockers": [],
+        }
+
+        report = build_batch_review_report(
+            batch_plan,
+            finalize_run_reports=[finalize_report],
+            post_cleanup_reports=[orphan_execute],
+        )
+
+        self.assertEqual(report["decision_counts"]["done_cleanup_verified"], 1)
+        item = report["items"][0]
+        self.assertEqual(item["decision"], "done_cleanup_verified")
+        self.assertEqual(item["finalize_status"], "failed_cleanup_execute")
+        self.assertEqual(item["post_cleanup_status"], "cleanup_executed_verified")
+        self.assertIn("cloud-hlink-orphan-cleanup-execute", item["post_cleanup_reports"])
+        self.assertIn("batch-finalize-run:strm_nfo_language_audit", item["post_cleanup_reports"])
+        self.assertIn("batch-finalize-run:emby_media_updated_verify", item["post_cleanup_reports"])
+        self.assertIn("STRM 6/6 完整", item["post_cleanup_result"])
+
     def test_batch_review_report_treats_qb_orphan_missing_hash_as_noop_gate(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",

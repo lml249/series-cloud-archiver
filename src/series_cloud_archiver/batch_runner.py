@@ -2872,6 +2872,10 @@ def _post_cleanup_gate_item(report: Dict[str, object]) -> Dict[str, object]:
         return _post_cleanup_item_from_emby_verify(report)
     if mode == "strm-verify":
         return _post_cleanup_item_from_strm_verify(report)
+    if mode == "cloud-hlink-cleanup-execute":
+        return _post_cleanup_item_from_hlink_cleanup_execute(report)
+    if mode == "cloud-hlink-orphan-cleanup-execute":
+        return _post_cleanup_item_from_hlink_orphan_cleanup_execute(report)
     if mode == "qb-orphan-torrent-cleanup-preview":
         return _post_cleanup_item_from_qb_orphan_preview(report)
     if mode == "no-hash-local-absent-verify":
@@ -3000,6 +3004,86 @@ def _post_cleanup_item_from_qb_orphan_preview(report: Dict[str, object]) -> Dict
         "episode_count": int(combined.get("episode_count") or expected.get("episode_count") or 0),
         "blockers": [blocker for blocker in _string_list(report.get("blockers")) if blocker != "qb_torrent_not_found"],
         "reports": "qb-orphan-torrent-cleanup-preview",
+    }
+
+
+def _post_cleanup_item_from_hlink_cleanup_execute(report: Dict[str, object]) -> Dict[str, object]:
+    verification = report.get("verification") if isinstance(report.get("verification"), dict) else {}
+    strm_report = verification.get("strm") if isinstance(verification.get("strm"), dict) else {}
+    expected = strm_report.get("expected") if isinstance(strm_report.get("expected"), dict) else {}
+    strm_section = strm_report.get("strm") if isinstance(strm_report.get("strm"), dict) else {}
+    combined = strm_section.get("combined") if isinstance(strm_section.get("combined"), dict) else {}
+    roots = strm_section.get("roots") if isinstance(strm_section.get("roots"), list) else []
+    hlink_delete = report.get("hlink_delete") if isinstance(report.get("hlink_delete"), dict) else {}
+    identity = _post_cleanup_identity_from_paths(
+        _paths_from_strm_roots(roots)
+        + [
+            str(expected.get("required_target_prefix") or ""),
+            str(hlink_delete.get("path") or ""),
+            str(report.get("title") or ""),
+        ]
+    )
+    source_roots = verification.get("source_roots") if isinstance(verification.get("source_roots"), list) else []
+    qb_remaining = verification.get("qb_remaining") if isinstance(verification.get("qb_remaining"), list) else []
+    source_exists = ""
+    if source_roots:
+        source_exists = _bool_string(any(bool(item.get("exists")) for item in source_roots if isinstance(item, dict)))
+    return {
+        "mode": "post-cleanup-gate-summary",
+        "source_mode": "cloud-hlink-cleanup-execute",
+        "title": report.get("title", ""),
+        "tmdbid": int(identity[0] or 0),
+        "season": int(identity[1] or 0),
+        "status": "post_cleanup_gates_partial",
+        "qb_remaining": "0" if bool(report.get("ok")) and not qb_remaining else str(len(qb_remaining)),
+        "hlink_exists": _bool_string(not bool(report.get("ok")) or bool(verification.get("hlink_exists")) or not bool(hlink_delete.get("ok"))),
+        "source_exists": source_exists,
+        "strm_ok": _bool_string(bool(report.get("ok")) and bool(strm_report.get("ok")) and int(combined.get("episode_count") or 0) > 0 and not combined.get("missing_in_range")),
+        "episode_count": int(combined.get("episode_count") or expected.get("episode_count") or 0),
+        "blockers": sorted(set(_string_list(report.get("blockers")) + _string_list(verification.get("blockers")))),
+        "reports": "cloud-hlink-cleanup-execute",
+    }
+
+
+def _post_cleanup_item_from_hlink_orphan_cleanup_execute(report: Dict[str, object]) -> Dict[str, object]:
+    current_precheck = report.get("current_precheck") if isinstance(report.get("current_precheck"), dict) else {}
+    verification = report.get("verification") if isinstance(report.get("verification"), dict) else {}
+    expected = current_precheck.get("expected") if isinstance(current_precheck.get("expected"), dict) else {}
+    strm_report = verification.get("strm") if isinstance(verification.get("strm"), dict) else current_precheck.get("strm") if isinstance(current_precheck.get("strm"), dict) else {}
+    strm_section = strm_report.get("strm") if isinstance(strm_report.get("strm"), dict) else {}
+    combined = strm_section.get("combined") if isinstance(strm_section.get("combined"), dict) else {}
+    roots = strm_section.get("roots") if isinstance(strm_section.get("roots"), list) else []
+    hlink_delete = report.get("hlink_delete") if isinstance(report.get("hlink_delete"), dict) else {}
+    filesystem = current_precheck.get("filesystem") if isinstance(current_precheck.get("filesystem"), dict) else {}
+    source_roots = filesystem.get("source_roots") if isinstance(filesystem.get("source_roots"), list) else []
+    qb = current_precheck.get("qbittorrent") if isinstance(current_precheck.get("qbittorrent"), dict) else {}
+    linked_count = int(qb.get("linked_count") or qb.get("matched_count") or 0)
+    identity = _post_cleanup_identity_from_paths(
+        _paths_from_strm_roots(roots)
+        + [
+            str(expected.get("required_target_prefix") or ""),
+            str(hlink_delete.get("path") or ""),
+            str(report.get("title") or ""),
+        ]
+    )
+    source_exists = _bool_string(any(bool(item.get("exists")) for item in source_roots if isinstance(item, dict)))
+    if bool(report.get("ok")) and linked_count == 0 and not source_roots:
+        source_exists = "false"
+    hlink_gone = bool(report.get("ok")) and bool(hlink_delete.get("ok")) and not bool(verification.get("hlink_exists"))
+    return {
+        "mode": "post-cleanup-gate-summary",
+        "source_mode": "cloud-hlink-orphan-cleanup-execute",
+        "title": report.get("title", ""),
+        "tmdbid": int(expected.get("tmdbid") or identity[0] or 0),
+        "season": int(expected.get("season") or identity[1] or 0),
+        "status": "post_cleanup_gates_partial",
+        "qb_remaining": "0" if bool(report.get("ok")) and linked_count == 0 else str(linked_count),
+        "hlink_exists": "false" if hlink_gone else _bool_string(bool(verification.get("hlink_exists"))),
+        "source_exists": source_exists,
+        "strm_ok": _bool_string(bool(report.get("ok")) and bool(strm_report.get("ok")) and int(combined.get("episode_count") or 0) > 0 and not combined.get("missing_in_range")),
+        "episode_count": int(combined.get("episode_count") or expected.get("episode_count") or 0),
+        "blockers": sorted(set(_string_list(report.get("blockers")) + _string_list(verification.get("blockers")) + _string_list(current_precheck.get("blockers")))),
+        "reports": "cloud-hlink-orphan-cleanup-execute",
     }
 
 

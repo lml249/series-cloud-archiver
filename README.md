@@ -356,7 +356,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-plan \
 
 如果只是想给人工复核看，也可以把同一条命令的 `--format json` 改成 `--format csv`，输出会平铺出剧名、TMDB、季号、集数、复核原因、推荐资源、清理预览阻断和本地路径。
 
-更推荐在每批 dry-run 或执行后生成一份合并人工复核表。`batch-review-report` 只读取已有 JSON 报告，不重新扫描全库，不调用 MV3/MP/Emby/qB，也不会写云盘或删除本地文件。它会把 `batch-plan`、只读分享预览结果、转存整理 runner 结果和 finalize 运行结果合并，给每个剧季写出 `decision`、`next_action`、候选资源、缺失集、转存失败阶段、清理失败阶段和阻断原因：
+更推荐在每批 dry-run 或执行后生成一份合并人工复核表。`batch-review-report` 只读取已有 JSON 报告，不重新扫描全库，不调用 MV3/MP/Emby/qB，也不会写云盘或删除本地文件。它会把 `batch-plan`、只读分享预览结果、转存整理 runner 结果、finalize 运行结果，以及可重复传入的 `--post-cleanup-report` 清理后证据报告合并，给每个剧季写出 `decision`、`next_action`、候选资源、缺失集、转存失败阶段、清理失败阶段和阻断原因：
 
 ```bash
 PYTHONPATH=src python3 -m series_cloud_archiver batch-review-report \
@@ -364,9 +364,12 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-review-report \
   --share-preview-report /example/app/series-cloud-archiver/outputs/current-20260629/batch-share-preview-executed-YYYYMMDD.json \
   --transfer-run-report /example/app/series-cloud-archiver/outputs/current-20260629/batch-transfer-run-YYYYMMDD.json \
   --finalize-run-report /example/app/series-cloud-archiver/outputs/current-20260629/batch-finalize-run-YYYYMMDD.json \
+  --post-cleanup-report /example/app/series-cloud-archiver/outputs/current-20260629/orphan-hlink-execute-YYYYMMDD.json \
   --format csv \
   --output /example/app/series-cloud-archiver/outputs/current-20260629/batch-review-YYYYMMDD.csv
 ```
+
+`--post-cleanup-report` 可以接 `cloud-hlink-cleanup-execute`、`cloud-hlink-orphan-cleanup-execute`、`qb-orphan-torrent-cleanup-preview`、`no-hash-local-absent-verify`、`mp-cleanup-verify`、`strm-verify`、`strm-nfo-language-audit`、`emby-media-updated` 等 JSON 报告；只有 qB、hlink/source、STRM、中文 NFO、Emby 这些门禁证据合并后全部为绿，复核表才会标成 `done_cleanup_verified`。
 
 常见 `decision` 含义：
 
@@ -691,6 +694,8 @@ PYTHONPATH=src python3 -m series_cloud_archiver cloud-hlink-orphan-cleanup-previ
   --format json \
   --output reports/cloud-hlink-orphan-preview.json
 ```
+
+执行单季 hlink-only 清理时也必须从预览 JSON 进入，并显式复核标题、TMDB 和 hlink 根；执行报告可以作为 `batch-review-report --post-cleanup-report` 的输入，与 finalize 里的 STRM/NFO/Emby 门禁合并成清理完成证据。
 
 如果本地残留的是一个多季 hlink 根目录，不要逐季手动删，也不要把整部剧当成单季去骗过集数检查。使用多季 hlink-only 预览，每季重复一个 `--season`；普通连续季写成 `季号:STRM季目录:集数:起始集:结束集`，本地历史本来就不连续时写成 `季号:STRM季目录:episodes=1,3-13`。云端 STRM 多出本地没有的集数不会阻断，但本地 hlink 已有的任何一集在 STRM 中缺失都会阻断：
 
