@@ -326,7 +326,9 @@ PYTHONPATH=src python3 -m series_cloud_archiver finalize-remediation-run \
   --output reports/finalize-remediation-run.json
 ```
 
-确认只读计划后，才加 `--execute-readonly` 批量执行允许列表里的诊断命令。runner 只接受 `strm-verify`、`mv3-cloud-duplicate-video-cleanup` dry-run、`mv3-cloud-browse`、`mv3-cloud-search`、`qb-orphan-torrent-cleanup-preview`、`mp-cleanup-preview` 这类只读/预览命令；它会把每条命令的输出强制写到 `--output-dir`，并阻断任何 `--approve-*` 审批参数。它不会转存、整理、生成 STRM、刮削、刷新 Emby、删除云盘文件、删除 qB、删除 hlink 或删除 source。
+确认只读计划后，才加 `--execute-readonly` 批量执行允许列表里的诊断命令。runner 只接受 `strm-verify`、`strm-nfo-language-audit`、`emby-media-updated` 局部 STRM 路径通知/验证、`mv3-cloud-duplicate-video-cleanup` dry-run、`mv3-cloud-browse`、`mv3-cloud-search`、`qb-orphan-torrent-cleanup-preview`、`mp-cleanup-preview` 这类只读/预览命令；它会把每条命令的输出强制写到 `--output-dir`，并阻断任何 `--approve-*` 审批参数。它不会转存、整理、生成 STRM、刮削、触发 Emby 全库扫描、删除云盘文件、删除 qB、删除 hlink 或删除 source。
+
+如果类别是 `emby_strm_mismatch`，修复计划会先复核 STRM 集数和中文 NFO，再只把 Emby 容器看到的 STRM 侧路径传给 `emby-media-updated` 做局部通知和验证。这个类别不能使用 `/已整理`、`/未整理` 或裸 `/series` 云盘实体路径；只要 Emby 仍看不到完整集数，就继续保留在 finalize 阻断项，不能进入清理审批。
 
 如果 `strm_mismatch` 的诊断显示“不是缺集，而是 STRM 和云盘实际集数都比旧预期更多”，不要手工改 finalize 计划。先让项目从诊断目录生成只读的预期集数修正建议：
 

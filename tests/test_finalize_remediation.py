@@ -128,6 +128,56 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
         self.assertIn("cloud_duplicate_delete_review", rendered_csv)
         self.assertIn("readonly-finalize-remediation-plan", render_finalize_remediation_plan(report, "json"))
 
+    def test_plan_generates_emby_strm_mismatch_readonly_diagnostics(self) -> None:
+        review = {
+            "mode": "readonly-batch-review-report",
+            "items": [
+                {
+                    "decision": "blocked_after_finalize_gates",
+                    "title": "南部档案",
+                    "tmdbid": 278605,
+                    "season": 1,
+                    "expected_episode_count": 33,
+                    "finalize_status": "failed_emby_media_updated",
+                    "finalize_blockers": "emby_strm_records_missing; emby_strm_episode_count_mismatch",
+                    "strm_root": "/volume4/volume4/mv3/strm/未识别/南部档案 (2026) {tmdbid=278605}/Season 1",
+                    "cloud_media_path": "/已整理/未识别/南部档案 (2026) {tmdbid=278605}/Season 1",
+                }
+            ],
+        }
+        finalize = {
+            "mode": "batch-finalize-run",
+            "items": [
+                {
+                    "title": "南部档案",
+                    "tmdbid": 278605,
+                    "season": 1,
+                    "status": "failed_emby_media_updated",
+                    "blockers": ["emby_strm_records_missing", "emby_strm_episode_count_mismatch"],
+                    "expected_episode_count": 33,
+                    "strm_root": "/volume4/volume4/mv3/strm/未识别/南部档案 (2026) {tmdbid=278605}/Season 1",
+                    "service_strm_root": "/volume4/mv3/strm/未识别/南部档案 (2026) {tmdbid=278605}/Season 1",
+                    "cloud_season_path": "/已整理/未识别/南部档案 (2026) {tmdbid=278605}/Season 1",
+                    "required_target_prefix": "/已整理/未识别/南部档案 (2026) {tmdbid=278605}/Season 1",
+                }
+            ],
+        }
+
+        report = build_finalize_remediation_plan(review, [finalize], env_file="/safe/.env")
+        row = report["items"][0]
+        command_text = "\n".join(str(command.get("command", "")) for command in row["commands"])
+
+        self.assertEqual(row["category"], "emby_strm_mismatch")
+        self.assertEqual(row["service_strm_root"], "/volume4/mv3/strm/未识别/南部档案 (2026) {tmdbid=278605}/Season 1")
+        self.assertIn("strm-verify", command_text)
+        self.assertIn("strm-nfo-language-audit", command_text)
+        self.assertIn("emby-media-updated", command_text)
+        self.assertIn("--updated-path '/volume4/mv3/strm/未识别/南部档案 (2026) {tmdbid=278605}'", command_text)
+        self.assertIn("--updated-path '/volume4/mv3/strm/未识别/南部档案 (2026) {tmdbid=278605}/Season 1'", command_text)
+        self.assertIn("--strm-path-prefix '/volume4/mv3/strm/未识别/南部档案 (2026) {tmdbid=278605}/Season 1'", command_text)
+        self.assertIn("--expected-episode-count 33", command_text)
+        self.assertNotIn("--approve-", command_text)
+
     def test_cli_writes_finalize_remediation_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -233,6 +283,77 @@ class FinalizeRemediationPlanTest(unittest.TestCase):
         self.assertEqual(calls[0][1]["env"]["PYTHONPATH"], "/example/app/src")
         rendered = render_finalize_remediation_run(run, "csv")
         self.assertIn("strm_episode_count_mismatch", rendered)
+
+    def test_run_executes_emby_and_nfo_readonly_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output_dir = tmp_path / "diagnostics"
+            plan = {
+                "mode": "readonly-finalize-remediation-plan",
+                "items": [
+                    {
+                        "category": "emby_strm_mismatch",
+                        "title": "南部档案",
+                        "tmdbid": 278605,
+                        "season": 1,
+                        "commands": [
+                            {
+                                "stage": "strm_nfo_language_audit_readonly",
+                                "command": (
+                                    "PYTHONPATH=src python3 -m series_cloud_archiver strm-nfo-language-audit "
+                                    "--strm-root '/volume4/volume4/mv3/strm/未识别/南部档案 (2026) {tmdbid=278605}/Season 1' "
+                                    "--expected-nfo-count 33 --format json --output nfo.json"
+                                ),
+                            },
+                            {
+                                "stage": "emby_media_updated_verify_readonly",
+                                "command": (
+                                    "PYTHONPATH=src python3 -m series_cloud_archiver emby-media-updated --env-file /safe/.env "
+                                    "--title 南部档案 --updated-path '/volume4/mv3/strm/未识别/南部档案 (2026) {tmdbid=278605}' "
+                                    "--updated-path '/volume4/mv3/strm/未识别/南部档案 (2026) {tmdbid=278605}/Season 1' "
+                                    "--strm-path-prefix '/volume4/mv3/strm/未识别/南部档案 (2026) {tmdbid=278605}/Season 1' "
+                                    "--expected-episode-count 33 --expected-episode-min 1 --expected-episode-max 33 "
+                                    "--format json --output emby.json"
+                                ),
+                            },
+                        ],
+                    }
+                ],
+            }
+            calls = []
+
+            def fake_runner(argv, **kwargs):
+                calls.append((argv, kwargs))
+                output_path = Path(argv[argv.index("--output") + 1])
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                mode = argv[3]
+                payload = {"mode": mode, "ok": True, "blockers": [], "warnings": []}
+                if mode == "strm-nfo-language-audit":
+                    payload["summary"] = {"nfo_count": 33, "suspect_english_count": 0}
+                if mode == "emby-media-updated":
+                    payload["verification"] = {
+                        "totals": {"stale_records": 0, "strm_records": 33},
+                        "strm": {"episode_count": 33, "episodes": list(range(1, 34))},
+                    }
+                output_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            run = run_finalize_remediation_plan(
+                plan,
+                output_dir=str(output_dir),
+                categories=["emby_strm_mismatch"],
+                execute_readonly=True,
+                cwd="/example/app",
+                command_runner=fake_runner,
+            )
+
+        self.assertTrue(run["ok"])
+        self.assertEqual(run["planned_commands"], 2)
+        self.assertEqual(run["executed_commands"], 2)
+        self.assertEqual([call[0][3] for call in calls], ["strm-nfo-language-audit", "emby-media-updated"])
+        summaries = {item["stage"]: item["diagnostic_summary"] for item in run["items"]}
+        self.assertEqual(summaries["strm_nfo_language_audit_readonly"]["nfo_count"], 33)
+        self.assertEqual(summaries["emby_media_updated_verify_readonly"]["emby_strm_records"], 33)
 
     def test_run_blocks_approval_flags_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

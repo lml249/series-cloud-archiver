@@ -18,7 +18,9 @@ CommandRunner = Callable[..., object]
 
 READONLY_REMEDIATION_COMMANDS = {
     "extra-source-media-plan",
+    "emby-media-updated",
     "strm-verify",
+    "strm-nfo-language-audit",
     "mv3-cloud-duplicate-video-cleanup",
     "mv3-cloud-browse",
     "mv3-cloud-search",
@@ -897,6 +899,12 @@ def _remediation_row(
     expected_count = int(review_item.get("expected_episode_count") or finalize_item.get("expected_episode_count") or 0)
     expected_min, expected_max = _episode_range(review_item, finalize_item, expected_count)
     strm_root = str(finalize_item.get("strm_root") or review_item.get("strm_root") or "")
+    service_strm_root = str(
+        finalize_item.get("service_strm_root")
+        or finalize_item.get("emby_strm_root")
+        or review_item.get("service_strm_root")
+        or _service_strm_root(strm_root)
+    )
     cloud_season_path = str(finalize_item.get("cloud_season_path") or finalize_item.get("required_target_prefix") or review_item.get("cloud_media_path") or "")
     cloud_title_path = str(finalize_item.get("cloud_title_path") or _cloud_title_path(cloud_season_path) or "")
     hlink_root = str(finalize_item.get("hlink_root") or _first_cell_value(review_item.get("source_paths")) or "")
@@ -914,6 +922,7 @@ def _remediation_row(
         expected_min=expected_min,
         expected_max=expected_max,
         strm_root=strm_root,
+        service_strm_root=service_strm_root,
         cloud_season_path=cloud_season_path,
         cloud_title_path=cloud_title_path,
         hlink_root=hlink_root,
@@ -937,6 +946,7 @@ def _remediation_row(
         "expected_episode_min": expected_min,
         "expected_episode_max": expected_max,
         "strm_root": strm_root,
+        "service_strm_root": service_strm_root,
         "cloud_title_path": cloud_title_path,
         "cloud_season_path": cloud_season_path,
         "hlink_root": hlink_root,
@@ -1119,11 +1129,22 @@ def _diagnostic_summary(report: JsonDict) -> JsonDict:
             "duplicate_episodes",
             "protected_strm_target_count",
             "strm_file_count",
+            "nfo_count",
+            "suspect_english_count",
+            "suspect_non_chinese_count",
         ):
             if key in report["summary"]:
                 summary[key] = report["summary"][key]
     if isinstance(report.get("delete_plan"), dict):
         summary["duplicate_video_count"] = report["delete_plan"].get("duplicate_video_count")
+    verification = report.get("verification") if isinstance(report.get("verification"), dict) else {}
+    if verification:
+        totals = verification.get("totals") if isinstance(verification.get("totals"), dict) else {}
+        strm = verification.get("strm") if isinstance(verification.get("strm"), dict) else {}
+        summary["emby_stale_records"] = totals.get("stale_records")
+        summary["emby_strm_records"] = totals.get("strm_records")
+        summary["emby_episode_count"] = strm.get("episode_count")
+        summary["emby_episodes"] = strm.get("episodes")
     return summary
 
 
@@ -1144,6 +1165,7 @@ def _commands(
     expected_min: int,
     expected_max: int,
     strm_root: str,
+    service_strm_root: str,
     cloud_season_path: str,
     cloud_title_path: str,
     hlink_root: str,
@@ -1180,6 +1202,52 @@ def _commands(
                 ),
             }
         )
+        return commands
+    if category == "emby_strm_mismatch":
+        emby_root = service_strm_root or _service_strm_root(strm_root)
+        updated_args = " ".join(f"--updated-path {_q(path)}" for path in _emby_media_updated_paths(emby_root))
+        commands.append(
+            {
+                "stage": "strm_verify_readonly",
+                "command": (
+                    "PYTHONPATH=src python3 -m series_cloud_archiver strm-verify "
+                    f"--title {_q(title)} --strm-root {_q(strm_root)} "
+                    f"--expected-episode-count {expected_count} --expected-episode-min {expected_min} --expected-episode-max {expected_max} "
+                    f"--required-target-prefix {_q(required_prefix)} --format json --output {_q(prefix + '-strm-verify.json')}"
+                ),
+            }
+        )
+        commands.append(
+            {
+                "stage": "strm_nfo_language_audit_readonly",
+                "command": (
+                    "PYTHONPATH=src python3 -m series_cloud_archiver strm-nfo-language-audit "
+                    f"--strm-root {_q(strm_root)} --expected-nfo-count {expected_count} "
+                    f"--format json --output {_q(prefix + '-nfo-language.json')}"
+                ),
+            }
+        )
+        if env_file and emby_root and updated_args:
+            commands.append(
+                {
+                    "stage": "emby_media_updated_verify_readonly",
+                    "command": (
+                        f"PYTHONPATH=src python3 -m series_cloud_archiver emby-media-updated {env}"
+                        f"--title {_q(title)} {updated_args} --update-type Created "
+                        f"--strm-path-prefix {_q(emby_root)} --expected-episode-count {expected_count} "
+                        f"--expected-episode-min {expected_min} --expected-episode-max {expected_max} "
+                        f"--verify-poll-seconds 3 --verify-max-wait-seconds 45 "
+                        f"--format json --output {_q(prefix + '-emby-media-updated.json')}"
+                    ),
+                }
+            )
+        else:
+            commands.append(
+                {
+                    "stage": "emby_media_updated_missing_context",
+                    "command": "缺少 env_file 或 STRM 服务侧路径，无法自动运行 Emby Media/Updated 局部验证",
+                }
+            )
         return commands
     if category == "cloud_path_missing":
         commands.append(
@@ -1285,6 +1353,8 @@ def _commands(
 
 def _category(status: str, blockers: Sequence[str]) -> str:
     blocker_set = set(blockers)
+    if status == "failed_emby_media_updated" or any(blocker.startswith("emby_strm_") for blocker in blocker_set):
+        return "emby_strm_mismatch"
     if status == "failed_strm_verify" or any(blocker.startswith("strm_") for blocker in blocker_set):
         return "strm_mismatch"
     if "cloud_duplicate_delete_approval_required" in blocker_set:
@@ -1301,6 +1371,7 @@ def _category(status: str, blockers: Sequence[str]) -> str:
 def _next_action(category: str) -> str:
     return {
         "strm_mismatch": "先重跑 STRM 只读校验并比对云盘季目录，确认缺集/错季后再回到转存或 STRM 修复",
+        "emby_strm_mismatch": "先重跑 STRM/NFO 只读校验，再用 STRM 服务侧路径触发 Emby Media/Updated 局部通知并验证入库集数",
         "cloud_path_missing": "先浏览/搜索 MV3 云盘目录，确认正确 Season 路径或目录命名，再修复 STRM target 或云盘目录",
         "cloud_duplicate_delete_review": "先复核云盘重复视频 dry-run 明细，确认 protected STRM target 完整后再单独审批重复视频删除",
         "extra_source_media": "先处理源目录内 hlink 未覆盖的视频：用 extra-source-media-plan 做 MV3 只读识别或人工排除",
@@ -1324,6 +1395,23 @@ def _finalize_items_by_identity(reports: Sequence[JsonDict]) -> Dict[Tuple[int, 
 
 def _identity_key(item: JsonDict) -> Tuple[int, int, str]:
     return (int(item.get("tmdbid") or 0), int(item.get("season") or 0), str(item.get("title") or ""))
+
+
+def _service_strm_root(strm_root: str) -> str:
+    path = str(strm_root or "").rstrip("/")
+    return re.sub(r"^/volume(\d+)/volume\1/", r"/volume\1/", path)
+
+
+def _cloud_path_looks_like_season(path: str) -> bool:
+    return bool(re.search(r"(?i)/(?:Season\s*0?\d+|第\s*\d+\s*季)$", str(path or "").rstrip("/")))
+
+
+def _emby_media_updated_paths(service_root: str) -> List[str]:
+    season_root = str(service_root or "").rstrip("/")
+    if not season_root:
+        return []
+    series_root = season_root.rsplit("/", 1)[0] if _cloud_path_looks_like_season(season_root) else season_root
+    return _unique_strings([series_root, season_root])
 
 
 def _episode_range(review_item: JsonDict, finalize_item: JsonDict, expected_count: int) -> Tuple[int, int]:
