@@ -1986,9 +1986,10 @@ def repair_mv3_wrong_root_direct_season_pair(
         normalized_correct_root,
         normalized_strm_root,
         title_filter,
+        prefer_title_filter=True,
     )
     correct_title_path = _correct_title_path_for_wrong_root_title(normalized_correct_root, correct_title)
-    correct_season_path = _cloud_join_path(correct_title_path, f"Season {normalized_season:02d}") if normalized_season > 0 else ""
+    correct_season_path = _cloud_join_path(correct_title_path, _season_folder_name(normalized_season)) if normalized_season >= 0 else ""
     blockers: List[str] = []
     warnings: List[str] = []
     operations: List[Dict[str, object]] = []
@@ -2001,7 +2002,7 @@ def repair_mv3_wrong_root_direct_season_pair(
         blockers.append("wrong_root_must_differ_from_correct_root")
     if not normalized_strm_root:
         blockers.append("strm_root_required")
-    if normalized_season <= 0:
+    if normalized_season < 0:
         blockers.append("season_required")
     if not correct_title:
         blockers.append("direct_season_wrong_root_title_required")
@@ -2017,7 +2018,7 @@ def repair_mv3_wrong_root_direct_season_pair(
     rewrite_report: Dict[str, object] = {"skipped": True}
     wrong_season_resolution: Dict[str, object] = {"skipped": True}
 
-    if normalized_wrong_root and normalized_season > 0:
+    if normalized_wrong_root and normalized_season >= 0:
         wrong_season_resolution = _resolve_wrong_root_direct_season_path(client, normalized_wrong_root, normalized_season, storage, limit)
     wrong_season_path = str(wrong_season_resolution.get("selected_path") or "")
     if wrong_season_path:
@@ -2026,7 +2027,7 @@ def repair_mv3_wrong_root_direct_season_pair(
         correct_title_summary = _cloud_folder_summary_by_path(client, correct_title_path, storage, limit)
     if correct_season_path:
         correct_season = _cloud_folder_summary_by_path(client, correct_season_path, storage, limit)
-    if normalized_strm_root and normalized_season > 0 and correct_title:
+    if normalized_strm_root and normalized_season >= 0 and correct_title:
         strm_before = _strm_title_summary(
             normalized_strm_root,
             correct_title,
@@ -2135,7 +2136,7 @@ def repair_mv3_wrong_root_direct_season_pair(
         normalized_wrong_root,
         normalized_correct_root,
         season_number=normalized_season,
-    ) if normalized_strm_root and correct_title and normalized_season > 0 else strm_before
+    ) if normalized_strm_root and correct_title and normalized_season >= 0 else strm_before
     if approve_repair and not blockers:
         if int(post_wrong.get("media_count") or 0) != 0:
             blockers.append("post_move_wrong_season_still_has_media")
@@ -4598,7 +4599,7 @@ def _plan_mv3_wrong_root_direct_season(
     season_number = _season_number_from_folder_name(season_name)
     wrong_season_path = _cloud_join_path(wrong_root, season_name)
     correct_title_path = _correct_title_path_for_wrong_root_title(correct_root, title)
-    correct_season_name = f"Season {season_number:02d}" if season_number else season_name
+    correct_season_name = _season_folder_name(season_number) if season_number is not None else season_name
     correct_season_path = _cloud_join_path(correct_title_path, correct_season_name)
     wrong_season = _cloud_folder_summary_by_id(
         client,
@@ -4633,7 +4634,7 @@ def _plan_mv3_wrong_root_direct_season(
 
     if not title:
         blockers.append("title_name_not_found")
-    if not season_number:
+    if season_number is None:
         blockers.append("season_number_not_found")
     if not wrong_season.get("exists"):
         blockers.append("wrong_season_not_found")
@@ -4723,7 +4724,17 @@ def _plan_mv3_wrong_root_direct_season(
     }
 
 
-def _derive_direct_wrong_root_title(wrong_root: str, correct_root: str, strm_root: str, title_filter: str) -> str:
+def _derive_direct_wrong_root_title(
+    wrong_root: str,
+    correct_root: str,
+    strm_root: str,
+    title_filter: str,
+    *,
+    prefer_title_filter: bool = False,
+) -> str:
+    explicit = str(title_filter or "").strip().strip("/")
+    if explicit and prefer_title_filter:
+        return explicit
     strm_title = _title_name_from_strm_root(strm_root)
     if strm_title:
         return strm_title
@@ -4736,10 +4747,7 @@ def _derive_direct_wrong_root_title(wrong_root: str, correct_root: str, strm_roo
         remainder = normalized_wrong[len(normalized_correct.rstrip("/") + "/") :]
         if remainder and "/" not in remainder and not _looks_like_mv3_category_dir(remainder):
             return remainder
-    explicit = str(title_filter or "").strip().strip("/")
-    if explicit:
-        return explicit
-    return ""
+    return explicit
 
 
 def _title_name_from_strm_root(strm_root: str) -> str:
@@ -4776,7 +4784,7 @@ def _correct_title_path_for_wrong_root_title(correct_root: str, title: str) -> s
 
 
 def _wrong_root_direct_season_name_candidates(season_number: int) -> List[str]:
-    if season_number <= 0:
+    if season_number < 0:
         return []
     candidates = [
         f"S{season_number:02d}",
@@ -4817,7 +4825,7 @@ def _resolve_wrong_root_direct_season_path(
         "root_browse_ok": False,
         "root_folders": [],
     }
-    if not normalized_wrong_root or season_number <= 0:
+    if not normalized_wrong_root or season_number < 0:
         return report
 
     root_summary = _cloud_folder_summary_by_path(client, normalized_wrong_root, storage, limit)
@@ -5228,7 +5236,7 @@ def _strm_title_summary(
 ) -> Dict[str, object]:
     title_dir = _resolve_strm_title_dir(strm_root, title)
     scan_dir = title_dir
-    if season_number and title_dir.exists():
+    if season_number is not None and title_dir.exists():
         candidates = [
             title_dir / f"Season {season_number:02d}",
             title_dir / f"Season {season_number}",
@@ -5274,7 +5282,7 @@ def _strm_title_summary(
         "exists": title_dir.exists(),
         "title_dir": str(title_dir) if strm_root and title else "",
         "scan_dir": str(scan_dir) if strm_root and title else "",
-        "season": season_number or "",
+        "season": season_number if season_number is not None else "",
         "total_strm": len(strm_files),
         "episode_count": len(distinct_episodes),
         "episodes": distinct_episodes,
@@ -5288,7 +5296,7 @@ def _strm_title_summary(
 
 def _strm_season_scan_root(strm_root: str, season_number: int) -> str:
     root = Path(strm_root) if strm_root else Path("__missing__")
-    if season_number > 0 and root.exists() and root.is_dir():
+    if season_number >= 0 and root.exists() and root.is_dir():
         if _looks_like_season_folder(root.name):
             return str(root)
         for child in (
@@ -5300,6 +5308,10 @@ def _strm_season_scan_root(strm_root: str, season_number: int) -> str:
             if child.exists():
                 return str(child)
     return str(root)
+
+
+def _season_folder_name(season_number: int) -> str:
+    return f"Season {season_number:02d}"
 
 
 def _mv3_move_115(client: MV3Client, file_ids: List[str], target_cid: str, storage: str) -> Dict[str, object]:
@@ -5386,7 +5398,7 @@ def _season_number_from_folder_name(name: str) -> Optional[int]:
         number = int(match.group(1))
     except ValueError:
         return None
-    return number if number > 0 else None
+    return number if number >= 0 else None
 
 
 def _resolve_strm_title_dir(strm_root: str, title: str) -> Path:
@@ -5395,6 +5407,12 @@ def _resolve_strm_title_dir(strm_root: str, title: str) -> Path:
     root = Path(strm_root)
     if root.name == title:
         return root
+    if root.exists() and root.is_dir():
+        try:
+            if any(child.is_dir() and _looks_like_season_folder(child.name) for child in root.iterdir()):
+                return root
+        except OSError:
+            pass
     if (root / "Season 01").exists() or (root / "Season 1").exists():
         return root
     return root / title

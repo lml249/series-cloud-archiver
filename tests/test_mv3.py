@@ -612,6 +612,101 @@ class MV3WrongRootRepairTest(unittest.TestCase):
             self.assertEqual(report["precheck"]["strm"]["wrong_target_count"], 6)
             self.assertEqual(report["precheck"]["rewrite_preview"]["summary"]["rewritable_count"], 6)
 
+    def test_wrong_root_direct_season_pair_supports_specials_season_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wrong_title = "Band of Brothers {tmdbid=4613}"
+            correct_title = "兄弟连 (2001) {tmdbid=4613}"
+            strm_title_root = Path(tmp) / "strm" / "未识别" / wrong_title
+            season_dir = strm_title_root / "Season 0"
+            season_dir.mkdir(parents=True)
+            for episode in (1, 2):
+                target = f"/已整理/未识别/{wrong_title}/Season 0/Band of Brothers - S00E{episode:02d}.mkv"
+                (season_dir / f"Band of Brothers - S00E{episode:02d}.strm").write_text(target, encoding="utf-8")
+
+            with patch("urllib.request.urlopen", lambda request, timeout: _fake_mv3_direct_pair_season0_response(request)):
+                report = repair_mv3_wrong_root_direct_season_pair(
+                    "http://mv3.example",
+                    "token",
+                    f"/已整理/未识别/{wrong_title}",
+                    f"/已整理/series/{correct_title}",
+                    str(strm_title_root),
+                    season=0,
+                    storage="115-default",
+                    title_filter=correct_title,
+                    expected_episode_count=2,
+                    expected_episode_min=1,
+                    expected_episode_max=2,
+                    expected_rewrite_count=2,
+                )
+
+            self.assertTrue(report["ok"], report["blockers"])
+            self.assertTrue(report["dry_run"])
+            self.assertEqual(report["wrong_season_path"], f"/已整理/未识别/{wrong_title}/Season 0")
+            self.assertEqual(report["correct_title_path"], f"/已整理/series/{correct_title}")
+            self.assertEqual(report["correct_season_path"], f"/已整理/series/{correct_title}/Season 00")
+            self.assertEqual(report["precheck"]["wrong"]["media_count"], 2)
+            self.assertEqual(report["precheck"]["strm"]["wrong_target_count"], 2)
+            self.assertEqual(report["precheck"]["rewrite_preview"]["summary"]["rewritable_count"], 2)
+
+    def test_wrong_root_direct_season_pair_specials_approval_moves_and_rewrites(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wrong_title = "Band of Brothers {tmdbid=4613}"
+            correct_title = "兄弟连 (2001) {tmdbid=4613}"
+            strm_title_root = Path(tmp) / "strm" / "未识别" / wrong_title
+            season_dir = strm_title_root / "Season 0"
+            season_dir.mkdir(parents=True)
+            for episode in (1, 2):
+                (season_dir / f"Band of Brothers - S00E{episode:02d}.strm").write_text(
+                    f"/已整理/未识别/{wrong_title}/Season 0/Band of Brothers - S00E{episode:02d}.mkv",
+                    encoding="utf-8",
+                )
+            posted = []
+            state = {"moved": False, "target_created": False}
+
+            def fake_urlopen(request, timeout):
+                if getattr(request, "data", None):
+                    posted.append((request.full_url, json.loads(request.data.decode("utf-8"))))
+                    if request.full_url.endswith("/api/v1/files/115/folder"):
+                        body = posted[-1][1]
+                        if body.get("name") == "Season 00":
+                            state["target_created"] = True
+                    if request.full_url.endswith("/api/v1/files/115/move"):
+                        state["moved"] = True
+                return _fake_mv3_direct_pair_season0_response(
+                    request,
+                    moved=state["moved"],
+                    target_created=state["target_created"],
+                )
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                report = repair_mv3_wrong_root_direct_season_pair(
+                    "http://mv3.example",
+                    "token",
+                    f"/已整理/未识别/{wrong_title}",
+                    f"/已整理/series/{correct_title}",
+                    str(strm_title_root),
+                    season=0,
+                    storage="115-default",
+                    title_filter=correct_title,
+                    expected_episode_count=2,
+                    expected_episode_min=1,
+                    expected_episode_max=2,
+                    expected_rewrite_count=2,
+                    approve_repair=True,
+                )
+
+            self.assertTrue(report["ok"], report["blockers"])
+            self.assertTrue(report["write_executed"])
+            move_bodies = [body for url, body in posted if url.endswith("/api/v1/files/115/move")]
+            self.assertEqual(move_bodies, [{"file_ids": ["wrong-s0-file-1", "wrong-s0-file-2"], "target_cid": "correct-season-0", "storage": "115-default"}])
+            rewritten = [path.read_text(encoding="utf-8") for path in sorted(season_dir.glob("*.strm"))]
+            self.assertTrue(all(f"/已整理/series/{correct_title}/Season 00/" in content for content in rewritten))
+            self.assertTrue(all("/已整理/未识别/" not in content for content in rewritten))
+            self.assertEqual(report["post_verify"]["wrong"]["media_count"], 0)
+            self.assertEqual(report["post_verify"]["correct"]["media_count"], 2)
+            self.assertEqual(report["post_verify"]["strm"]["wrong_target_count"], 0)
+            self.assertEqual(report["post_verify"]["strm"]["correct_target_count"], 2)
+
     def test_transfer_remediation_plan_reports_split_cloud_and_strm_segments(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "strm"
@@ -1442,6 +1537,79 @@ def _fake_mv3_direct_pair_season3_response(request):
         "wrong-season-3": wrong_files,
         "correct-title-capture": [{"name": "Season 03", "cid": "correct-season-3", "is_dir": True}],
         "correct-season-3": [],
+    }
+
+    if parsed.path.endswith("/api/v1/files/cloud/info"):
+        return FakeResponse({"success": True, "data": info.get(path, {})})
+    if parsed.path.endswith("/api/v1/files/cloud/browse") or parsed.path.endswith("/api/v1/files/115/browse"):
+        return FakeResponse({"success": True, "data": {"items": browse.get(cid, [])}})
+    return FakeResponse({"success": True, "data": {}})
+
+
+def _fake_mv3_direct_pair_season0_response(request, moved=False, target_created=False):
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            return False
+
+        def read(self, _limit=-1):
+            return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+
+        @property
+        def headers(self):
+            return {"Content-Type": "application/json"}
+
+    parsed = urllib.parse.urlparse(request.full_url)
+    query = urllib.parse.parse_qs(parsed.query)
+    path = query.get("path", [""])[0]
+    cid = query.get("cid", [""])[0]
+
+    if parsed.path.endswith("/api/v1/files/115/folder"):
+        body = json.loads(request.data.decode("utf-8"))
+        if body.get("name") == "Season 00":
+            return FakeResponse({"success": True, "data": {"cid": "correct-season-0"}})
+        return FakeResponse({"success": True, "data": {"cid": f"created-{body.get('name', 'folder')}"}})
+    if parsed.path.endswith("/api/v1/files/115/move"):
+        return FakeResponse({"success": True, "message": "ok", "data": None})
+
+    wrong_title = "Band of Brothers {tmdbid=4613}"
+    correct_title = "兄弟连 (2001) {tmdbid=4613}"
+    wrong_root = f"/已整理/未识别/{wrong_title}"
+    wrong_season = f"{wrong_root}/Season 0"
+    correct_title_path = f"/已整理/series/{correct_title}"
+    correct_season = f"{correct_title_path}/Season 00"
+    wrong_files = [
+        {"name": "Band of Brothers - S00E01.mkv", "fid": "wrong-s0-file-1", "is_dir": False},
+        {"name": "Band of Brothers - S00E02.mkv", "fid": "wrong-s0-file-2", "is_dir": False},
+    ]
+    correct_files = [
+        {"name": "Band of Brothers - S00E01.mkv", "fid": "wrong-s0-file-1", "is_dir": False},
+        {"name": "Band of Brothers - S00E02.mkv", "fid": "wrong-s0-file-2", "is_dir": False},
+    ]
+    info = {
+        "/已整理": {"name": "已整理", "cid": "organized-root", "is_dir": True},
+        "/已整理/未识别": {"name": "未识别", "cid": "unrecognized-root", "is_dir": True},
+        "/已整理/series": {"name": "series", "cid": "series-root", "is_dir": True},
+        wrong_root: {"name": wrong_title, "cid": "wrong-title-brothers", "is_dir": True},
+        wrong_season: {"name": "Season 0", "cid": "wrong-season-0", "is_dir": True},
+        correct_title_path: {"name": correct_title, "cid": "correct-title-brothers", "is_dir": True},
+    }
+    if target_created or moved:
+        info[correct_season] = {"name": "Season 00", "cid": "correct-season-0", "is_dir": True}
+    browse = {
+        "unrecognized-root": [{"name": wrong_title, "cid": "wrong-title-brothers", "is_dir": True}],
+        "wrong-title-brothers": [{"name": "Season 0", "cid": "wrong-season-0", "is_dir": True}],
+        "wrong-season-0": [] if moved else wrong_files,
+        "series-root": [{"name": correct_title, "cid": "correct-title-brothers", "is_dir": True}],
+        "correct-title-brothers": [{"name": "Season 00", "cid": "correct-season-0", "is_dir": True}] if target_created or moved else [],
+        "correct-season-0": correct_files if moved else [],
     }
 
     if parsed.path.endswith("/api/v1/files/cloud/info"):

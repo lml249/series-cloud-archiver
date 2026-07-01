@@ -343,6 +343,26 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-transfer-wrong-root-repair-r
 
 approved runner 的顺序是固定的：先给单项错根修复命令加 `--approve-repair`，让它创建正确云盘季目录、移动错根媒体、重写 STRM target；成功后立即跑一次 `strm-root-relocate` dry-run，确认 STRM 文件已指向 `/已整理/series/...` 且不再指向 `/已整理/未识别/...`；最后才给 STRM 侧根迁移加 `--approve-move`。如果第一步或第二步失败，后续步骤会 dependency-skipped。这个 runner 不会刮削云盘实体目录，不会触发 MoviePilot/Emby/qB，也不会删除 hlink/source；修复后必须重新生成 batch/finalize/review 报告，再走 STRM/NFO/Emby/qB/MP 清理前门禁。
 
+特殊篇目录同样走 `mv3-repair-wrong-root-direct-season-pair`。当 MV3 把 TMDB Season 00 落到 `/已整理/未识别/.../Season 0` 和 STRM 侧 `/strm/未识别/.../Season 0` 时，先显式传 `--season 0`、正确标题 `--title-filter`、正确根 `/已整理/series`。dry-run 会把目标规范化成 `/已整理/series/<正确标题>/Season 00`，并只预览重写对应 STRM：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-repair-wrong-root-direct-season-pair \
+  --env-file /volume1/docker/series-cloud-archiver/.env \
+  --wrong-root "/已整理/未识别/Band of Brothers {tmdbid=4613}" \
+  --correct-root /已整理/series \
+  --strm-root "/volume4/volume4/mv3/strm/未识别/Band of Brothers {tmdbid=4613}" \
+  --season 0 \
+  --title-filter "兄弟连 (2001) {tmdbid=4613}" \
+  --expected-episode-count 2 \
+  --expected-episode-min 1 \
+  --expected-episode-max 2 \
+  --expected-rewrite-count 2 \
+  --format json \
+  --output reports/brothers-s00-wrong-root-dry-run.json
+```
+
+审批执行仍只允许移动这一个错根季目录里的明确文件 ID，并只把 STRM target 从旧云盘前缀改到新云盘前缀；不会刮削云盘实体目录，也不会刷新 Emby 或清理本地。
+
 如果 `13-finalize-run.json` 出现 `source_root_check_failed`，不要直接删除源目录。通常意思是 qB 源目录里还有 hlink 没覆盖的视频，例如 SP、making-of、花絮或错季文件。`batch-pipeline` 会自动生成 `15-extra-source-media-plan.json`；也可以单独重跑：
 
 ```bash
