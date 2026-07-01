@@ -880,6 +880,61 @@ class EmbyRefreshVerifyTest(unittest.TestCase):
         self.assertEqual(report["verification"]["strm"]["episodes"], [1, 2])
         self.assertIn("no full-library scan", render_emby_media_updated_report(report, "markdown"))
 
+    def test_notify_and_verify_emby_media_updated_polls_async_indexing(self) -> None:
+        calls = []
+        searches = []
+
+        class FakeClient:
+            def __init__(self, base_url, api_key, timeout=20):
+                pass
+
+            def notify_media_updated(self, paths, update_type="Created"):
+                calls.append({"paths": paths, "update_type": update_type})
+                return {"http_status": 204, "ok": True, "response": {}}
+
+            def refresh_library(self):
+                raise AssertionError("media-updated polling must not request a full library scan")
+
+            def items_by_search(self, search_term):
+                searches.append(search_term)
+                if len(searches) == 1:
+                    return []
+                return [
+                    {
+                        "Id": "episode-strm-1",
+                        "Type": "Episode",
+                        "IndexNumber": 1,
+                        "Path": "/example/strm/series/真相捕捉 (2019) {tmdbid=93166}/Season 03/真相捕捉 S03E01.strm",
+                    },
+                    {
+                        "Id": "episode-strm-2",
+                        "Type": "Episode",
+                        "IndexNumber": 2,
+                        "Path": "/example/strm/series/真相捕捉 (2019) {tmdbid=93166}/Season 03/真相捕捉 S03E02.strm",
+                    },
+                ]
+
+        with patch("series_cloud_archiver.emby.EmbyClient", FakeClient), patch("series_cloud_archiver.emby.time.sleep") as sleep_mock:
+            report = notify_and_verify_emby_media_updated(
+                "http://emby.example",
+                "token",
+                title="真相捕捉",
+                updated_paths=["/example/strm/series/真相捕捉 (2019) {tmdbid=93166}"],
+                stale_path_prefixes=[],
+                strm_path_prefixes=["/example/strm/series/真相捕捉 (2019) {tmdbid=93166}/Season 03"],
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+                verify_poll_seconds=1,
+                verify_max_wait_seconds=5,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(len(searches), 2)
+        sleep_mock.assert_called_once()
+        self.assertEqual(report["verification_wait"]["attempt_count"], 2)
+        self.assertEqual(report["verification"]["strm"]["episodes"], [1, 2])
+
     def test_emby_media_updated_cli_writes_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

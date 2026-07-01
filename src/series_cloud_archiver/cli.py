@@ -639,6 +639,8 @@ def build_parser() -> argparse.ArgumentParser:
     emby_media_updated_parser.add_argument("--expected-episode-min", type=int, default=0, help="Expected first STRM episode number")
     emby_media_updated_parser.add_argument("--expected-episode-max", type=int, default=0, help="Expected last STRM episode number")
     emby_media_updated_parser.add_argument("--library-db", default="", help="Optional Emby library.db path for exact readonly verification")
+    emby_media_updated_parser.add_argument("--verify-poll-seconds", type=float, default=0.0, help="Poll readonly verification after Media/Updated while Emby indexes asynchronously")
+    emby_media_updated_parser.add_argument("--verify-max-wait-seconds", type=int, default=0, help="Maximum seconds to poll readonly verification after Media/Updated")
     emby_media_updated_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
     emby_media_updated_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     emby_media_updated_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
@@ -2650,6 +2652,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             expected_episode_min=args.expected_episode_min,
             expected_episode_max=args.expected_episode_max,
             library_db_path=args.library_db or config.emby_library_db_path,
+            verify_poll_seconds=args.verify_poll_seconds,
+            verify_max_wait_seconds=args.verify_max_wait_seconds,
             timeout=args.timeout,
         )
         rendered = render_emby_media_updated_report(report, args.format)

@@ -1409,6 +1409,8 @@ class BatchRunnerTest(unittest.TestCase):
             ],
         )
         self.assertEqual(emby_call[1]["kwargs"]["strm_path_prefixes"], ["/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1"])
+        self.assertEqual(emby_call[1]["kwargs"]["verify_poll_seconds"], 3.0)
+        self.assertEqual(emby_call[1]["kwargs"]["verify_max_wait_seconds"], 45)
         self.assertEqual(report["items"][0]["mp_strm_root"], "/example/mp/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
         self.assertEqual(report["items"][0]["service_strm_root"], "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
 
@@ -1767,6 +1769,8 @@ class BatchRunnerTest(unittest.TestCase):
             ],
         )
         self.assertEqual(emby_call[1]["kwargs"]["strm_path_prefixes"], ["/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1"])
+        self.assertEqual(emby_call[1]["kwargs"]["verify_poll_seconds"], 3.0)
+        self.assertEqual(emby_call[1]["kwargs"]["verify_max_wait_seconds"], 45)
         cloud_duplicate_call = next(call for call in actions.calls if call[0] == "mv3-cloud-duplicate-video-cleanup-result")
         self.assertEqual(
             cloud_duplicate_call[1]["kwargs"]["season_path"],

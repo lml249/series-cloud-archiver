@@ -1093,6 +1093,8 @@ def _run_finalize_item(
             expected_episode_min=expected_min,
             expected_episode_max=expected_max,
             library_db_path=_config_value(config, "emby_library_db_path"),
+            verify_poll_seconds=3.0,
+            verify_max_wait_seconds=45,
             timeout=timeout,
         ),
     ):
@@ -1212,6 +1214,8 @@ def _run_finalize_item(
                 expected_episode_min=expected_min,
                 expected_episode_max=expected_max,
                 library_db_path=_config_value(config, "emby_library_db_path"),
+                verify_poll_seconds=3.0,
+                verify_max_wait_seconds=45,
                 timeout=timeout,
             ),
         ):
@@ -2100,6 +2104,7 @@ def _finalize_commands(
                 f"--title {title_q} {emby_updated_args} --update-type Created "
                 f"--strm-path-prefix {service_q} --expected-episode-count {expected_count} "
                 f"--expected-episode-min 1 --expected-episode-max {expected_count} "
+                f"--verify-poll-seconds 3 --verify-max-wait-seconds 45 "
                 f"--format json --output {report_prefix}-emby-media-updated.json"
             ),
         },

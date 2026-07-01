@@ -561,6 +561,8 @@ def notify_and_verify_emby_media_updated(
     expected_episode_min: int = 0,
     expected_episode_max: int = 0,
     library_db_path: str = "",
+    verify_poll_seconds: float = 0.0,
+    verify_max_wait_seconds: int = 0,
     timeout: int = 20,
 ) -> Dict[str, object]:
     client = EmbyClient(base_url, api_key, timeout=timeout)
@@ -601,7 +603,7 @@ def notify_and_verify_emby_media_updated(
             "non_strm_path_prefixes": non_strm_prefixes,
         }
 
-    verification = verify_emby_library_paths(
+    verification_wait = _poll_emby_path_verification(
         client,
         title=title,
         stale_path_prefixes=stale_path_prefixes,
@@ -611,7 +613,10 @@ def notify_and_verify_emby_media_updated(
         expected_episode_min=expected_episode_min,
         expected_episode_max=expected_episode_max,
         library_db_path=library_db_path,
+        poll_seconds=verify_poll_seconds,
+        max_wait_seconds=verify_max_wait_seconds,
     )
+    verification = verification_wait["final_verification"]
     blockers.extend(verification.get("blockers", []))
     warnings.extend(verification.get("warnings", []))
     return {
@@ -620,6 +625,7 @@ def notify_and_verify_emby_media_updated(
         "ok": not blockers,
         "notify": notify,
         "verification": verification,
+        "verification_wait": verification_wait,
         "blockers": sorted(set(blockers)),
         "warnings": warnings,
         "safety": "Emby media-updated notification and readonly verification only; updated paths must be STRM-side paths. Cloud media directories are transfer and STRM-generation sources only, never scraping targets. No filesystem deletion, qBittorrent action, MoviePilot cleanup, full-library scan request, or direct Emby database write is performed",
@@ -778,6 +784,72 @@ def verify_emby_library_paths(
     )
     report["warnings"].append("emby_api_search_may_hide_duplicate_versions; set EMBY_LIBRARY_DB_PATH for exact local verification")
     return report
+
+
+def _poll_emby_path_verification(
+    client: EmbyClient,
+    *,
+    title: str,
+    stale_path_prefixes: Sequence[str],
+    strm_path_prefixes: Sequence[str],
+    expected_strm_records: int,
+    expected_episode_count: int,
+    expected_episode_min: int,
+    expected_episode_max: int,
+    library_db_path: str,
+    poll_seconds: float,
+    max_wait_seconds: int,
+) -> Dict[str, object]:
+    started = time.monotonic()
+    attempts: List[Dict[str, object]] = []
+    final_verification: Dict[str, object] = {}
+    timed_out = False
+    while True:
+        verification = verify_emby_library_paths(
+            client,
+            title=title,
+            stale_path_prefixes=stale_path_prefixes,
+            strm_path_prefixes=strm_path_prefixes,
+            expected_strm_records=expected_strm_records,
+            expected_episode_count=expected_episode_count,
+            expected_episode_min=expected_episode_min,
+            expected_episode_max=expected_episode_max,
+            library_db_path=library_db_path,
+        )
+        final_verification = verification
+        attempts.append(_verification_attempt_summary(verification))
+        if not verification.get("blockers"):
+            break
+        elapsed = time.monotonic() - started
+        if poll_seconds <= 0 or max_wait_seconds <= 0:
+            break
+        if elapsed >= max_wait_seconds:
+            timed_out = True
+            break
+        time.sleep(min(float(poll_seconds), max(0.0, max_wait_seconds - elapsed)))
+    return {
+        "requested": bool(poll_seconds > 0 and max_wait_seconds > 0),
+        "poll_seconds": poll_seconds,
+        "max_wait_seconds": max_wait_seconds,
+        "attempt_count": len(attempts),
+        "timed_out": timed_out,
+        "attempts": attempts,
+        "final_verification": final_verification,
+    }
+
+
+def _verification_attempt_summary(verification: Dict[str, object]) -> Dict[str, object]:
+    totals = verification.get("totals") if isinstance(verification.get("totals"), dict) else {}
+    strm = verification.get("strm") if isinstance(verification.get("strm"), dict) else {}
+    return {
+        "ok": not verification.get("blockers"),
+        "blockers": list(verification.get("blockers") or []),
+        "strm_records": int(totals.get("strm_records") or 0),
+        "stale_records": int(totals.get("stale_records") or 0),
+        "episode_count": int(strm.get("episode_count") or 0),
+        "episode_min": strm.get("episode_min"),
+        "episode_max": strm.get("episode_max"),
+    }
 
 
 def render_emby_media_updated_report(report: Dict[str, object], output_format: str) -> str:
