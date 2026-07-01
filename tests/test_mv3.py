@@ -50,6 +50,7 @@ from series_cloud_archiver.mv3 import (
     render_mv3_strm_records_redirect_report,
     render_mv3_strm_records_report,
     render_mv3_strm_records_regenerate_report,
+    render_mv3_transfer_remediation_plan,
     render_mv3_wrong_root_repair_report,
     repair_mv3_wrong_root,
     repair_mv3_wrong_root_direct_season_pair,
@@ -66,6 +67,7 @@ from series_cloud_archiver.mv3 import (
     execute_mv3_organize_transfer_from_scan_report,
     generate_mv3_strm,
     regenerate_mv3_strm_records,
+    build_mv3_transfer_remediation_plan,
 )
 
 
@@ -608,6 +610,138 @@ class MV3WrongRootRepairTest(unittest.TestCase):
             self.assertEqual(report["precheck"]["wrong"]["media_count"], 6)
             self.assertEqual(report["precheck"]["strm"]["wrong_target_count"], 6)
             self.assertEqual(report["precheck"]["rewrite_preview"]["summary"]["rewritable_count"], 6)
+
+    def test_transfer_remediation_plan_reports_split_cloud_and_strm_segments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "strm"
+            for title, episodes in {
+                "Forensic Heroes (2008)": [1, 2],
+                "Forensic Heroes (2008) {tmdbid=286997}": [3],
+            }.items():
+                season_dir = root / "未识别" / title / "Season 2"
+                season_dir.mkdir(parents=True)
+                for episode in episodes:
+                    target = urllib.parse.quote(
+                        f"/已整理/未识别/{title}/Season 2/Forensic Heroes - S02E{episode:02d}.mp4",
+                        safe="/(){}= -.",
+                    )
+                    (season_dir / f"Forensic Heroes - S02E{episode:02d}.strm").write_text(
+                        f"http://mv3.example/redirect?path={target}&pickcode=p{episode}",
+                        encoding="utf-8",
+                    )
+
+            transfer_run = {
+                "mode": "batch-transfer-run",
+                "items": [
+                    {
+                        "title": "法证先锋 (2006) {tmdbid=286997} Season 02",
+                        "tmdbid": 286997,
+                        "season": 2,
+                        "expected_episode_count": 3,
+                        "status": "failed_organize_transfer",
+                        "blockers": ["strm_written_to_unrecognized_root", "staging_video_files_remain"],
+                    }
+                ],
+            }
+            staging = _cloud_browse_report("/未整理/Season 02", ["Forensic.Heroes.2008.S02E02.mp4"])
+            wrong_a = _cloud_browse_report("/已整理/未识别/Forensic Heroes (2008)/Season 2", ["Forensic Heroes - S02E01.mp4"])
+            wrong_b = _cloud_browse_report(
+                "/已整理/未识别/Forensic Heroes (2008) {tmdbid=286997}/Season 2",
+                ["Forensic Heroes - S02E03.mp4"],
+            )
+
+            report = build_mv3_transfer_remediation_plan(
+                transfer_run,
+                cloud_reports=[staging, wrong_a, wrong_b],
+                host_strm_root=str(root),
+                expected_tmdbid=286997,
+                expected_season=2,
+                expected_episode_count=3,
+                expected_episode_min=1,
+                expected_episode_max=3,
+            )
+
+            self.assertFalse(report["ok"])
+            self.assertEqual(report["planned_items"], 1)
+            item = report["items"][0]
+            self.assertFalse(item["auto_repair_ready"])
+            self.assertEqual(len(item["cloud_segments"]), 3)
+            self.assertEqual(len(item["strm_segments"]), 2)
+            self.assertEqual(item["coverage"]["combined_episodes"], [1, 2, 3])
+            self.assertIn("cloud_media_split_across_multiple_roots", item["blockers"])
+            self.assertIn("strm_split_across_multiple_roots", item["blockers"])
+            self.assertIn("staging_media_still_present", item["blockers"])
+            self.assertIn("unrecognized_root_present", item["blockers"])
+            self.assertIn("readonly", report["safety"])
+            rendered = render_mv3_transfer_remediation_plan(report, "json")
+            self.assertIn("mv3-transfer-remediation-plan", rendered)
+
+    def test_cli_writes_transfer_remediation_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            root = tmp_path / "strm"
+            season_dir = root / "未识别" / "Forensic Heroes (2008) {tmdbid=286997}" / "Season 2"
+            season_dir.mkdir(parents=True)
+            (season_dir / "Forensic Heroes - S02E01.strm").write_text(
+                "http://mv3.example/redirect?path=/已整理/未识别/Forensic%20Heroes%20(2008)%20%7Btmdbid=286997%7D/Season%202/E01.mp4",
+                encoding="utf-8",
+            )
+            transfer = tmp_path / "transfer.json"
+            cloud = tmp_path / "cloud.json"
+            output = tmp_path / "remediation.json"
+            transfer.write_text(
+                json.dumps(
+                    {
+                        "mode": "batch-transfer-run",
+                        "items": [
+                            {
+                                "title": "法证先锋 (2006) {tmdbid=286997} Season 02",
+                                "tmdbid": 286997,
+                                "season": 2,
+                                "expected_episode_count": 1,
+                                "status": "failed_organize_transfer",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cloud.write_text(
+                json.dumps(_cloud_browse_report("/已整理/未识别/Forensic Heroes (2008) {tmdbid=286997}/Season 2", ["E01.mp4"])),
+                encoding="utf-8",
+            )
+
+            code = main(
+                [
+                    "mv3-transfer-remediation-plan",
+                    "--transfer-run-report",
+                    str(transfer),
+                    "--cloud-report",
+                    str(cloud),
+                    "--host-strm-root",
+                    str(root),
+                    "--expected-tmdbid",
+                    "286997",
+                    "--expected-season",
+                    "2",
+                    "--expected-episode-count",
+                    "1",
+                    "--expected-episode-min",
+                    "1",
+                    "--expected-episode-max",
+                    "1",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ]
+            )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["mode"], "mv3-transfer-remediation-plan")
+            self.assertEqual(payload["planned_items"], 1)
+            self.assertIn("unrecognized_root_present", payload["items"][0]["blockers"])
 
     def test_wrong_root_repair_direct_season_counts_url_path_strm_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -7935,6 +8069,26 @@ class MV3ProbeTest(unittest.TestCase):
             self.assertEqual(payload["request"]["magnet_count"], 1)
             self.assertEqual(posted[0]["wp_path"], "/未整理")
             self.assertNotIn("magnet:?", text)
+
+
+def _cloud_browse_report(path: str, names: list[str]) -> dict:
+    return {
+        "mode": "readonly-mv3-cloud-browse",
+        "ok": True,
+        "path": path,
+        "items": [
+            {
+                "index": index,
+                "kind": "file",
+                "media_kind": "video",
+                "name": name,
+                "size": "1 GiB",
+                "file_id": f"file-{index}",
+                "episode": None,
+            }
+            for index, name in enumerate(names, start=1)
+        ],
+    }
 
 
 if __name__ == "__main__":

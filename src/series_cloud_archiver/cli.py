@@ -159,6 +159,7 @@ from .mv3 import (
     render_mv3_strm_records_redirect_report,
     render_mv3_strm_records_report,
     render_mv3_strm_records_regenerate_report,
+    render_mv3_transfer_remediation_plan,
     render_mv3_wrong_root_direct_season_pair_repair_report,
     render_mv3_wrong_root_repair_report,
     preview_mv3_share,
@@ -169,6 +170,7 @@ from .mv3 import (
     search_mv3_cloud_files_for_transfer_plan,
     search_mv3_resources,
     search_mv3_cloud_files,
+    build_mv3_transfer_remediation_plan,
     verify_mv3_cloud_media_sidecars,
 )
 from .orchestrator import evaluate, list_status, plan_cleanup, status_detail
@@ -1354,6 +1356,20 @@ def build_parser() -> argparse.ArgumentParser:
     strm_redirect_parser.add_argument("--approve-redirect", action="store_true", help="Required: actually send one MV3 STRM record redirect request")
     strm_redirect_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     strm_redirect_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    transfer_remediation_parser = subcommands.add_parser("mv3-transfer-remediation-plan", help="Readonly diagnosis for failed MV3 transfer/organize rows")
+    transfer_remediation_parser.add_argument("--transfer-run-report", required=True, help="JSON report from batch transfer run")
+    transfer_remediation_parser.add_argument("--cloud-report", action="append", default=[], help="Optional mv3-cloud-browse/search report; can be repeated")
+    transfer_remediation_parser.add_argument("--host-strm-root", default="", help="Host STRM root to scan for split/unrecognized STRM folders")
+    transfer_remediation_parser.add_argument("--title-filter", default="", help="Optional transfer row title filter")
+    transfer_remediation_parser.add_argument("--expected-title", default="", help="Optional expected title for reporting")
+    transfer_remediation_parser.add_argument("--expected-tmdbid", type=int, default=0)
+    transfer_remediation_parser.add_argument("--expected-season", type=int, default=0)
+    transfer_remediation_parser.add_argument("--expected-episode-count", type=int, default=0)
+    transfer_remediation_parser.add_argument("--expected-episode-min", type=int, default=0)
+    transfer_remediation_parser.add_argument("--expected-episode-max", type=int, default=0)
+    transfer_remediation_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    transfer_remediation_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     strm_regenerate_parser = subcommands.add_parser("mv3-strm-records-regenerate", help="Execute one approved MV3 STRM records regenerate request")
     strm_regenerate_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -4002,6 +4018,34 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(rendered)
         return 0 if report.get("ok") else 1
+
+    if args.command == "mv3-transfer-remediation-plan":
+        transfer_run = load_optional_json_report(args.transfer_run_report)
+        if not isinstance(transfer_run, dict):
+            parser.error("transfer run report must be a JSON object")
+        cloud_reports = [
+            report
+            for report in (load_optional_json_report(path) for path in args.cloud_report)
+            if isinstance(report, dict)
+        ]
+        report = build_mv3_transfer_remediation_plan(
+            transfer_run,
+            title_filter=args.title_filter,
+            cloud_reports=cloud_reports,
+            host_strm_root=args.host_strm_root,
+            expected_title=args.expected_title,
+            expected_tmdbid=args.expected_tmdbid,
+            expected_season=args.expected_season,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+        )
+        rendered = render_mv3_transfer_remediation_plan(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("planned_items") else 1
 
     if args.command == "mv3-strm-records-regenerate":
         if not args.approve_regenerate:

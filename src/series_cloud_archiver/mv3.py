@@ -3416,6 +3416,101 @@ def render_mv3_strm_records_redirect_report(report: Dict[str, object], output_fo
     return "\n".join(lines)
 
 
+def build_mv3_transfer_remediation_plan(
+    transfer_run_report: Dict[str, object],
+    *,
+    title_filter: str = "",
+    cloud_reports: Optional[List[Dict[str, object]]] = None,
+    host_strm_root: str = "",
+    expected_title: str = "",
+    expected_tmdbid: int = 0,
+    expected_season: int = 0,
+    expected_episode_count: int = 0,
+    expected_episode_min: int = 0,
+    expected_episode_max: int = 0,
+) -> Dict[str, object]:
+    """Build a readonly diagnosis for failed MV3 transfer/organize rows."""
+
+    rows = [
+        item
+        for item in transfer_run_report.get("items", [])
+        if isinstance(item, dict) and _transfer_remediation_row_matches(item, title_filter, expected_tmdbid, expected_season)
+    ]
+    cloud_inputs = [dict(report) for report in (cloud_reports or []) if isinstance(report, dict)]
+    items = [
+        _transfer_remediation_item(
+            row,
+            cloud_inputs,
+            host_strm_root=host_strm_root,
+            expected_title=expected_title,
+            expected_tmdbid=expected_tmdbid,
+            expected_season=expected_season,
+            expected_episode_count=expected_episode_count,
+            expected_episode_min=expected_episode_min,
+            expected_episode_max=expected_episode_max,
+        )
+        for row in rows
+    ]
+    return {
+        "mode": "mv3-transfer-remediation-plan",
+        "source_mode": transfer_run_report.get("mode", ""),
+        "ok": bool(items) and all(item.get("ok") for item in items),
+        "planned_items": len(items),
+        "auto_repair_ready_items": sum(1 for item in items if item.get("auto_repair_ready")),
+        "manual_review_items": sum(1 for item in items if not item.get("auto_repair_ready")),
+        "settings": {
+            "title_filter": title_filter,
+            "host_strm_root": host_strm_root,
+            "expected_title": expected_title,
+            "expected_tmdbid": expected_tmdbid,
+            "expected_season": expected_season,
+            "expected_episode_count": expected_episode_count,
+            "expected_episode_min": expected_episode_min,
+            "expected_episode_max": expected_episode_max,
+            "cloud_report_count": len(cloud_inputs),
+        },
+        "items": items,
+        "safety": (
+            "readonly remediation plan only; it reads transfer-run, cloud browse/search reports, and local STRM files. "
+            "It does not move cloud media, generate STRM, rewrite STRM targets, scrape metadata, refresh Emby, touch "
+            "qBittorrent, delete hlinks/source files, or delete local files."
+        ),
+    }
+
+
+def render_mv3_transfer_remediation_plan(report: Dict[str, object], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    lines = [
+        "# MV3 Transfer Remediation Plan",
+        "",
+        f"- OK: `{bool(report.get('ok'))}`",
+        f"- Planned: `{report.get('planned_items', 0)}`",
+        f"- Auto repair ready: `{report.get('auto_repair_ready_items', 0)}`",
+        f"- Manual review: `{report.get('manual_review_items', 0)}`",
+        "- Safety: readonly diagnosis only; no cloud, STRM, MP, Emby, qB, hlink, source, or filesystem writes.",
+        "",
+        "| Status | TMDB | S | Cloud segments | STRM segments | Episodes | Blockers |",
+        "| --- | ---: | ---: | ---: | ---: | --- | --- |",
+    ]
+    for item in report.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        coverage = item.get("coverage") if isinstance(item.get("coverage"), dict) else {}
+        lines.append(
+            "| {status} | {tmdbid} | {season} | {cloud} | {strm} | {episodes} | {blockers} |".format(
+                status=item.get("status", ""),
+                tmdbid=item.get("tmdbid") or "",
+                season=item.get("season") or "",
+                cloud=len(item.get("cloud_segments", [])) if isinstance(item.get("cloud_segments"), list) else 0,
+                strm=len(item.get("strm_segments", [])) if isinstance(item.get("strm_segments"), list) else 0,
+                episodes=_escape(str(coverage.get("episode_cell") or "")),
+                blockers=_escape(", ".join(_string_list(item.get("blockers")))),
+            )
+        )
+    return "\n".join(lines)
+
+
 def regenerate_mv3_strm_records(
     base_url: str,
     token: str,
@@ -6474,6 +6569,245 @@ def _parse_strm_rewrite_prefix(value: str) -> Tuple[str, str]:
         return "", ""
     source_prefix, target_prefix = value.split("=", 1)
     return source_prefix.rstrip("/"), target_prefix.rstrip("/")
+
+
+def _transfer_remediation_row_matches(
+    item: Dict[str, object], title_filter: str, expected_tmdbid: int, expected_season: int
+) -> bool:
+    if title_filter and title_filter not in str(item.get("title") or ""):
+        return False
+    if expected_tmdbid and int(item.get("tmdbid") or 0) != expected_tmdbid:
+        return False
+    if expected_season and int(item.get("season") or 0) != expected_season:
+        return False
+    return True
+
+
+def _transfer_remediation_item(
+    row: Dict[str, object],
+    cloud_reports: List[Dict[str, object]],
+    *,
+    host_strm_root: str,
+    expected_title: str,
+    expected_tmdbid: int,
+    expected_season: int,
+    expected_episode_count: int,
+    expected_episode_min: int,
+    expected_episode_max: int,
+) -> Dict[str, object]:
+    title = expected_title or str(row.get("title") or "")
+    tmdbid = expected_tmdbid or int(row.get("tmdbid") or 0)
+    season = expected_season or int(row.get("season") or 0)
+    expected_count = expected_episode_count or int(row.get("expected_episode_count") or 0)
+    expected_min = expected_episode_min or (1 if expected_count else 0)
+    expected_max = expected_episode_max or expected_count
+    expected_set = set(range(expected_min, expected_max + 1)) if expected_min and expected_max else set()
+    cloud_segments = _transfer_remediation_cloud_segments(cloud_reports)
+    strm_segments = _transfer_remediation_strm_segments(
+        host_strm_root,
+        tmdbid=tmdbid,
+        season=season,
+        cloud_prefixes=[str(segment.get("path") or "") for segment in cloud_segments],
+    )
+    cloud_episodes = _episodes_from_segments(cloud_segments)
+    strm_episodes = _episodes_from_segments(strm_segments)
+    combined_episodes = sorted(set(cloud_episodes) | set(strm_episodes))
+    blockers: List[str] = []
+    if not cloud_segments:
+        blockers.append("cloud_segments_missing")
+    if not strm_segments:
+        blockers.append("strm_segments_missing")
+    if expected_count and len(set(cloud_episodes)) != expected_count:
+        blockers.append("cloud_episode_count_mismatch")
+    if expected_count and len(set(strm_episodes)) != expected_count:
+        blockers.append("strm_episode_count_mismatch")
+    if expected_set and set(cloud_episodes) != expected_set:
+        blockers.append("cloud_episode_coverage_incomplete")
+    if expected_set and set(strm_episodes) != expected_set:
+        blockers.append("strm_episode_coverage_incomplete")
+    if len(cloud_segments) > 1:
+        blockers.append("cloud_media_split_across_multiple_roots")
+    if len(strm_segments) > 1:
+        blockers.append("strm_split_across_multiple_roots")
+    if any("/未整理/" in str(segment.get("path") or "") or str(segment.get("path") or "") == "/未整理" for segment in cloud_segments):
+        blockers.append("staging_media_still_present")
+    if any(_path_contains_segment(str(segment.get("path") or ""), "未识别") for segment in cloud_segments + strm_segments):
+        blockers.append("unrecognized_root_present")
+
+    auto_repair_ready = False
+    return {
+        "status": "manual_review_required" if blockers else "ready_for_manual_repair_design",
+        "ok": False,
+        "auto_repair_ready": auto_repair_ready,
+        "title": title,
+        "tmdbid": tmdbid,
+        "season": season,
+        "expected": {
+            "episode_count": expected_count,
+            "episode_min": expected_min,
+            "episode_max": expected_max,
+        },
+        "transfer_status": row.get("status", ""),
+        "transfer_blockers": _string_list(row.get("blockers")),
+        "cloud_segments": cloud_segments,
+        "strm_segments": strm_segments,
+        "coverage": {
+            "cloud_episode_count": len(set(cloud_episodes)),
+            "strm_episode_count": len(set(strm_episodes)),
+            "combined_episode_count": len(set(combined_episodes)),
+            "cloud_episodes": sorted(set(cloud_episodes)),
+            "strm_episodes": sorted(set(strm_episodes)),
+            "combined_episodes": combined_episodes,
+            "missing_cloud": sorted(expected_set - set(cloud_episodes)) if expected_set else [],
+            "missing_strm": sorted(expected_set - set(strm_episodes)) if expected_set else [],
+            "episode_cell": _episode_cell(combined_episodes, expected_count),
+        },
+        "blockers": sorted(set(blockers)),
+        "next_action": "人工复核分裂云端目录和 STRM 目录；先补专用修复 runner 或换源重转，不允许 finalize/清理",
+    }
+
+
+def _transfer_remediation_cloud_segments(reports: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    segments: Dict[str, Dict[str, object]] = {}
+    for report in reports:
+        mode = str(report.get("mode") or "")
+        if mode == "readonly-mv3-cloud-browse":
+            path = _normalize_cloud_path(str(report.get("path") or ""))
+            if not path:
+                continue
+            segment = segments.setdefault(path, _empty_cloud_segment(path))
+            for item in report.get("items", []):
+                if isinstance(item, dict):
+                    _add_cloud_segment_item(segment, item, path)
+        elif mode == "readonly-mv3-cloud-search":
+            for item in report.get("items", []):
+                if not isinstance(item, dict):
+                    continue
+                raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+                item_path = _normalize_cloud_path(str(raw.get("path") or ""))
+                parent = _normalize_cloud_path(str(PurePosixPath(item_path).parent)) if item_path else ""
+                if not parent:
+                    continue
+                segment = segments.setdefault(parent, _empty_cloud_segment(parent))
+                _add_cloud_segment_item(segment, item, parent)
+    return [_finalize_segment(segment) for segment in sorted(segments.values(), key=lambda value: str(value.get("path") or ""))]
+
+
+def _empty_cloud_segment(path: str) -> Dict[str, object]:
+    return {"path": path, "item_count": 0, "episodes": [], "sample_files": []}
+
+
+def _add_cloud_segment_item(segment: Dict[str, object], item: Dict[str, object], parent: str) -> None:
+    name = str(item.get("name") or "")
+    if not name:
+        return
+    raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+    kind = str(item.get("kind") or "")
+    media_kind = str(item.get("media_kind") or "")
+    file_id = str(item.get("file_id") or raw.get("file_id") or "")
+    item_path = _normalize_cloud_path(str(raw.get("path") or _cloud_join_path(parent, name)))
+    if kind == "folder" or media_kind == "folder":
+        return
+    if media_kind and media_kind not in {"video", "unknown"}:
+        return
+    if Path(name).suffix.lower() not in MEDIA_EXTENSIONS and media_kind != "video":
+        return
+    episode = int(item.get("episode") or _episode_number_from_text(name) or 0)
+    segment["item_count"] = int(segment.get("item_count") or 0) + 1
+    if episode > 0:
+        episodes = segment.get("episodes") if isinstance(segment.get("episodes"), list) else []
+        episodes.append(episode)
+        segment["episodes"] = episodes
+    samples = segment.get("sample_files") if isinstance(segment.get("sample_files"), list) else []
+    if len(samples) < 8:
+        samples.append({"name": name, "episode": episode or None, "path": item_path, "file_id": file_id})
+        segment["sample_files"] = samples
+
+
+def _transfer_remediation_strm_segments(
+    host_strm_root: str, *, tmdbid: int, season: int, cloud_prefixes: Optional[List[str]] = None
+) -> List[Dict[str, object]]:
+    root = Path(host_strm_root) if host_strm_root else Path()
+    if not host_strm_root or not root.exists() or not tmdbid or not season:
+        return []
+    pattern = f"*{{tmdbid={tmdbid}}}/Season*"
+    candidate_roots = {path for path in root.glob(f"**/{pattern}") if path.is_dir()}
+    clean_prefixes = [_normalize_cloud_path(prefix) for prefix in (cloud_prefixes or []) if _normalize_cloud_path(prefix)]
+    if clean_prefixes:
+        for season_root in root.glob("**/Season*"):
+            if not season_root.is_dir():
+                continue
+            if any(_strm_root_points_to_prefix(season_root, prefix) for prefix in clean_prefixes):
+                candidate_roots.add(season_root)
+    segments: List[Dict[str, object]] = []
+    for season_root in sorted(candidate_roots):
+        files = sorted(season_root.glob("*.strm"))
+        rows = [_strm_remediation_file_row(path) for path in files]
+        rows = [row for row in rows if int(row.get("episode") or 0) > 0]
+        if not rows:
+            continue
+        episodes = sorted({int(row.get("episode") or 0) for row in rows if int(row.get("episode") or 0) > 0})
+        segments.append(
+            {
+                "path": str(season_root),
+                "file_count": len(files),
+                "episode_count": len(episodes),
+                "episodes": episodes,
+                "sample_files": rows[:8],
+            }
+        )
+    return segments
+
+
+def _strm_root_points_to_prefix(season_root: Path, prefix: str) -> bool:
+    for path in season_root.glob("*.strm"):
+        target = _strm_remediation_file_row(path).get("target", "")
+        if str(target).startswith(prefix.rstrip("/") + "/") or str(target) == prefix.rstrip("/"):
+            return True
+    return False
+
+
+def _strm_remediation_file_row(path: Path) -> Dict[str, object]:
+    try:
+        content = path.read_text(encoding="utf-8").strip()
+    except UnicodeDecodeError:
+        content = path.read_text(errors="ignore").strip()
+    target = _cloud_path_from_strm_content(content)
+    return {
+        "file": str(path),
+        "episode": _episode_number_from_text(path.name),
+        "target": target,
+    }
+
+
+def _episodes_from_segments(segments: List[Dict[str, object]]) -> List[int]:
+    episodes: List[int] = []
+    for segment in segments:
+        values = segment.get("episodes")
+        if isinstance(values, list):
+            episodes.extend(int(value) for value in values if int(value or 0) > 0)
+    return sorted(set(episodes))
+
+
+def _finalize_segment(segment: Dict[str, object]) -> Dict[str, object]:
+    episodes = sorted({int(value) for value in segment.get("episodes", []) if int(value or 0) > 0})
+    segment["episodes"] = episodes
+    segment["episode_count"] = len(episodes)
+    segment["episode_min"] = min(episodes) if episodes else None
+    segment["episode_max"] = max(episodes) if episodes else None
+    return segment
+
+
+def _episode_cell(episodes: List[int], expected_count: int) -> str:
+    if not episodes:
+        return ""
+    if len(episodes) == expected_count and episodes == list(range(min(episodes), max(episodes) + 1)):
+        return f"{min(episodes)}-{max(episodes)} ({len(episodes)}集)"
+    return ",".join(str(item) for item in episodes[:40]) + (f" ({len(episodes)}集)" if len(episodes) > 40 else "")
+
+
+def _path_contains_segment(path: str, segment: str) -> bool:
+    return segment in [part for part in str(path or "").strip("/").split("/") if part]
 
 
 def _episode_numbers_from_scan_items(items: List[Dict[str, object]]) -> List[int]:
