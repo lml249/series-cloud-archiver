@@ -4916,6 +4916,73 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["confirmed_mapping"]["items"][0]["season"], 0)
         self.assertIn("human-confirmed local media mapping file", report["safety"])
 
+    def test_organize_transfer_from_confirmed_local_map_blocks_skipped_item_response(self) -> None:
+        mapping = {
+            "mode": "confirmed-extra-source-media-map",
+            "items": [
+                {
+                    "source_path": "/volume-example/source-tv/Demo/Demo.SP1.mkv",
+                    "tmdbid": 123,
+                    "season": 0,
+                    "episode": 1,
+                },
+                {
+                    "source_path": "/volume-example/source-tv/Demo/Demo.SP2.mkv",
+                    "tmdbid": 123,
+                    "season": 0,
+                    "episode": 2,
+                },
+            ],
+        }
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(
+                    {
+                        "success": True,
+                        "data": {
+                            "success": 0,
+                            "failed": 0,
+                            "items": [
+                                {"old_path": "/volume-example/source-tv/Demo/Demo.SP1.mkv", "new_path": "", "status": "skipped: blocked"},
+                                {"old_path": "/volume-example/source-tv/Demo/Demo.SP2.mkv", "new_path": "", "status": "skipped: blocked"},
+                            ],
+                        },
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+            report = execute_mv3_organize_transfer_from_confirmed_local_map(
+                "http://mv3.example",
+                "token",
+                mapping,
+                target_dir="/已整理",
+                strm_dir="/strm",
+                tmdb_id=123,
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["transfer"]["ok"])
+        self.assertIn("mv3_transfer_response_blocked_item_status", report["blockers"])
+        self.assertIn("mv3_transfer_response_success_count_below_expected", report["blockers"])
+        self.assertEqual(report["transfer"]["organize_outcome"]["bad_item_statuses"][0]["status"], "skipped: blocked")
+
     def test_organize_transfer_from_confirmed_local_map_dry_run_skips_request(self) -> None:
         calls = []
         mapping = {

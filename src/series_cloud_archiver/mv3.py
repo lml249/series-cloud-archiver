@@ -2894,6 +2894,15 @@ def _execute_mv3_organize_transfer_from_files(
                 api_success,
                 response_body,
             )
+            transfer_outcome = _organize_transfer_payload_outcome(payload, expected_file_count=len(files))
+            if transfer_outcome:
+                transfer_report["organize_outcome"] = transfer_outcome
+                outcome_blockers = [
+                    str(item) for item in transfer_outcome.get("blockers", []) if str(item)
+                ]
+                if outcome_blockers:
+                    transfer_report["ok"] = False
+                    blockers.extend(outcome_blockers)
         except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
             blockers.append("mv3_transfer_request_failed")
             warnings.append(f"mv3_transfer_request_failed:{type(exc).__name__}:{exc}")
@@ -5848,6 +5857,82 @@ def _mv3_api_error_summary(
         "error": str(exc),
         "request": _sanitize_json(request_body),
     }
+
+
+def _organize_transfer_payload_outcome(payload: object, *, expected_file_count: int) -> Dict[str, object]:
+    if not isinstance(payload, dict):
+        return {}
+    explicit_counts = _organize_transfer_payload_counts(payload)
+    item_statuses = _organize_transfer_item_statuses(payload)
+    if not explicit_counts and not item_statuses:
+        return {}
+
+    blockers: List[str] = []
+    failed_count = int(explicit_counts.get("failed", 0))
+    skipped_count = int(explicit_counts.get("skipped", 0))
+    success_count = int(explicit_counts.get("success", 0))
+    if failed_count:
+        blockers.append("mv3_transfer_response_failed_items")
+    if skipped_count:
+        blockers.append("mv3_transfer_response_skipped_items")
+    bad_statuses = [
+        row
+        for row in item_statuses
+        if _organize_transfer_status_is_blocked(str(row.get("status") or ""))
+    ]
+    if bad_statuses:
+        blockers.append("mv3_transfer_response_blocked_item_status")
+    if "success" in explicit_counts and expected_file_count > 0 and success_count < expected_file_count:
+        blockers.append("mv3_transfer_response_success_count_below_expected")
+
+    return {
+        "ok": not blockers,
+        "expected_file_count": expected_file_count,
+        "counts": explicit_counts,
+        "item_statuses": item_statuses[:50],
+        "bad_item_statuses": bad_statuses[:50],
+        "blockers": sorted(set(blockers)),
+    }
+
+
+def _organize_transfer_payload_counts(payload: Dict[str, object]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for key in ("success", "failed", "skipped"):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            counts[key] = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            counts[key] = int(value.strip())
+    return counts
+
+
+def _organize_transfer_item_statuses(payload: Dict[str, object]) -> List[Dict[str, object]]:
+    rows = payload.get("items")
+    if not isinstance(rows, list):
+        return []
+    statuses: List[Dict[str, object]] = []
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            continue
+        statuses.append(
+            {
+                "index": index,
+                "old_path": str(row.get("old_path") or row.get("source_path") or ""),
+                "new_path": str(row.get("new_path") or row.get("target_path") or ""),
+                "status": str(row.get("status") or row.get("message") or row.get("error") or ""),
+            }
+        )
+    return statuses
+
+
+def _organize_transfer_status_is_blocked(status: str) -> bool:
+    normalized = status.strip().lower()
+    if not normalized:
+        return False
+    blocked_tokens = ("failed", "error", "blocked", "skip")
+    return any(token in normalized for token in blocked_tokens)
 
 
 def _mv3_error_type(exc: BaseException) -> str:
