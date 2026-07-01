@@ -39,10 +39,55 @@ class FakeMoviePilotClient:
         }
 
 
+class VariantMoviePilotClient:
+    calls = []
+
+    def __init__(self, base_url, token, **kwargs):
+        self.base_url = base_url
+        self.token = token
+
+    def recognize_file(self, path):
+        self.__class__.calls.append(path)
+        if path == "淮水竹亭 (2025)":
+            return {
+                "meta_info": {
+                    "type": "电视剧",
+                    "name": "淮水竹亭",
+                    "begin_season": 1,
+                    "end_season": None,
+                },
+                "media_info": {
+                    "type": "电视剧",
+                    "title": "淮水竹亭",
+                    "year": "2025",
+                    "tmdb_id": 123456,
+                    "seasons": {"1": [1, 2]},
+                },
+            }
+        return {
+            "meta_info": {"type": "电影", "name": "淮水竹亭 Season"},
+            "media_info": {"type": "电影", "title": "淮水竹亭 Season", "tmdb_id": 0},
+        }
+
+
+class EmptyMoviePilotClient:
+    calls = []
+
+    def __init__(self, base_url, token, **kwargs):
+        self.base_url = base_url
+        self.token = token
+
+    def recognize_file(self, path):
+        self.__class__.calls.append(path)
+        return {"meta_info": {}, "media_info": {}}
+
+
 class IdentityResolveTest(unittest.TestCase):
     def setUp(self) -> None:
         FakeMoviePilotClient.calls = []
         FakeMoviePilotClient.init_kwargs = []
+        VariantMoviePilotClient.calls = []
+        EmptyMoviePilotClient.calls = []
 
     def test_resolves_missing_candidate_identity(self) -> None:
         report = {
@@ -228,6 +273,65 @@ class IdentityResolveTest(unittest.TestCase):
 
         self.assertEqual(payload["summary"]["resolved"], 1)
         self.assertEqual(FakeMoviePilotClient.init_kwargs, [{"timeout": 7}])
+
+    def test_tries_clean_title_variant_when_season_title_does_not_resolve(self) -> None:
+        report = {
+            "items": [
+                {
+                    "status": "needs_identity_review",
+                    "title": "淮水竹亭 (2025) Season 01",
+                    "season": 1,
+                    "expected_count": 2,
+                    "expected_episodes": [1, 2],
+                    "source_paths": ["/example/local-tv/淮水竹亭 (2025)/Season 1"],
+                }
+            ]
+        }
+
+        import series_cloud_archiver.identity as identity_module
+
+        original = identity_module.MoviePilotClient
+        identity_module.MoviePilotClient = VariantMoviePilotClient
+        try:
+            payload = resolve_identity_overrides_from_cloud_report(report, "http://example.invalid", "token")
+        finally:
+            identity_module.MoviePilotClient = original
+
+        self.assertEqual(payload["summary"]["resolved"], 1)
+        self.assertEqual(payload["identity_overrides"][0]["tmdbid"], 123456)
+        self.assertEqual(payload["identity_overrides"][0]["matched_query"], "淮水竹亭 (2025)")
+        self.assertIn("淮水竹亭 (2025) Season 01", VariantMoviePilotClient.calls)
+        self.assertIn("淮水竹亭 (2025)", VariantMoviePilotClient.calls)
+
+    def test_records_unresolved_identity_diagnostics(self) -> None:
+        report = {
+            "items": [
+                {
+                    "status": "needs_identity_review",
+                    "title": "难哄 (2025) Season 01",
+                    "season": 1,
+                    "expected_count": 2,
+                    "expected_episodes": [1, 2],
+                    "source_paths": ["/example/local-tv/难哄 (2025)/Season 1"],
+                }
+            ]
+        }
+
+        import series_cloud_archiver.identity as identity_module
+
+        original = identity_module.MoviePilotClient
+        identity_module.MoviePilotClient = EmptyMoviePilotClient
+        try:
+            payload = resolve_identity_overrides_from_cloud_report(report, "http://example.invalid", "token")
+        finally:
+            identity_module.MoviePilotClient = original
+
+        self.assertEqual(payload["summary"], {"input_candidates": 1, "attempted": 1, "resolved": 0})
+        unresolved = payload["unresolved_identity"]
+        self.assertEqual(len(unresolved), 1)
+        self.assertEqual(unresolved[0]["title"], "难哄 (2025) Season 01")
+        self.assertGreaterEqual(len(unresolved[0]["queries"]), 2)
+        self.assertEqual(unresolved[0]["queries"][0]["status"], "unresolved")
 
 
 if __name__ == "__main__":

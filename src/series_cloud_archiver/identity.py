@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from .moviepilot import MoviePilotClient
+from .redaction import redact_sensitive_text
 
 
 TMDBID_PATTERN = re.compile(r"\{tmdbid=(?P<tmdbid>\d+)\}", re.IGNORECASE)
@@ -110,6 +111,7 @@ def _resolve_identity_overrides_from_candidates(
 ) -> Dict[str, object]:
     client = MoviePilotClient(mp_base_url, mp_token, timeout=timeout)
     records: List[Dict[str, object]] = []
+    unresolved: List[Dict[str, object]] = []
     warnings: List[str] = []
     if top > 0:
         candidates = candidates[:top]
@@ -119,7 +121,10 @@ def _resolve_identity_overrides_from_candidates(
             return
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(render_identity_overrides(_identity_payload(records, warnings, len(candidates), attempted)) + "\n", encoding="utf-8")
+        path.write_text(
+            render_identity_overrides(_identity_payload(records, unresolved, warnings, len(candidates), attempted)) + "\n",
+            encoding="utf-8",
+        )
 
     persist(0)
     attempted = 0
@@ -127,36 +132,35 @@ def _resolve_identity_overrides_from_candidates(
         title = str(candidate.get("title") or "")
         if progress:
             progress(f"[{index}/{len(candidates)}] recognizing: {title}")
-        try:
-            payload = client.recognize_file(title)
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"recognize_failed: {title}: {exc}")
-            attempted = index
-            persist(attempted)
-            if progress:
-                progress(f"[{index}/{len(candidates)}] failed: {title}: {exc}")
-            continue
-        record = _override_from_recognition(candidate, payload)
+        record, diagnostics = _resolve_candidate_identity(client, candidate)
         if record:
             records.append(record)
             if progress:
-                progress(f"[{index}/{len(candidates)}] resolved: {title} -> tmdbid={record['tmdbid']} season={record['season']}")
+                progress(
+                    f"[{index}/{len(candidates)}] resolved: {title} -> tmdbid={record['tmdbid']} "
+                    f"season={record['season']} query={record.get('matched_query', '')}"
+                )
         elif progress:
+            unresolved.append(_unresolved_identity(candidate, diagnostics))
             progress(f"[{index}/{len(candidates)}] skipped: {title}")
+        else:
+            unresolved.append(_unresolved_identity(candidate, diagnostics))
         attempted = index
         persist(attempted)
 
-    return _identity_payload(records, warnings, len(candidates), attempted)
+    return _identity_payload(records, unresolved, warnings, len(candidates), attempted)
 
 
 def _identity_payload(
     records: List[Dict[str, object]],
+    unresolved: List[Dict[str, object]],
     warnings: List[str],
     input_candidates: int,
     attempted: int,
 ) -> Dict[str, object]:
     return {
         "identity_overrides": records,
+        "unresolved_identity": unresolved,
         "warnings": warnings,
         "summary": {
             "input_candidates": input_candidates,
@@ -270,6 +274,117 @@ def _override_from_recognition(candidate: Dict[str, object], payload: object) ->
         "method": "moviepilot_recognize_file2",
         "confidence": "high" if season else "needs_season_review",
         "note": _season_note(meta, media, season),
+    }
+
+
+def _resolve_candidate_identity(client: MoviePilotClient, candidate: Dict[str, object]) -> Tuple[Optional[Dict[str, object]], List[Dict[str, object]]]:
+    diagnostics: List[Dict[str, object]] = []
+    for query in _identity_query_variants(candidate):
+        try:
+            payload = client.recognize_file(query)
+        except Exception as exc:  # noqa: BLE001
+            diagnostics.append(
+                {
+                    "query": query,
+                    "status": "error",
+                    "error_type": exc.__class__.__name__,
+                    "error": redact_sensitive_text(str(exc)),
+                }
+            )
+            continue
+        record = _override_from_recognition(candidate, payload)
+        diagnostics.append(_identity_query_diagnostic(query, payload, resolved=bool(record)))
+        if record:
+            record["matched_query"] = query
+            return record, diagnostics
+    return None, diagnostics
+
+
+def _identity_query_variants(candidate: Dict[str, object]) -> List[str]:
+    values = [
+        str(candidate.get("title") or ""),
+        *_path_query_variants(str(candidate.get("path") or "")),
+    ]
+    clean_values: List[str] = []
+    for value in values:
+        for variant in _title_query_variants(value):
+            if variant and variant not in clean_values:
+                clean_values.append(variant)
+    return clean_values
+
+
+def _path_query_variants(path_value: str) -> List[str]:
+    if not path_value:
+        return []
+    parts = [part for part in re.split(r"/+", path_value.strip("/")) if part]
+    if not parts:
+        return []
+    values = [path_value]
+    if parts:
+        values.append(parts[-1])
+    if len(parts) >= 2:
+        values.append(parts[-2])
+    return values
+
+
+def _title_query_variants(value: str) -> List[str]:
+    text = str(value or "").strip().rstrip("/")
+    if not text:
+        return []
+    variants = [text]
+    without_season = re.sub(r"(?i)\s+Season\s+\d{1,2}\b", "", text).strip()
+    if without_season and without_season != text:
+        variants.append(without_season)
+    without_season_dir = re.sub(r"(?i)(?:^|[/\s._-])Season\s*\d{1,2}$", "", text).strip(" /._-")
+    if without_season_dir and without_season_dir not in variants:
+        variants.append(without_season_dir)
+    basename = text.rsplit("/", 1)[-1]
+    if basename and basename not in variants:
+        variants.append(basename)
+    return variants
+
+
+def _identity_query_diagnostic(query: str, payload: object, *, resolved: bool) -> Dict[str, object]:
+    if not isinstance(payload, dict):
+        return {"query": query, "status": "unresolved", "reason": "non_object_response"}
+    meta = payload.get("meta_info") if isinstance(payload.get("meta_info"), dict) else {}
+    media = payload.get("media_info") if isinstance(payload.get("media_info"), dict) else {}
+    tmdbid = int(media.get("tmdb_id") or 0)
+    media_type = str(media.get("type") or meta.get("type") or "")
+    if resolved:
+        status = "resolved"
+        reason = ""
+    elif not tmdbid:
+        status = "unresolved"
+        reason = "missing_tmdbid"
+    elif media_type not in {"电视剧", "tv", "series"}:
+        status = "unresolved"
+        reason = "non_tv_media_type"
+    else:
+        status = "unresolved"
+        reason = "season_unresolved"
+    return {
+        "query": query,
+        "status": status,
+        "reason": reason,
+        "media_type": media_type,
+        "title": str(media.get("title") or meta.get("name") or ""),
+        "year": str(media.get("year") or meta.get("year") or ""),
+        "tmdbid": tmdbid,
+        "begin_season": meta.get("begin_season"),
+        "end_season": meta.get("end_season"),
+        "media_seasons": sorted(str(key) for key in (media.get("seasons") or {}).keys()) if isinstance(media.get("seasons"), dict) else [],
+    }
+
+
+def _unresolved_identity(candidate: Dict[str, object], diagnostics: List[Dict[str, object]]) -> Dict[str, object]:
+    return {
+        "title": str(candidate.get("title") or ""),
+        "match_path": str(candidate.get("path") or ""),
+        "season": _season_from_candidate(candidate),
+        "expected_episodes": candidate.get("episode_numbers") if isinstance(candidate.get("episode_numbers"), list) else [],
+        "queries": diagnostics,
+        "next_action": "人工补充 identity override，或修正标题/路径后重新运行 identity-resolve。",
     }
 
 
