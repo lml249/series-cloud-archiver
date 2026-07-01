@@ -41,6 +41,22 @@ PRESERVED_PREVIEW_REVIEW_DECISIONS = {
     "ready_for_transfer_approval",
     "skipped_manual_exclusion",
 }
+PRIOR_REVIEW_DECISION_RANK = {
+    "done_cleanup_verified": 100,
+    "done_cleanup_executed": 95,
+    "done_already_cleaned_noop": 90,
+    "skipped_manual_exclusion": 85,
+    "ready_for_cleanup_approval": 80,
+    "blocked_after_finalize_gates": 75,
+    "ready_for_finalize_gates": 70,
+    "manual_review_transfer_failed": 65,
+    "blocked_after_transfer_run": 60,
+    "ready_for_transfer_approval": 55,
+    "ready_for_receive_plan": 50,
+    "manual_review_preview_blocked": 45,
+    "manual_review_required": 20,
+    "ready_for_share_preview": 10,
+}
 
 
 @dataclass
@@ -2791,8 +2807,35 @@ def _review_report_by_identity_reports(reports: Sequence[Dict[str, object]]) -> 
         for key, item in _review_report_by_identity(report).items():
             row = dict(item)
             row["prior_review_report_index"] = report_index
-            result[key] = row
+            existing = result.get(key)
+            if not existing or _prior_review_row_rank(row) >= _prior_review_row_rank(existing):
+                result[key] = row
     return result
+
+
+def _prior_review_row_rank(item: Dict[str, object]) -> Tuple[int, int, int]:
+    decision = str(item.get("decision") or "")
+    decision_rank = PRIOR_REVIEW_DECISION_RANK.get(decision, 0)
+    evidence_rank = _prior_review_evidence_rank(item)
+    report_index = int(item.get("prior_review_report_index") or item.get("review_report_index") or 0)
+    return decision_rank, evidence_rank, report_index
+
+
+def _prior_review_evidence_rank(item: Dict[str, object]) -> int:
+    evidence_fields = (
+        "preview_status",
+        "transfer_status",
+        "finalize_status",
+        "post_cleanup_status",
+        "preview_blockers",
+        "transfer_blockers",
+        "finalize_blockers",
+        "post_cleanup_result",
+    )
+    evidence = sum(1 for field in evidence_fields if str(item.get(field) or ""))
+    if str(item.get("preview_status") or "") == "planned_preview":
+        evidence -= 1
+    return evidence
 
 
 def _review_post_cleanup_items(report: Dict[str, object]) -> List[Dict[str, object]]:

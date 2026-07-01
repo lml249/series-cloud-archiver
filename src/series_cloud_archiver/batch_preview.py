@@ -13,6 +13,22 @@ MANUAL_REVIEW = "manual_review"
 DEFAULT_PREVIEW_BUCKETS = [AUTO_TRANSFER, MANUAL_REVIEW]
 DEFAULT_REVIEW_PREVIEW_DECISIONS = ["manual_review_required", "ready_for_share_preview"]
 RERUNNABLE_REVIEW_PREVIEW_DECISIONS = {"manual_review_preview_blocked", "manual_review_transfer_failed"}
+PRIOR_REVIEW_DECISION_RANK = {
+    "done_cleanup_verified": 100,
+    "done_cleanup_executed": 95,
+    "done_already_cleaned_noop": 90,
+    "skipped_manual_exclusion": 85,
+    "ready_for_cleanup_approval": 80,
+    "blocked_after_finalize_gates": 75,
+    "ready_for_finalize_gates": 70,
+    "manual_review_transfer_failed": 65,
+    "blocked_after_transfer_run": 60,
+    "ready_for_transfer_approval": 55,
+    "ready_for_receive_plan": 50,
+    "manual_review_preview_blocked": 45,
+    "manual_review_required": 20,
+    "ready_for_share_preview": 10,
+}
 
 
 PreviewFunc = Callable[..., Dict[str, object]]
@@ -487,8 +503,35 @@ def _preview_review_by_identity(review_reports: Sequence[Dict[str, object]]) -> 
                 continue
             row = dict(item)
             row["review_report_index"] = report_index
-            result[key] = row
+            existing = result.get(key)
+            if not existing or _prior_review_row_rank(row) >= _prior_review_row_rank(existing):
+                result[key] = row
     return result
+
+
+def _prior_review_row_rank(item: Dict[str, object]) -> tuple[int, int, int]:
+    decision = str(item.get("decision") or "")
+    decision_rank = PRIOR_REVIEW_DECISION_RANK.get(decision, 0)
+    evidence_rank = _prior_review_evidence_rank(item)
+    report_index = int(item.get("review_report_index") or item.get("prior_review_report_index") or 0)
+    return decision_rank, evidence_rank, report_index
+
+
+def _prior_review_evidence_rank(item: Dict[str, object]) -> int:
+    evidence_fields = (
+        "preview_status",
+        "transfer_status",
+        "finalize_status",
+        "post_cleanup_status",
+        "preview_blockers",
+        "transfer_blockers",
+        "finalize_blockers",
+        "post_cleanup_result",
+    )
+    evidence = sum(1 for field in evidence_fields if str(item.get(field) or ""))
+    if str(item.get("preview_status") or "") == "planned_preview":
+        evidence -= 1
+    return evidence
 
 
 def _identity_key(item: Dict[str, object]) -> tuple[int, int]:

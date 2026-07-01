@@ -4417,6 +4417,142 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertEqual(new_row["decision"], "manual_review_preview_blocked")
         self.assertNotIn("prior_review_decision", new_row)
 
+    def test_review_keeps_stronger_prior_decision_when_later_review_is_ready_only(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_TRANSFER,
+                    "title": "隐秘的角落",
+                    "tmdbid": 104960,
+                    "season": 1,
+                    "expected_episode_count": 12,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 3,
+                            "search_keyword": "隐秘的角落",
+                            "title": "隐秘的角落.全12集.2020.2160P",
+                            "score": 75,
+                            "size_delta_ratio": 0.3134,
+                            "blockers": [],
+                        }
+                    },
+                }
+            ],
+        }
+        blocked_review = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "manual_review_preview_blocked",
+                    "title": "隐秘的角落",
+                    "tmdbid": 104960,
+                    "season": 1,
+                    "reason_summary": "share_selection_missing",
+                    "preview_status": "preview_blocked",
+                    "preview_blockers": "share_selection_missing",
+                    "best_candidate_title": "隐秘的角落.全12集.2020.2160P",
+                    "best_candidate_score": 75,
+                    "best_candidate_size_delta_ratio": 0.3134,
+                }
+            ],
+        }
+        later_limited_review = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "ready_for_share_preview",
+                    "title": "隐秘的角落",
+                    "tmdbid": 104960,
+                    "season": 1,
+                    "preview_status": "planned_preview",
+                    "best_candidate_title": "隐秘的角落.全12集.2020.2160P",
+                    "best_candidate_score": 75,
+                    "best_candidate_size_delta_ratio": 0.3134,
+                }
+            ],
+        }
+
+        review = build_batch_review_report(
+            batch_plan,
+            share_preview_reports=[
+                {
+                    "mode": "readonly-batch-mv3-share-preview",
+                    "items": [{"status": "planned_preview", "title": "隐秘的角落", "tmdbid": 104960, "season": 1}],
+                }
+            ],
+            prior_review_reports=[blocked_review, later_limited_review],
+        )
+
+        self.assertEqual(review["decision_counts"], {"manual_review_preview_blocked": 1})
+        self.assertEqual(review["items"][0]["decision"], "manual_review_preview_blocked")
+        self.assertEqual(review["items"][0]["prior_review_report_index"], 1)
+        self.assertIn("share_selection_missing", review["items"][0]["reason_summary"])
+
+    def test_preview_plan_keeps_stronger_prior_decision_when_later_review_is_ready_only(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_TRANSFER,
+                    "title": "隐秘的角落",
+                    "tmdbid": 104960,
+                    "season": 1,
+                    "expected_episode_count": 12,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 3,
+                            "search_keyword": "隐秘的角落",
+                            "title": "隐秘的角落.全12集.2020.2160P",
+                            "score": 75,
+                            "size_delta_ratio": 0.3134,
+                            "blockers": [],
+                        }
+                    },
+                }
+            ],
+        }
+        blocked_review = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "manual_review_preview_blocked",
+                    "title": "隐秘的角落",
+                    "tmdbid": 104960,
+                    "season": 1,
+                    "best_candidate_title": "隐秘的角落.全12集.2020.2160P",
+                    "best_candidate_score": 75,
+                    "best_candidate_size_delta_ratio": 0.3134,
+                }
+            ],
+        }
+        later_limited_review = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "ready_for_share_preview",
+                    "title": "隐秘的角落",
+                    "tmdbid": 104960,
+                    "season": 1,
+                    "preview_status": "planned_preview",
+                    "best_candidate_title": "隐秘的角落.全12集.2020.2160P",
+                    "best_candidate_score": 75,
+                    "best_candidate_size_delta_ratio": 0.3134,
+                }
+            ],
+        }
+
+        report = build_batch_share_preview_plan(
+            batch_plan,
+            env_file="/safe/.env",
+            review_reports=[blocked_review, later_limited_review],
+        )
+
+        self.assertEqual(report["executable_preview_items"], 0)
+        self.assertEqual(report["items"][0]["status"], "skipped_preview")
+        self.assertEqual(report["items"][0]["review_decision"], "manual_review_preview_blocked")
+        self.assertIn("review_decision_blocked:manual_review_preview_blocked", report["items"][0]["skip_reasons"])
+
     def test_execute_preview_calls_readonly_preview_func_and_writes_reports(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",
