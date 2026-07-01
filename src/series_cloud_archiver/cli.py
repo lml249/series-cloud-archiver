@@ -933,6 +933,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_share_preview_parser.add_argument("--execute-preview", action="store_true", help="Actually run readonly MV3 share previews; no receive/transfer is performed")
     batch_share_preview_parser.add_argument("--preview-output-dir", default="", help="Directory for per-item preview JSON reports when --execute-preview is used")
     batch_share_preview_parser.add_argument("--max-nested-depth", type=int, default=3, help="Maximum unique nested share folders to browse while previewing")
+    batch_share_preview_parser.add_argument("--max-preview-size-delta", type=float, default=0.35, help="Maximum local/preview video size delta ratio before blocking receive")
     batch_share_preview_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug used when browsing the share")
     batch_share_preview_parser.add_argument("--channel", action="append", default=[], help="Optional MV3 resource-search channel; can be repeated")
     batch_share_preview_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
@@ -3236,6 +3237,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
             preview_output_dir=args.preview_output_dir,
             max_nested_depth=args.max_nested_depth,
+            max_preview_size_delta=args.max_preview_size_delta,
             review_reports=[
                 report
                 for report in (load_optional_json_report(path) for path in args.review_report)

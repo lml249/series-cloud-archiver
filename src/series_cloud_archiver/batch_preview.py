@@ -6,6 +6,8 @@ import shlex
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
+from .reporting import human_size
+
 
 DEFAULT_ALLOWED_BEST_BLOCKERS = ["episode_coverage_unclear"]
 AUTO_TRANSFER = "auto_ready_for_transfer_preview"
@@ -50,6 +52,7 @@ def build_batch_share_preview_plan(
     timeout: int = 60,
     preview_output_dir: str = "",
     max_nested_depth: int = 3,
+    max_preview_size_delta: float = 0.35,
     review_reports: Optional[Sequence[Dict[str, object]]] = None,
     review_preview_decisions: Optional[Sequence[str]] = None,
     preview_func: Optional[PreviewFunc] = None,
@@ -129,6 +132,7 @@ def build_batch_share_preview_plan(
                 row["nested_previews"][-1]["ok"] = bool(report.get("ok"))
                 row["nested_previews"][-1]["episode_count"] = int(report.get("episode_count") or 0)
                 row["nested_previews"][-1]["blockers"] = _string_list(report.get("blockers"))
+            _apply_preview_size_gate(row, report, max_preview_size_delta=max_preview_size_delta)
             executed += 1
             row["preview_report"] = report
             row["preview_ok"] = bool(report.get("ok"))
@@ -169,6 +173,7 @@ def build_batch_share_preview_plan(
             "channels": list(channels or []),
             "preview_output_dir": preview_output_dir,
             "max_nested_depth": max_nested_depth,
+            "max_preview_size_delta": max_preview_size_delta,
         },
         "items": rows,
         "safety": (
@@ -439,6 +444,8 @@ def _preview_row(
         "tmdbid": int(item.get("tmdbid") or 0),
         "season": int(item.get("season") or 0),
         "expected_episode_count": expected_count,
+        "local_size_bytes": int(item.get("size_bytes") or 0),
+        "local_size": str(item.get("size") or ""),
         "expected_episode_min": episode_min,
         "expected_episode_max": episode_max,
         "expected_episodes": expected_episodes,
@@ -460,6 +467,71 @@ def _preview_row(
     if status == "planned_preview":
         row["command"] = _preview_command(row, env_file=env_file, storage=storage)
     return row
+
+
+def _apply_preview_size_gate(row: Dict[str, object], report: Dict[str, object], *, max_preview_size_delta: float) -> None:
+    local_size = int(row.get("local_size_bytes") or 0)
+    preview_size = _preview_video_size_bytes(report)
+    delta = _size_delta_ratio(local_size, preview_size)
+    report["local_size_bytes"] = local_size
+    report["local_size"] = human_size(local_size) if local_size > 0 else ""
+    report["preview_video_size_bytes"] = preview_size
+    report["preview_video_size"] = human_size(preview_size) if preview_size > 0 else ""
+    report["preview_size_delta_ratio"] = delta
+    report["max_preview_size_delta"] = max_preview_size_delta
+    if delta is not None and max_preview_size_delta >= 0 and delta > max_preview_size_delta:
+        blockers = _string_list(report.get("blockers"))
+        blockers.append("preview_size_delta_too_large")
+        report["blockers"] = sorted(set(blockers))
+        report["ok"] = False
+
+
+def _preview_video_size_bytes(report: Dict[str, object]) -> int:
+    browse = report.get("browse") if isinstance(report.get("browse"), dict) else {}
+    items = browse.get("items") if isinstance(browse.get("items"), list) else []
+    return sum(
+        _parse_size_bytes(item.get("size"))
+        for item in items
+        if isinstance(item, dict) and _preview_item_is_video(item)
+    )
+
+
+def _parse_size_bytes(value: object) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    compact = text.replace(",", "").replace(" ", "")
+    matches = list(re.finditer(r"(?i)(\d+(?:\.\d+)?)(b|k|kb|kib|m|mb|mib|g|gb|gib|t|tb|tib)", compact))
+    if not matches:
+        return int(float(compact)) if compact.isdigit() else 0
+    return max(_size_match_bytes(match) for match in matches)
+
+
+def _size_match_bytes(match: re.Match[str]) -> int:
+    number = float(match.group(1))
+    unit = match.group(2).lower()
+    factor = {
+        "b": 1,
+        "k": 1024,
+        "kb": 1000,
+        "m": 1024**2,
+        "mb": 1000**2,
+        "g": 1024**3,
+        "gb": 1000**3,
+        "t": 1024**4,
+        "tb": 1000**4,
+        "kib": 1024,
+        "mib": 1024**2,
+        "gib": 1024**3,
+        "tib": 1024**4,
+    }[unit]
+    return int(number * factor)
+
+
+def _size_delta_ratio(local_size: int, remote_size: int) -> Optional[float]:
+    if local_size <= 0 or remote_size <= 0:
+        return None
+    return abs(local_size - remote_size) / max(local_size, remote_size)
 
 
 def _review_candidate_changed(review_item: Dict[str, object], best: Dict[str, object]) -> bool:

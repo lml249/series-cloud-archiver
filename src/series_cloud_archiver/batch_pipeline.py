@@ -244,6 +244,7 @@ def run_batch_pipeline(
             timeout=preview_timeout,
             preview_output_dir=str(preview_dir) if execute_preview else "",
             max_nested_depth=max_nested_depth,
+            max_preview_size_delta=max_auto_size_delta,
             review_reports=provided_review_reports,
             preview_func=actions.share_preview if execute_preview else None,
         )

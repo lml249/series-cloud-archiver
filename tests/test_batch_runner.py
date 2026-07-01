@@ -4608,6 +4608,76 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertEqual(calls[0][3]["expected_episode_count"], 4)
         self.assertEqual(len(written), 1)
 
+    def test_execute_preview_blocks_complete_share_when_browse_size_is_too_different(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "新闻女王",
+                    "tmdbid": 226197,
+                    "season": 2,
+                    "size_bytes": 30 * 1024**3,
+                    "expected_episode_count": 25,
+                    "expected_episodes": list(range(1, 26)),
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 1,
+                            "search_keyword": "新闻女王",
+                            "title": "新闻女王2 全25集 高码",
+                            "score": 60,
+                            "blockers": [],
+                        }
+                    },
+                }
+            ],
+        }
+
+        def fake_preview(*args, **kwargs):
+            return {
+                "mode": "readonly-mv3-share-preview",
+                "ok": True,
+                "expected_episode_count": 25,
+                "expected_episodes": list(range(1, 26)),
+                "video_file_count": 25,
+                "episode_count": 25,
+                "episodes": list(range(1, 26)),
+                "missing_expected": [],
+                "unexpected_episodes": [],
+                "blockers": [],
+                "browse": {
+                    "ok": True,
+                    "items": [
+                        {
+                            "index": episode,
+                            "name": f"The.QUEEN.of.News.S02E{episode:02d}.mp4",
+                            "kind": "file",
+                            "media_kind": "video",
+                            "episode": episode,
+                            "size": "12.00 GiB",
+                        }
+                        for episode in range(1, 26)
+                    ],
+                },
+            }
+
+        preview = build_batch_share_preview_plan(
+            batch_plan,
+            env_file="/safe/.env",
+            execute_preview=True,
+            base_url="http://mv3.local",
+            token="token",
+            preview_func=fake_preview,
+        )
+        receive_plan = build_batch_share_receive_plan(preview, env_file="/safe/.env")
+
+        item = preview["items"][0]
+        self.assertEqual(item["status"], "preview_blocked")
+        self.assertFalse(item["preview_ok"])
+        self.assertIn("preview_size_delta_too_large", item["preview_blockers"])
+        self.assertGreater(item["preview_report"]["preview_size_delta_ratio"], 0.35)
+        self.assertEqual(receive_plan["approval_required_items"], 0)
+
     def test_execute_preview_auto_enters_single_nested_folder(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",
