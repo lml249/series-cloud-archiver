@@ -4552,6 +4552,68 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertEqual(item["prior_review_decision"], "manual_review_transfer_failed")
         self.assertIn("strm_written_to_unrecognized_root", item["reason_summary"])
 
+    def test_review_prefers_later_safety_blocked_preview_over_stale_ready(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": MANUAL_REVIEW,
+                    "title": "新闻女王",
+                    "tmdbid": 226197,
+                    "season": 2,
+                    "expected_episode_count": 25,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 4,
+                            "search_keyword": "新闻女王",
+                            "title": "新闻女王2（2025）全25集 4K SDR 60帧 高码率",
+                            "score": 60,
+                            "blockers": [],
+                        }
+                    },
+                }
+            ],
+        }
+        stale_ready_preview = {
+            "mode": "readonly-batch-mv3-share-preview",
+            "items": [
+                {
+                    "status": "preview_ready_for_receive",
+                    "title": "新闻女王",
+                    "tmdbid": 226197,
+                    "season": 2,
+                    "preview_episode_count": 25,
+                    "candidate_score": 60,
+                }
+            ],
+        }
+        later_blocked_preview = {
+            "mode": "readonly-batch-mv3-share-preview",
+            "items": [
+                {
+                    "status": "preview_blocked",
+                    "title": "新闻女王",
+                    "tmdbid": 226197,
+                    "season": 2,
+                    "preview_episode_count": 25,
+                    "candidate_score": 60,
+                    "preview_blockers": ["preview_size_delta_too_large"],
+                }
+            ],
+        }
+
+        review = build_batch_review_report(
+            batch_plan,
+            share_preview_reports=[stale_ready_preview, later_blocked_preview],
+        )
+
+        self.assertEqual(review["decision_counts"], {"manual_review_preview_blocked": 1})
+        item = review["items"][0]
+        self.assertEqual(item["decision"], "manual_review_preview_blocked")
+        self.assertEqual(item["preview_status"], "preview_blocked")
+        self.assertIn("preview_size_delta_too_large", item["reason_summary"])
+        self.assertIn("人工核对", item["next_action"])
+
     def test_preview_plan_keeps_stronger_prior_decision_when_later_review_is_ready_only(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",

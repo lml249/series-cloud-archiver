@@ -2692,8 +2692,9 @@ def _review_preview_by_identity(reports: Sequence[Dict[str, object]]) -> Dict[Tu
 
 def _review_preview_rank(item: Dict[str, object]) -> Tuple[int, int, int, int]:
     status = str(item.get("status") or "")
+    safety_blocked = status == "preview_blocked" and bool(_string_list(item.get("preview_blockers")))
     return (
-        3 if status == "preview_ready_for_receive" else 2 if status == "preview_blocked" else 1 if _preview_preserves_prior_decision(item) else 0,
+        4 if safety_blocked else 3 if status == "preview_ready_for_receive" else 2 if status == "preview_blocked" else 1 if _preview_preserves_prior_decision(item) else 0,
         int(item.get("preview_episode_count") or 0),
         int(item.get("candidate_score") or 0),
         -int(item.get("source_index") or 0),
