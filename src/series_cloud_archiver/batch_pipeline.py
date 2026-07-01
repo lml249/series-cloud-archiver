@@ -179,8 +179,10 @@ def run_batch_pipeline(
             config.mv3_token,
             limit=share_search_limit,
             offset=share_search_offset,
+            max_candidates=share_search_max_candidates,
             channels=list(share_search_channels or []),
             timeout=share_search_timeout,
+            checkpoint_path=pipeline_dir / "04-share-search.checkpoint.json",
             search_func=actions.share_search,
         )
         share_search_plan = plan_mv3_share_search_from_transfer_plan(
@@ -457,8 +459,10 @@ def _run_share_search_reports(
     *,
     limit: int,
     offset: int,
+    max_candidates: int,
     channels: Sequence[str],
     timeout: int,
+    checkpoint_path: Optional[Path] = None,
     search_func: Callable[..., JsonDict],
 ) -> Dict[str, JsonDict]:
     raw_items = [item for item in transfer_plan.get("items", []) if isinstance(item, dict)]
@@ -466,10 +470,23 @@ def _run_share_search_reports(
     stop = start + limit if limit > 0 else len(raw_items)
     selected = raw_items[start:stop]
     reports: Dict[str, JsonDict] = {}
-    for item in selected:
+    for item_index, item in enumerate(selected, start=1):
         title = str(item.get("title") or "")
         if not title:
             continue
+        if checkpoint_path:
+            _write_share_search_checkpoint(
+                checkpoint_path,
+                transfer_plan=transfer_plan,
+                search_reports=reports,
+                limit=max(item_index - 1, 0),
+                offset=offset,
+                max_candidates=max_candidates,
+                completed_items=max(item_index - 1, 0),
+                planned_items=len(selected),
+                current_title=title,
+                status="in_progress",
+            )
         reports[title] = _combined_share_search(
             base_url,
             token,
@@ -478,7 +495,51 @@ def _run_share_search_reports(
             timeout=timeout,
             search_func=search_func,
         )
+        if checkpoint_path:
+            _write_share_search_checkpoint(
+                checkpoint_path,
+                transfer_plan=transfer_plan,
+                search_reports=reports,
+                limit=item_index,
+                offset=offset,
+                max_candidates=max_candidates,
+                completed_items=item_index,
+                planned_items=len(selected),
+                current_title=title,
+                status="completed",
+            )
     return reports
+
+
+def _write_share_search_checkpoint(
+    path: Path,
+    *,
+    transfer_plan: JsonDict,
+    search_reports: Dict[str, JsonDict],
+    limit: int,
+    offset: int,
+    max_candidates: int,
+    completed_items: int,
+    planned_items: int,
+    current_title: str,
+    status: str,
+) -> None:
+    checkpoint = plan_mv3_share_search_from_transfer_plan(
+        transfer_plan,
+        search_reports,
+        limit=limit,
+        max_candidates=max_candidates,
+        offset=offset,
+    )
+    checkpoint["checkpoint"] = {
+        "enabled": True,
+        "completed_items": completed_items,
+        "planned_items": planned_items,
+        "current_title": current_title,
+        "status": status,
+        "complete": completed_items == planned_items,
+    }
+    _write_json(path, checkpoint)
 
 
 def _combined_share_search(

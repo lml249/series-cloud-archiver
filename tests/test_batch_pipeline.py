@@ -314,6 +314,45 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertEqual(share_search["planned_items"], 1)
         self.assertEqual(report["summary"]["batch_plan"]["auto_transfer_items"], 1)
 
+    def test_pipeline_share_search_writes_checkpoint(self) -> None:
+        checkpoint_payloads = []
+
+        def fake_search(_base_url, _token, keyword, channels=None, timeout=60):
+            checkpoint = run_dir / "04-share-search.checkpoint.json"
+            self.assertTrue(checkpoint.exists())
+            checkpoint_payloads.append(json.loads(checkpoint.read_text(encoding="utf-8")))
+            return {
+                "ok": True,
+                "result_count": 1,
+                "items": [
+                    {
+                        "index": 1,
+                        "title": f"{keyword} S01E01-E10 完结",
+                        "size": "1GB",
+                        "share_code_available": True,
+                    }
+                ],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "search-checkpoint"
+            report = run_batch_pipeline(
+                output_dir=tmp,
+                run_id="search-checkpoint",
+                config=ScanConfig(media_roots=[], mv3_base_url="http://mv3.local", mv3_token="token"),
+                cloud_report=self._cloud_report(),
+                execute_share_search=True,
+                share_search_limit=1,
+                actions=BatchPipelineActions(share_search=fake_search),
+            )
+            final_checkpoint = json.loads((Path(report["run_dir"]) / "04-share-search.checkpoint.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(checkpoint_payloads[0]["checkpoint"]["status"], "in_progress")
+        self.assertEqual(checkpoint_payloads[0]["checkpoint"]["completed_items"], 0)
+        self.assertEqual(final_checkpoint["checkpoint"]["status"], "completed")
+        self.assertEqual(final_checkpoint["checkpoint"]["completed_items"], 1)
+        self.assertTrue(final_checkpoint["checkpoint"]["complete"])
+
     def test_pipeline_share_search_records_timeout_diagnostics(self) -> None:
         def fake_search(_base_url, _token, keyword, channels=None, timeout=60):
             return {
