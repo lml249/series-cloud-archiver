@@ -527,6 +527,7 @@ def _receive_plan_row(
         "receive_mode": receive_mode,
         "verified_folder_browse_report": verified_report if receive_mode == "receive_selected_folder" else "",
         "target_path": target_path,
+        "expected_staging_path": _expected_staging_path(item, target_path, receive_mode),
         "storage": storage,
         "expected_episode_count": expected_count,
         "expected_episode_min": expected_min,
@@ -541,6 +542,31 @@ def _receive_plan_row(
     if status == "approval_required":
         row["command"] = _receive_command(row, env_file=env_file)
     return row
+
+
+def _expected_staging_path(item: Dict[str, object], target_path: str, receive_mode: str) -> str:
+    if receive_mode == "receive_selected_folder":
+        nested_previews = [row for row in item.get("nested_previews", []) if isinstance(row, dict)]
+        if nested_previews:
+            folder_name = str(nested_previews[-1].get("folder_name") or "").strip()
+            if folder_name:
+                return f"{target_path.rstrip('/')}/{folder_name}"
+    preview_report = item.get("preview_report") if isinstance(item.get("preview_report"), dict) else {}
+    browse = preview_report.get("browse") if isinstance(preview_report.get("browse"), dict) else {}
+    selection = preview_report.get("browse_selection") if isinstance(preview_report.get("browse_selection"), dict) else {}
+    folder_name = str(selection.get("name") or "").strip()
+    if folder_name:
+        return f"{target_path.rstrip('/')}/{folder_name}"
+    browse_cid = str(preview_report.get("browse_cid") or "")
+    for candidate in item.get("nested_previews", []):
+        if isinstance(candidate, dict) and str(candidate.get("cid") or "") == browse_cid:
+            folder_name = str(candidate.get("folder_name") or "").strip()
+            if folder_name:
+                return f"{target_path.rstrip('/')}/{folder_name}"
+    browse_path = str(browse.get("path") or "").strip()
+    if browse_path and browse_path.startswith("/"):
+        return f"{target_path.rstrip('/')}/{Path(browse_path).name}"
+    return target_path.rstrip("/") or "/"
 
 
 def _receive_command(row: Dict[str, object], *, env_file: str) -> str:

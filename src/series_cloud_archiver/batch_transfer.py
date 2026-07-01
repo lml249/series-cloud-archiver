@@ -195,6 +195,23 @@ def _run_transfer_item(
         row["blockers"] = ["receive_approval_required"]
         return row
 
+    staging_preflight_report = _browse_expected_staging_preflight(
+        actions,
+        config,
+        item,
+        target_path=target_path,
+        storage=storage,
+        timeout=timeout,
+    )
+    staging_preflight_path = _stage_report_path(output_dir, prefix, "staging-preflight")
+    _write_json(staging_preflight_path, staging_preflight_report)
+    row["stage_reports"]["staging_preflight"] = str(staging_preflight_path)
+    staging_blockers = _staging_preflight_blockers(staging_preflight_report)
+    if staging_blockers:
+        row["status"] = "failed_staging_preflight"
+        row["blockers"] = staging_blockers
+        return row
+
     receive_report = actions.receive_share(
         _config_value(config, "mv3_base_url"),
         _config_value(config, "mv3_token"),
@@ -387,6 +404,68 @@ def _preflight_blockers(item: Dict[str, object], target_path: str, organize_targ
         blockers.append("missing_selection_index")
     if str(item.get("receive_mode") or "") not in {"receive_all_files", "receive_selected_folder"}:
         blockers.append("unsupported_receive_mode")
+    return sorted(set(blockers))
+
+
+def _browse_expected_staging_preflight(
+    actions: BatchTransferActions,
+    config: object,
+    item: Dict[str, object],
+    *,
+    target_path: str,
+    storage: str,
+    timeout: int,
+) -> Dict[str, object]:
+    expected_path = str(item.get("expected_staging_path") or "").strip()
+    if not expected_path:
+        expected_path = _expected_staging_path_from_receive_item(item, target_path)
+    if not expected_path:
+        return _synthetic_cloud_browse_report(target_path.rstrip("/") or "/", ["expected_staging_path_unresolved"])
+    report = actions.browse_cloud(
+        _config_value(config, "mv3_base_url"),
+        _config_value(config, "mv3_token"),
+        path=expected_path,
+        storage=storage,
+        limit=1150,
+        timeout=timeout,
+    )
+    report["expected_staging_path"] = expected_path
+    report["preflight"] = "before_share_receive"
+    return report
+
+
+def _expected_staging_path_from_receive_item(item: Dict[str, object], target_path: str) -> str:
+    receive_mode = str(item.get("receive_mode") or "")
+    verified = _load_json_report(str(item.get("verified_folder_browse_report") or ""))
+    if receive_mode == "receive_selected_folder":
+        nested = [row for row in item.get("nested_previews", []) if isinstance(row, dict)]
+        if nested:
+            folder_name = str(nested[-1].get("folder_name") or "").strip()
+            if folder_name:
+                return f"{target_path.rstrip('/')}/{folder_name}"
+        folder_name = str(verified.get("nested_preview_folder_name") or "").strip()
+        if folder_name:
+            return f"{target_path.rstrip('/')}/{folder_name}"
+    selection = verified.get("browse_selection") if isinstance(verified.get("browse_selection"), dict) else {}
+    folder_name = str(selection.get("name") or "").strip()
+    if folder_name:
+        return f"{target_path.rstrip('/')}/{folder_name}"
+    return target_path.rstrip("/") or "/"
+
+
+def _staging_preflight_blockers(report: Dict[str, object]) -> List[str]:
+    if _staging_path_absent(report):
+        return []
+    blockers = ["staging_target_path_already_exists"]
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    if int(summary.get("video_file_count") or 0) > 0:
+        blockers.append("staging_target_video_files_present")
+    if int(summary.get("folder_count") or 0) > 0:
+        blockers.append("staging_target_folders_present")
+    if int(summary.get("file_count") or 0) > 0:
+        blockers.append("staging_target_files_present")
+    if not str(report.get("folder_id") or ""):
+        blockers.append("staging_target_folder_id_missing")
     return sorted(set(blockers))
 
 

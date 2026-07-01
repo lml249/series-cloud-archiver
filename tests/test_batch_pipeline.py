@@ -205,8 +205,12 @@ class BatchPipelineTest(unittest.TestCase):
         transfer_calls = []
 
         class TransferActions:
+            def __init__(self):
+                self.received = False
+
             def receive_share(self, *args, **kwargs):
                 transfer_calls.append(("receive", args, kwargs))
+                self.received = True
                 return {
                     "mode": "mv3-share-receive-one-result",
                     "ok": True,
@@ -230,6 +234,15 @@ class BatchPipelineTest(unittest.TestCase):
                         ],
                     }
                 if path.startswith("/未整理"):
+                    if not self.received:
+                        return {
+                            "mode": "mv3-cloud-browse",
+                            "ok": False,
+                            "path": path,
+                            "summary": {"video_file_count": 0, "metadata_sidecar_file_count": 0},
+                            "items": [],
+                            "warnings": ["path_info_not_found"],
+                        }
                     return {
                         "mode": "mv3-cloud-browse",
                         "ok": True,
@@ -282,7 +295,11 @@ class BatchPipelineTest(unittest.TestCase):
 
     def test_pipeline_review_includes_transfer_failures(self) -> None:
         class FailingTransferActions:
+            def __init__(self):
+                self.received = False
+
             def receive_share(self, *args, **kwargs):
+                self.received = True
                 return {
                     "mode": "mv3-share-receive-one-result",
                     "ok": True,
@@ -294,6 +311,15 @@ class BatchPipelineTest(unittest.TestCase):
             def browse_cloud(self, *args, **kwargs):
                 path = str(kwargs.get("path") or "")
                 if path.startswith("/未整理"):
+                    if not self.received:
+                        return {
+                            "mode": "mv3-cloud-browse",
+                            "ok": False,
+                            "path": path,
+                            "summary": {"video_file_count": 0, "metadata_sidecar_file_count": 0},
+                            "items": [],
+                            "warnings": ["path_info_not_found"],
+                        }
                     return {
                         "mode": "mv3-cloud-browse",
                         "ok": True,

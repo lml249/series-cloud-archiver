@@ -250,6 +250,7 @@ class TransferFakeActions:
         received_name: str = "折腰",
         direct_received_browse_missing: bool = False,
         receive_already_completed: bool = False,
+        staging_preexists: bool = False,
     ) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.duplicate_after_organize = duplicate_after_organize
@@ -259,10 +260,13 @@ class TransferFakeActions:
         self.received_name = received_name
         self.direct_received_browse_missing = direct_received_browse_missing
         self.receive_already_completed = receive_already_completed
+        self.staging_preexists = staging_preexists
         self.organized = False
+        self.received = False
 
     def receive_share(self, *args: object, **kwargs: object) -> dict:
         self.calls.append(("receive", {"args": list(args), "kwargs": kwargs}))
+        self.received = True
         return {
             "mode": "mv3-share-receive-one-result",
             "ok": not self.receive_already_completed,
@@ -303,6 +307,41 @@ class TransferFakeActions:
                     }
                 ],
                 "warnings": [],
+            }
+        if path == f"/未整理/{self.received_name}" and not self.received:
+            if self.staging_preexists:
+                return {
+                    "mode": "readonly-mv3-cloud-browse",
+                    "ok": True,
+                    "path": path,
+                    "folder_id": "preexisting-staging",
+                    "summary": {
+                        "video_file_count": 1,
+                        "file_count": 1,
+                        "folder_count": 0,
+                        "metadata_sidecar_file_count": 0,
+                    },
+                    "items": [
+                        {
+                            "kind": "file",
+                            "media_kind": "video",
+                            "name": "旧残留 - S01E01.mkv",
+                            "episode": 1,
+                            "file_id": "staging-preexisting-file",
+                        }
+                    ],
+                    "warnings": [],
+                }
+            return {
+                "mode": "readonly-mv3-cloud-browse",
+                "ok": False,
+                "path": path,
+                "summary": {
+                    "video_file_count": 0,
+                    "metadata_sidecar_file_count": 0,
+                },
+                "items": [],
+                "warnings": ["path_info_not_found"],
             }
         if folder_id == "received-folder" and not self.organized:
             return self._received_browse_report(f"/未整理/{self.received_name}", folder_id)
@@ -546,7 +585,7 @@ class BatchRunnerTest(unittest.TestCase):
             ],
         }
 
-    def _receive_plan(self, preview_report_path: str = "/tmp/preview.json") -> dict:
+    def _receive_plan(self, preview_report_path: str = "/tmp/preview.json", expected_staging_path: str = "/未整理/折腰") -> dict:
         return {
             "mode": "readonly-batch-mv3-share-receive-plan",
             "items": [
@@ -562,6 +601,7 @@ class BatchRunnerTest(unittest.TestCase):
                     "receive_mode": "receive_selected_folder",
                     "verified_folder_browse_report": preview_report_path,
                     "target_path": "/未整理",
+                    "expected_staging_path": expected_staging_path,
                     "storage": "115-default",
                     "expected_episode_count": 36,
                     "expected_episode_min": 1,
@@ -631,16 +671,42 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(report["received_items"], 1)
         self.assertEqual(report["organized_items"], 1)
-        self.assertEqual([call[0] for call in actions.calls], ["receive", "browse", "organize", "browse", "browse"])
-        self.assertEqual(actions.calls[0][1]["kwargs"]["target_path"], "/未整理")
-        self.assertEqual(actions.calls[1][1]["kwargs"]["path"], "/未整理/折腰")
-        self.assertEqual(actions.calls[2][1]["kwargs"]["target_dir"], "/已整理")
-        self.assertEqual(actions.calls[2][1]["kwargs"]["strm_dir"], "/strm")
-        self.assertEqual(actions.calls[3][1]["kwargs"]["path"], "/已整理/series/折腰 {tmdbid=296753}/Season 1")
-        self.assertEqual(actions.calls[4][1]["kwargs"]["path"], "/未整理/折腰")
+        self.assertEqual([call[0] for call in actions.calls], ["browse", "receive", "browse", "organize", "browse", "browse"])
+        self.assertEqual(actions.calls[0][1]["kwargs"]["path"], "/未整理/折腰")
+        self.assertEqual(actions.calls[1][1]["kwargs"]["target_path"], "/未整理")
+        self.assertEqual(actions.calls[2][1]["kwargs"]["path"], "/未整理/折腰")
+        self.assertEqual(actions.calls[3][1]["kwargs"]["target_dir"], "/已整理")
+        self.assertEqual(actions.calls[3][1]["kwargs"]["strm_dir"], "/strm")
+        self.assertEqual(actions.calls[4][1]["kwargs"]["path"], "/已整理/series/折腰 {tmdbid=296753}/Season 1")
+        self.assertEqual(actions.calls[5][1]["kwargs"]["path"], "/未整理/折腰")
         self.assertEqual(report["items"][0]["status"], "organized_requires_finalize")
+        self.assertIn("staging_preflight", report["items"][0]["stage_reports"])
         self.assertIn("strm_output_verify", report["items"][0]["stage_reports"])
-        self.assertEqual(len(stage_files), 6)
+        self.assertEqual(len(stage_files), 7)
+
+    def test_batch_transfer_run_blocks_when_expected_staging_path_exists_before_receive(self) -> None:
+        actions = TransferFakeActions(staging_preexists=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_transfer(
+                self._receive_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(),
+                approve_receive=True,
+                approve_transfer=True,
+                actions=BatchTransferActions(
+                    receive_share=actions.receive_share,
+                    browse_cloud=actions.browse_cloud,
+                    organize_transfer=actions.organize_transfer,
+                ),
+            )
+
+        item = report["items"][0]
+        self.assertFalse(report["ok"])
+        self.assertEqual(item["status"], "failed_staging_preflight")
+        self.assertIn("staging_target_path_already_exists", item["blockers"])
+        self.assertIn("staging_target_video_files_present", item["blockers"])
+        self.assertIn("staging_preflight", item["stage_reports"])
+        self.assertEqual([call[0] for call in actions.calls], ["browse"])
 
     def test_batch_transfer_run_resolves_received_folder_by_root_listing_when_path_has_slash(self) -> None:
         actions = TransferFakeActions(
@@ -654,7 +720,7 @@ class BatchRunnerTest(unittest.TestCase):
                 encoding="utf-8",
             )
             report = run_batch_transfer(
-                self._receive_plan(str(preview)),
+                self._receive_plan(str(preview), expected_staging_path="/未整理/韩剧【夫妻的世界】(2020) 金喜爱 / 朴解浚"),
                 output_dir=tmp,
                 config=FinalizeFakeConfig(),
                 approve_receive=True,
@@ -674,8 +740,9 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("received_path_resolve_02", item["stage_reports"])
         self.assertIn("staging_path_resolve_01", item["stage_reports"])
         self.assertEqual(browse_calls[0]["path"], "/未整理/韩剧【夫妻的世界】(2020) 金喜爱 / 朴解浚")
-        self.assertEqual(browse_calls[1]["path"], "/未整理")
-        self.assertEqual(browse_calls[2]["folder_id"], "received-folder")
+        self.assertEqual(browse_calls[1]["path"], "/未整理/韩剧【夫妻的世界】(2020) 金喜爱 / 朴解浚")
+        self.assertEqual(browse_calls[2]["path"], "/未整理")
+        self.assertEqual(browse_calls[3]["folder_id"], "received-folder")
         organize_call = next(call for call in actions.calls if call[0] == "organize")
         self.assertEqual(organize_call[1]["args"][2]["path"], "/未整理/韩剧【夫妻的世界】(2020) 金喜爱 / 朴解浚")
 
@@ -692,7 +759,7 @@ class BatchRunnerTest(unittest.TestCase):
                 encoding="utf-8",
             )
             report = run_batch_transfer(
-                self._receive_plan(str(preview)),
+                self._receive_plan(str(preview), expected_staging_path="/未整理/韩剧【夫妻的世界】(2020) 金喜爱 / 朴解浚"),
                 output_dir=tmp,
                 config=FinalizeFakeConfig(),
                 approve_receive=True,
@@ -3992,6 +4059,7 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertEqual(ready["browse_cid"], "series-folder")
         self.assertEqual(ready["browse_index"], 1)
         self.assertEqual(ready["verified_folder_browse_report"], "/reports/share-preview-zheyao.json")
+        self.assertEqual(ready["expected_staging_path"], "/未整理/Season 1")
         self.assertIn("--receive-selected-folder", ready["command"])
         self.assertIn("--browse-cid series-folder", ready["command"])
         self.assertIn("--verified-folder-browse-report /reports/share-preview-zheyao.json", ready["command"])
