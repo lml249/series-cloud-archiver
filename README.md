@@ -1107,6 +1107,22 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-stage
   --output reports/demo-sp1-staged-transfer.json
 ```
 
+如果原始文件名会被 MV3 规则屏蔽（例如特殊篇源文件含 `SP1`/`SP2` 标记），可以在 mapping 的单集条目上加 `staging_name` 或 `staged_name`，让 runner 复制到 `/movecache` 时使用干净的单文件名，并用同一个干净文件名提交 MV3。override 只能是文件名，不能包含路径分隔符、`..` 或和原始源文件不同的扩展名；默认仍会使用 `SxxEyy 原文件名`：
+
+```json
+{
+  "items": [
+    {
+      "source_path": "/volume3/source/Band.of.Brothers.SP1.We.Stand.Alone.mkv",
+      "tmdbid": 4613,
+      "season": 0,
+      "episode": 1,
+      "staging_name": "Band.of.Brothers.S00E01.We.Stand.Alone.Together.mkv"
+    }
+  ]
+}
+```
+
 这条链路不会移动或删除本地源文件，强制使用 copy 模式；映射文件里的季/集只作为项目的安全门禁和报告证据，最终命名仍由 MV3 根据 `tmdb_id` 和源文件信息完成。本地 qB/source/hlink 仍然必须等 STRM 完整、中文 NFO、Emby 和清理预览全部变绿后，才由最终 cleanup 阶段处理。云盘实体目录仍然只做转存和 STRM 生成，不做刮削，不写 NFO/JPG。
 
 如果怀疑 115 里已经有同内容，或者分享预览暂时不可用，可以先用只读云盘搜索找候选目录。这个命令只查 115 文件名，不转存、不整理、不生成 STRM，也不会刮削云盘媒体目录：

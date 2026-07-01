@@ -5027,6 +5027,117 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertEqual(report["staging"]["copy"]["items"][0]["status"], "planned")
         self.assertEqual(report["confirmed_mapping"]["items"][0]["source_path"], "/movecache/brothers-s00/S00E01 Demo.SP1.mkv")
 
+    def test_organize_transfer_from_staged_local_map_uses_staging_name_override(self) -> None:
+        seen = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "source" / "Demo.SP1.mkv"
+            source.parent.mkdir()
+            source.write_bytes(b"video")
+            staging = tmp_path / "movecache"
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return b'{"success":true,"data":{"task_id":"task-1"}}'
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            def fake_urlopen(request, timeout):
+                seen["body"] = json.loads(request.data.decode("utf-8"))
+                return FakeResponse()
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                report = execute_mv3_organize_transfer_from_staged_local_map(
+                    "http://mv3.example",
+                    "token",
+                    {
+                        "mode": "confirmed-extra-source-media-map",
+                        "items": [
+                            {
+                                "source_path": str(source),
+                                "tmdbid": 123,
+                                "season": 0,
+                                "episode": 1,
+                                "staging_name": "Demo.S00E01.Clean.Name.mkv",
+                            }
+                        ],
+                    },
+                    target_dir="/已整理",
+                    strm_dir="/strm",
+                    tmdb_id=123,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    staging_host_dir=str(staging),
+                    staging_container_dir="/movecache",
+                    staging_subdir="brothers-s00",
+                    approve_stage_copy=True,
+                    approve_transfer=True,
+                )
+
+            staged_file = staging / "brothers-s00" / "Demo.S00E01.Clean.Name.mkv"
+            self.assertTrue(report["ok"])
+            self.assertTrue(staged_file.exists())
+            self.assertEqual(staged_file.read_bytes(), b"video")
+            self.assertEqual(report["staging"]["items"][0]["staging_name_source"], "override")
+            self.assertEqual(report["staging"]["copy"]["items"][0]["staged_name"], "Demo.S00E01.Clean.Name.mkv")
+            self.assertEqual(report["confirmed_mapping"]["items"][0]["file_name"], "Demo.S00E01.Clean.Name.mkv")
+            self.assertEqual(seen["body"]["files"][0]["source_path"], "/movecache/brothers-s00/Demo.S00E01.Clean.Name.mkv")
+            self.assertEqual(seen["body"]["files"][0]["name"], "Demo.S00E01.Clean.Name.mkv")
+
+    def test_organize_transfer_from_staged_local_map_blocks_unsafe_staging_name_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "source" / "Demo.SP1.mkv"
+            source.parent.mkdir()
+            source.write_bytes(b"video")
+            staging = tmp_path / "movecache"
+            calls = []
+
+            with patch("urllib.request.urlopen", lambda request, timeout: calls.append(request)):
+                report = execute_mv3_organize_transfer_from_staged_local_map(
+                    "http://mv3.example",
+                    "token",
+                    {
+                        "items": [
+                            {
+                                "source_path": str(source),
+                                "tmdbid": 123,
+                                "season": 0,
+                                "episode": 1,
+                                "staging_name": "../Demo.S00E01.mkv",
+                            }
+                        ]
+                    },
+                    target_dir="/已整理",
+                    strm_dir="/strm",
+                    tmdb_id=123,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    staging_host_dir=str(staging),
+                    staging_container_dir="/movecache",
+                    staging_subdir="demo",
+                    approve_stage_copy=True,
+                    approve_transfer=True,
+                )
+
+            self.assertFalse(report["ok"])
+            self.assertEqual(calls, [])
+            self.assertIn("staging_name_override_must_be_filename", report["blockers"])
+            self.assertEqual(report["staging"]["copy"]["items"][0]["status"], "blocked")
+            self.assertFalse((staging / "Demo.S00E01.mkv").exists())
+
     def test_organize_transfer_from_staged_local_map_requires_stage_copy_for_transfer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

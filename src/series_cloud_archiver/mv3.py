@@ -6454,7 +6454,7 @@ def _transfer_files_from_confirmed_local_mapping(rows: List[Dict[str, object]]) 
         if season is None or episode is None:
             continue
         name = str(row.get("name") or row.get("file_name") or PurePosixPath(source_path).name)
-        gated_name = f"S{season:02d}E{episode:02d} {name}"
+        gated_name = name if row.get("transfer_name_already_gated") else f"S{season:02d}E{episode:02d} {name}"
         files.append(
             {
                 "source_path": source_path,
@@ -6514,7 +6514,15 @@ def _build_staged_local_mapping_plan(
         season = _positive_int(row.get("season"), allow_zero=True)
         episode = _positive_int(row.get("episode"), allow_zero=False)
         file_name = str(row.get("file_name") or row.get("name") or PurePosixPath(source_path).name)
-        staged_name = _staged_local_file_name(file_name, season, episode)
+        source_suffix = PurePosixPath(source_path or file_name).suffix
+        staged_name_override = _first_present(row, ["staging_name", "staged_name"])
+        staged_name, staged_name_blockers = _staged_local_file_name(
+            file_name,
+            season,
+            episode,
+            source_suffix=source_suffix,
+            override=staged_name_override,
+        )
         host_path = host_root / subdir / staged_name if staging_host_dir and subdir and staged_name else Path("")
         container_path = f"{container_root.rstrip('/')}/{subdir}/{staged_name}" if container_root and subdir and staged_name else ""
         source = Path(source_path) if source_path else Path("")
@@ -6531,6 +6539,7 @@ def _build_staged_local_mapping_plan(
             item_blockers.append("staging_source_must_not_be_media_library_path")
         if source_path and not source_exists:
             item_blockers.append("staging_source_file_missing")
+        item_blockers.extend(staged_name_blockers)
         if not staged_name:
             item_blockers.append("staging_target_name_required")
         if str(host_path) in seen_targets:
@@ -6553,6 +6562,8 @@ def _build_staged_local_mapping_plan(
                 "episode": episode if episode is not None else "",
                 "file_name": file_name,
                 "staged_name": staged_name,
+                "staging_name_override": staged_name_override,
+                "staging_name_source": "override" if staged_name_override else "default",
                 "blockers": sorted(set(item_blockers)),
             }
         )
@@ -6646,7 +6657,17 @@ def _staged_confirmed_local_mapping_report(mapping_report: Dict[str, object], st
         staged_row = dict(row)
         staged_row["original_source_path"] = source_path
         staged_row["source_path"] = str(stage.get("container_staging_path") or "")
-        staged_row["file_name"] = str(row.get("file_name") or row.get("name") or PurePosixPath(source_path).name)
+        staged_name = str(stage.get("staged_name") or "")
+        staged_row["original_file_name"] = str(row.get("file_name") or row.get("name") or PurePosixPath(source_path).name)
+        if stage.get("staging_name_override") and staged_name:
+            staged_row["file_name"] = staged_name
+            staged_row["name"] = staged_name
+            staged_row["transfer_name_already_gated"] = True
+        else:
+            staged_row["file_name"] = staged_row["original_file_name"]
+            staged_row["name"] = staged_row["original_file_name"]
+            staged_row["transfer_name_already_gated"] = False
+        staged_row["staging_name_override"] = str(stage.get("staging_name_override") or "")
         staged_items.append(staged_row)
     parents = {
         str(PurePosixPath(str(item.get("source_path") or "")).parent)
@@ -6668,6 +6689,8 @@ def _staged_copy_row(item: Dict[str, object], *, status: str, target_size_bytes:
         "source_path": item.get("source_path"),
         "host_staging_path": item.get("host_staging_path"),
         "container_staging_path": item.get("container_staging_path"),
+        "staged_name": item.get("staged_name"),
+        "staging_name_source": item.get("staging_name_source"),
         "source_size_bytes": item.get("source_size_bytes"),
         "target_size_bytes": item.get("target_size_bytes") if target_size_bytes is None else target_size_bytes,
         "blockers": item.get("blockers") or [],
@@ -6680,10 +6703,41 @@ def _safe_staging_subdir(value: str) -> str:
     return "" if normalized in {".", ""} else normalized
 
 
-def _staged_local_file_name(file_name: str, season: Optional[int], episode: Optional[int]) -> str:
+def _staged_local_file_name(
+    file_name: str,
+    season: Optional[int],
+    episode: Optional[int],
+    *,
+    source_suffix: str = "",
+    override: str = "",
+) -> Tuple[str, List[str]]:
+    if override:
+        return _safe_staged_file_name_override(override, source_suffix)
     if season is None or episode is None or not file_name:
-        return ""
-    return f"S{season:02d}E{episode:02d} {PurePosixPath(file_name).name}"
+        return "", []
+    return f"S{season:02d}E{episode:02d} {PurePosixPath(file_name).name}", []
+
+
+def _safe_staged_file_name_override(value: str, source_suffix: str) -> Tuple[str, List[str]]:
+    raw = str(value or "").strip()
+    blockers: List[str] = []
+    if not raw:
+        return "", ["staging_name_override_empty"]
+    if "\x00" in raw or "/" in raw or "\\" in raw or PurePosixPath(raw).name != raw:
+        blockers.append("staging_name_override_must_be_filename")
+    if raw in {".", ".."} or raw.startswith("../") or raw.endswith("/.."):
+        blockers.append("staging_name_override_must_be_filename")
+    source_ext = str(source_suffix or "").strip()
+    candidate = raw
+    candidate_ext = PurePosixPath(candidate).suffix
+    if not candidate_ext and source_ext:
+        candidate = f"{candidate}{source_ext}"
+        candidate_ext = PurePosixPath(candidate).suffix
+    if source_ext and candidate_ext.lower() != source_ext.lower():
+        blockers.append("staging_name_override_extension_mismatch")
+    if not PurePosixPath(candidate).stem:
+        blockers.append("staging_name_override_stem_required")
+    return candidate, sorted(set(blockers))
 
 
 def _confirmed_local_mapping_public_row(row: Dict[str, object], index: int) -> Dict[str, object]:
