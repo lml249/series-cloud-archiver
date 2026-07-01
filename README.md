@@ -244,6 +244,15 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
 - `--approve-emby-stale-delete`：只在 STRM 替代完整时删 Emby 旧本地条目。
 - `--approve-delete`：最后才允许 qB/hlink/source 清理。
 
+如果某个剧季虽然门禁看起来满足，但因为人工原因必须保留本地，例如“当前云盘版本没有中文字幕”，请写一个本地排除清单并在批量命令里带上 `--manual-exclusion-file`。格式参考 [manual-exclusions.example.json](examples/manual-exclusions.example.json)；真实清单文件名建议用 `manual-exclusions.local.json` 或放在 `outputs/` 下，默认会被 Git 忽略。命中排除项后，`batch-plan` 会把该剧季标成 `manual_exclusion`，`batch-finalize-plan/run` 不会生成或执行清理动作：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
+  --env-file .env \
+  --manual-exclusion-file outputs/series-cloud-archiver/manual-exclusions.local.json \
+  ...
+```
+
 目录角色不能混用：`--cloud-root` 是计划用的 `/已整理/series`，`--organize-target-dir` 必须是 `/已整理`，`--transfer-target-path` 必须在 `/未整理` 下，`--mv3-strm-root`/`--host-strm-root`/`--mp-strm-root`/`--emby-strm-root` 必须是 STRM 侧路径。`--host-strm-root` 是脚本所在机器看到的 STRM 路径，`--mp-strm-root` 是 MoviePilot 容器看到的 STRM 路径，`--emby-strm-root` 是 Emby 容器/库里看到的 STRM 路径；三者可以不同。云盘实体目录只做转存和生成 STRM，NFO/JPG/Emby 入库验证都只在 STRM 侧跑。
 
 输出目录里最重要的文件：

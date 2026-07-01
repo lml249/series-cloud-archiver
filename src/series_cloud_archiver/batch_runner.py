@@ -26,6 +26,7 @@ AUTO_TRANSFER = "auto_ready_for_transfer_preview"
 AUTO_CLEANUP = "auto_ready_for_validation_cleanup"
 MANUAL_REVIEW = "manual_review"
 SKIPPED = "skipped"
+MANUAL_EXCLUSION = "manual_exclusion"
 
 
 @dataclass
@@ -60,6 +61,7 @@ def build_batch_plan(
     max_auto_size_delta: float = 0.35,
     required_target_prefix: str = "/已整理",
     forbidden_target_prefixes: Optional[Sequence[str]] = None,
+    manual_exclusions: Optional[Sequence[Dict[str, object]]] = None,
     limit: int = 0,
 ) -> Dict[str, object]:
     """Build a readonly batch state-machine plan from existing scan/search reports."""
@@ -73,6 +75,7 @@ def build_batch_plan(
     cleanup_by_key = _cleanup_previews_by_identity(cleanup_preview_reports or [])
     scan_by_key = _scan_candidates_by_identity((scan_report or {}).get("candidates", []))
     forbidden = [str(item) for item in (forbidden_target_prefixes or []) if str(item)]
+    exclusions = normalize_manual_exclusions(manual_exclusions or [])
 
     rows: List[Dict[str, object]] = []
     for item in cloud_items:
@@ -81,24 +84,26 @@ def build_batch_plan(
         share_item = share_by_key.get(key, {})
         cleanup_preview = cleanup_by_key.get(key, {})
         scan_candidates = scan_by_key.get(key, [])
-        rows.append(
-            _batch_item(
-                item,
-                transfer_item,
-                share_item,
-                cleanup_preview,
-                scan_candidates,
-                env_file=env_file,
-                cloud_root=cloud_root,
-                mv3_strm_root=mv3_strm_root,
-                host_strm_root=host_strm_root,
-                emby_strm_root=emby_strm_root,
-                min_candidate_score=min_candidate_score,
-                max_auto_size_delta=max_auto_size_delta,
-                required_target_prefix=required_target_prefix,
-                forbidden_target_prefixes=forbidden,
-            )
+        row = _batch_item(
+            item,
+            transfer_item,
+            share_item,
+            cleanup_preview,
+            scan_candidates,
+            env_file=env_file,
+            cloud_root=cloud_root,
+            mv3_strm_root=mv3_strm_root,
+            host_strm_root=host_strm_root,
+            emby_strm_root=emby_strm_root,
+            min_candidate_score=min_candidate_score,
+            max_auto_size_delta=max_auto_size_delta,
+            required_target_prefix=required_target_prefix,
+            forbidden_target_prefixes=forbidden,
         )
+        exclusion = match_manual_exclusion(row, exclusions)
+        if exclusion:
+            row = _batch_item_with_manual_exclusion(row, exclusion)
+        rows.append(row)
 
     rows.sort(key=_batch_sort_key)
     total_rows = len(rows)
@@ -128,6 +133,7 @@ def build_batch_plan(
             "forbidden_target_prefixes": forbidden,
             "share_search_plan_count": int((effective_share_search_plan or {}).get("input_plan_count") or 0),
             "cleanup_preview_report_count": len(cleanup_preview_reports or []),
+            "manual_exclusion_count": len(exclusions),
         },
         "items": rows,
         "auto_transfer_items": [row for row in rows if row.get("bucket") == AUTO_TRANSFER],
@@ -273,6 +279,7 @@ def filter_batch_plan_by_review(
     review_report: Dict[str, object],
     *,
     decisions: Optional[Sequence[str]] = None,
+    manual_exclusions: Optional[Sequence[Dict[str, object]]] = None,
     limit: int = 0,
 ) -> Dict[str, object]:
     """Build a readonly subset batch plan from review decisions."""
@@ -280,6 +287,7 @@ def filter_batch_plan_by_review(
     wanted = {str(decision) for decision in (decisions or ["ready_for_finalize_gates"]) if str(decision)}
     review_by_key = _review_report_by_identity(review_report)
     source_items = [item for item in batch_plan.get("items", []) if isinstance(item, dict)]
+    exclusions = normalize_manual_exclusions(manual_exclusions or [])
     rows: List[Dict[str, object]] = []
     skipped: List[Dict[str, object]] = []
 
@@ -295,6 +303,12 @@ def filter_batch_plan_by_review(
             enriched["review_reason_summary"] = review_item.get("reason_summary")
         if review_item.get("coverage") and review_item.get("coverage") != decision:
             enriched["review_coverage"] = review_item.get("coverage")
+        exclusion = match_manual_exclusion(enriched, exclusions)
+        if exclusion:
+            skipped_row = _batch_item_with_manual_exclusion(enriched, exclusion)
+            skipped_row["filter_skip_reason"] = "manual_exclusion"
+            skipped.append(skipped_row)
+            continue
         if decision in wanted:
             rows.append(enriched)
         else:
@@ -330,6 +344,7 @@ def filter_batch_plan_by_review(
             "decisions": sorted(wanted),
             "limit": limit,
             "skipped_items": len(skipped),
+            "manual_exclusion_count": len(exclusions),
         },
         "items": rows,
         "auto_transfer_items": [row for row in rows if row.get("bucket") == AUTO_TRANSFER],
@@ -364,6 +379,7 @@ def build_batch_finalize_plan(
     service_strm_root: str = "",
     required_target_prefix: str = "",
     forbidden_target_prefixes: Optional[Sequence[str]] = None,
+    manual_exclusions: Optional[Sequence[Dict[str, object]]] = None,
     offset: int = 0,
     limit: int = 0,
 ) -> Dict[str, object]:
@@ -374,6 +390,7 @@ def build_batch_finalize_plan(
     effective_host_strm_root = host_strm_root or str(settings.get("host_strm_root") or "")
     effective_service_strm_root = service_strm_root or str(settings.get("emby_strm_root") or "")
     forbidden = [str(item) for item in (forbidden_target_prefixes or settings.get("forbidden_target_prefixes") or []) if str(item)]
+    exclusions = normalize_manual_exclusions(manual_exclusions or settings.get("manual_exclusions") or [])
     rows: List[Dict[str, object]] = []
 
     ready_seen = 0
@@ -392,6 +409,9 @@ def build_batch_finalize_plan(
             required_target_prefix=required_target_prefix,
             forbidden_target_prefixes=forbidden,
         )
+        exclusion = match_manual_exclusion(row, exclusions)
+        if exclusion:
+            row = _finalize_plan_row_with_manual_exclusion(row, exclusion)
         if row.get("status") == "planned_finalize":
             if ready_seen < max(0, offset):
                 ready_seen += 1
@@ -417,6 +437,7 @@ def build_batch_finalize_plan(
             "service_strm_root": effective_service_strm_root,
             "required_target_prefix": required_target_prefix,
             "forbidden_target_prefixes": forbidden,
+            "manual_exclusion_count": len(exclusions),
             "offset": offset,
             "limit": limit,
         },
@@ -545,6 +566,7 @@ def run_batch_finalize(
     offset: int = 0,
     limit: int = 0,
     title_filters: Optional[Sequence[str]] = None,
+    manual_exclusions: Optional[Sequence[Dict[str, object]]] = None,
     continue_on_error: bool = False,
     execute_scrape: bool = False,
     approve_cloud_duplicate_delete: bool = False,
@@ -568,13 +590,14 @@ def run_batch_finalize(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     filters = [value for value in (title_filters or []) if str(value)]
-    candidates = _finalize_run_candidates(finalize_plan, filters)
+    exclusions = normalize_manual_exclusions(manual_exclusions or [])
+    candidates, candidate_exclusions = _finalize_run_candidates(finalize_plan, filters, exclusions)
     if offset > 0:
         candidates = candidates[offset:]
     if limit > 0:
         candidates = candidates[:limit]
 
-    rows: List[Dict[str, object]] = []
+    rows: List[Dict[str, object]] = list(candidate_exclusions)
     halted = False
     for item in candidates:
         try:
@@ -611,9 +634,9 @@ def run_batch_finalize(
     return {
         "mode": "batch-finalize-run",
         "source_mode": finalize_plan.get("mode", ""),
-        "ok": all(row.get("status") in {"cleanup_executed", "cleanup_waiting_for_approval", "already_cleaned_noop"} for row in rows) and not halted,
+        "ok": all(row.get("status") in {"cleanup_executed", "cleanup_waiting_for_approval", "already_cleaned_noop", "skipped_manual_exclusion"} for row in rows) and not halted,
         "halted": halted,
-        "planned_items": len(candidates),
+        "planned_items": len(candidates) + len(candidate_exclusions),
         "processed_items": len(rows),
         "status_counts": dict(sorted(status_counts.items())),
         "stage_counts": dict(sorted(stage_counts.items())),
@@ -622,6 +645,7 @@ def run_batch_finalize(
             "offset": offset,
             "limit": limit,
             "title_filters": filters,
+            "manual_exclusion_count": len(exclusions),
             "continue_on_error": continue_on_error,
             "execute_scrape": execute_scrape,
             "approve_cloud_duplicate_delete": approve_cloud_duplicate_delete,
@@ -842,8 +866,13 @@ def _finalize_exception_row(item: Dict[str, object], output_dir: Path, exc: Exce
     }
 
 
-def _finalize_run_candidates(finalize_plan: Dict[str, object], title_filters: Sequence[str]) -> List[Dict[str, object]]:
+def _finalize_run_candidates(
+    finalize_plan: Dict[str, object],
+    title_filters: Sequence[str],
+    manual_exclusions: Sequence[Dict[str, object]],
+) -> Tuple[List[Dict[str, object]], List[Dict[str, object]]]:
     rows: List[Dict[str, object]] = []
+    excluded_rows: List[Dict[str, object]] = []
     lowered_filters = [item.lower() for item in title_filters]
     for item in finalize_plan.get("items", []):
         if not isinstance(item, dict):
@@ -853,8 +882,12 @@ def _finalize_run_candidates(finalize_plan: Dict[str, object], title_filters: Se
         title = str(item.get("title") or "")
         if lowered_filters and not any(value in title.lower() for value in lowered_filters):
             continue
+        exclusion = match_manual_exclusion(item, manual_exclusions)
+        if exclusion:
+            excluded_rows.append(_finalize_run_manual_exclusion_row(item, exclusion))
+            continue
         rows.append(item)
-    return rows
+    return rows, excluded_rows
 
 
 def _run_finalize_item(
@@ -2409,7 +2442,7 @@ def _state_for_bucket(bucket: str) -> str:
 
 
 def _batch_sort_key(row: Dict[str, object]) -> Tuple[int, int, str]:
-    rank = {AUTO_CLEANUP: 0, AUTO_TRANSFER: 1, MANUAL_REVIEW: 2, SKIPPED: 3}.get(str(row.get("bucket") or ""), 9)
+    rank = {AUTO_CLEANUP: 0, AUTO_TRANSFER: 1, MANUAL_REVIEW: 2, MANUAL_EXCLUSION: 3, SKIPPED: 4}.get(str(row.get("bucket") or ""), 9)
     return rank, -int(row.get("size_bytes") or 0), str(row.get("title") or "")
 
 
@@ -3262,6 +3295,9 @@ def _review_decision(
     finalize_item: Dict[str, object],
     post_cleanup_item: Dict[str, object],
 ) -> str:
+    if str(item.get("bucket") or "") == MANUAL_EXCLUSION:
+        return "skipped_manual_exclusion"
+
     if _post_cleanup_verified(post_cleanup_item):
         return "done_cleanup_verified"
 
@@ -3336,6 +3372,8 @@ def _review_post_cleanup_reasons(post_cleanup_item: Dict[str, object]) -> List[s
 
 
 def _review_next_action(decision: str, reasons: Sequence[str]) -> str:
+    if decision == "skipped_manual_exclusion":
+        return "用户指定跳过；不转存、不 finalize、不清理本地"
     if decision == "done_cleanup_verified":
         return "已完成并复核清理，保留报告归档"
     if decision == "done_already_cleaned_noop":
@@ -3450,6 +3488,123 @@ def _tmdbid_from_text(text: str) -> int:
 
     match = re.search(r"\{tmdbid=(\d+)\}", text or "", re.IGNORECASE)
     return int(match.group(1)) if match else 0
+
+
+def normalize_manual_exclusions(raw: object) -> List[Dict[str, object]]:
+    records = raw.get("manual_exclusions", raw) if isinstance(raw, dict) else raw
+    if not isinstance(records, list):
+        return []
+    normalized: List[Dict[str, object]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        title = str(record.get("title") or record.get("title_contains") or "").strip()
+        tmdbid = int(record.get("tmdbid") or record.get("tmdb_id") or 0)
+        season = int(record.get("season") or 0)
+        reason = str(record.get("reason") or record.get("note") or "manual_exclusion").strip() or "manual_exclusion"
+        if not title and tmdbid <= 0:
+            continue
+        normalized.append(
+            {
+                "title": title,
+                "title_contains": str(record.get("title_contains") or title).strip(),
+                "tmdbid": tmdbid,
+                "season": season,
+                "reason": reason,
+            }
+        )
+    return normalized
+
+
+def match_manual_exclusion(item: Dict[str, object], exclusions: Sequence[Dict[str, object]]) -> Dict[str, object]:
+    title = str(item.get("title") or "")
+    lowered_title = _strip_identity_suffix(title).lower()
+    tmdbid = int(item.get("tmdbid") or 0)
+    season = int(item.get("season") or 0)
+    for exclusion in exclusions:
+        exclusion_tmdbid = int(exclusion.get("tmdbid") or 0)
+        exclusion_season = int(exclusion.get("season") or 0)
+        title_contains = str(exclusion.get("title_contains") or exclusion.get("title") or "").strip().lower()
+        tmdb_matches = exclusion_tmdbid <= 0 or exclusion_tmdbid == tmdbid
+        season_matches = exclusion_season <= 0 or exclusion_season == season
+        title_matches = not title_contains or title_contains in lowered_title or title_contains in title.lower()
+        if tmdb_matches and season_matches and title_matches:
+            return dict(exclusion)
+    return {}
+
+
+def _batch_item_with_manual_exclusion(item: Dict[str, object], exclusion: Dict[str, object]) -> Dict[str, object]:
+    row = dict(item)
+    reason = _manual_exclusion_reason(exclusion)
+    row["bucket"] = MANUAL_EXCLUSION
+    row["state"] = "skipped_by_manual_exclusion"
+    row["manual_exclusion"] = {
+        "title": str(exclusion.get("title") or exclusion.get("title_contains") or ""),
+        "tmdbid": int(exclusion.get("tmdbid") or 0),
+        "season": int(exclusion.get("season") or 0),
+        "reason": reason,
+    }
+    row["review_reasons"] = sorted(set(_string_list(row.get("review_reasons")) + [reason]))
+    row["blockers"] = sorted(set(_string_list(row.get("blockers")) + ["manual_exclusion"]))
+    row["next_actions"] = []
+    return row
+
+
+def _finalize_plan_row_with_manual_exclusion(item: Dict[str, object], exclusion: Dict[str, object]) -> Dict[str, object]:
+    row = dict(item)
+    reason = _manual_exclusion_reason(exclusion)
+    row["status"] = "skipped_finalize"
+    row["manual_exclusion"] = {
+        "title": str(exclusion.get("title") or exclusion.get("title_contains") or ""),
+        "tmdbid": int(exclusion.get("tmdbid") or 0),
+        "season": int(exclusion.get("season") or 0),
+        "reason": reason,
+    }
+    row["skip_reasons"] = sorted(set(_string_list(row.get("skip_reasons")) + [reason]))
+    row["blockers"] = sorted(set(_string_list(row.get("blockers")) + ["manual_exclusion"]))
+    row["commands"] = []
+    return row
+
+
+def _finalize_run_manual_exclusion_row(item: Dict[str, object], exclusion: Dict[str, object]) -> Dict[str, object]:
+    reason = _manual_exclusion_reason(exclusion)
+    return {
+        "status": "skipped_manual_exclusion",
+        "title": str(item.get("title") or ""),
+        "tmdbid": int(item.get("tmdbid") or 0),
+        "season": int(item.get("season") or 0),
+        "expected_episode_count": int(item.get("expected_episode_count") or 0),
+        "source_paths": _string_list(item.get("source_paths")),
+        "source_qb_hashes": _string_list(item.get("source_qb_hashes")),
+        "hlink_root": str(item.get("hlink_root") or ""),
+        "strm_root": str(item.get("strm_root") or ""),
+        "mp_strm_root": str(item.get("mp_strm_root") or item.get("service_strm_root") or item.get("strm_root") or ""),
+        "service_strm_root": str(item.get("service_strm_root") or item.get("strm_root") or ""),
+        "cloud_title_path": str(item.get("cloud_title_path") or ""),
+        "cloud_season_path": str(item.get("cloud_media_path") or item.get("strm_target_prefix") or ""),
+        "required_target_prefix": str(item.get("strm_target_prefix") or item.get("required_target_prefix") or ""),
+        "blockers": ["manual_exclusion"],
+        "warnings": [reason],
+        "manual_exclusion": {
+            "title": str(exclusion.get("title") or exclusion.get("title_contains") or ""),
+            "tmdbid": int(exclusion.get("tmdbid") or 0),
+            "season": int(exclusion.get("season") or 0),
+            "reason": reason,
+        },
+        "stages": [
+            {
+                "stage": "manual_exclusion",
+                "ok": True,
+                "mode": "manual-exclusion",
+                "blockers": ["manual_exclusion"],
+                "warnings": [reason],
+            }
+        ],
+    }
+
+
+def _manual_exclusion_reason(exclusion: Dict[str, object]) -> str:
+    return str(exclusion.get("reason") or "manual_exclusion").strip() or "manual_exclusion"
 
 
 def _string_list(value: object) -> List[str]:

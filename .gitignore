@@ -19,7 +19,9 @@ reports/
 artifacts/
 backups/
 manual-completions*.json
+manual-exclusions*.json
 !examples/manual-completions.example.json
+!examples/manual-exclusions.example.json
 *.log
 *.sqlite
 *.sqlite3

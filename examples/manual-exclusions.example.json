@@ -1,0 +1,10 @@
+{
+  "manual_exclusions": [
+    {
+      "title": "示例剧名",
+      "tmdbid": 100000,
+      "season": 3,
+      "reason": "manual_exclusion:subtitle_not_available"
+    }
+  ]
+}

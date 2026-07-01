@@ -65,6 +65,7 @@ def run_batch_pipeline(
     media_roots: Optional[Sequence[str]] = None,
     strm_roots: Optional[Sequence[str]] = None,
     identity_file: str = "",
+    manual_exclusions: Optional[Sequence[Dict[str, object]]] = None,
     cloud_root: str = DEFAULT_CLOUD_ROOT,
     mv3_strm_root: str = DEFAULT_STRM_ROOT,
     host_strm_root: str = "",
@@ -211,6 +212,7 @@ def run_batch_pipeline(
         max_auto_size_delta=max_auto_size_delta,
         required_target_prefix=required_target_prefix,
         forbidden_target_prefixes=forbidden_target_prefixes or [],
+        manual_exclusions=manual_exclusions or [],
     )
     batch_plan_phase = _write_phase(pipeline_dir, "05-batch-plan", batch_plan)
     phases.append(batch_plan_phase)
@@ -302,6 +304,7 @@ def run_batch_pipeline(
             max_auto_size_delta=max_auto_size_delta,
             required_target_prefix=required_target_prefix,
             forbidden_target_prefixes=forbidden_target_prefixes or [],
+            manual_exclusions=manual_exclusions or [],
         )
         phases.append(_write_phase(pipeline_dir, "11-batch-plan-post-transfer", active_batch_plan))
     elif transfer_run_report and int(transfer_run_report.get("organized_items") or 0) > 0:
@@ -316,6 +319,7 @@ def run_batch_pipeline(
         service_strm_root=emby_strm_root,
         required_target_prefix="",
         forbidden_target_prefixes=forbidden_target_prefixes or [],
+        manual_exclusions=manual_exclusions or [],
         offset=finalize_offset,
         limit=finalize_limit,
     )
@@ -329,6 +333,7 @@ def run_batch_pipeline(
             config=config,
             limit=finalize_limit,
             title_filters=finalize_titles or [],
+            manual_exclusions=manual_exclusions or [],
             continue_on_error=continue_on_error,
             execute_scrape=execute_scrape,
             approve_cloud_duplicate_delete=approve_cloud_duplicate_delete,
@@ -388,6 +393,7 @@ def run_batch_pipeline(
             "emby_strm_root": emby_strm_root,
             "required_target_prefix": required_target_prefix,
             "forbidden_target_prefixes": list(forbidden_target_prefixes or []),
+            "manual_exclusion_count": len(manual_exclusions or []),
             "execute_share_search": execute_share_search,
             "execute_preview": execute_preview,
             "run_transfer_stage": run_transfer_stage,

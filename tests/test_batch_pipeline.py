@@ -172,6 +172,35 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertEqual(finalize_plan["finalize_ready_items"], 1)
         self.assertEqual(finalize_plan["items"][0]["title"], "第二部 (2025) {tmdbid=2468}")
 
+    def test_pipeline_applies_manual_exclusions_to_finalize_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_pipeline(
+                output_dir=tmp,
+                run_id="manual-exclusion",
+                config=ScanConfig(media_roots=[]),
+                env_file="/safe/.env",
+                cloud_report=self._cloud_complete_report(),
+                host_strm_root="/example/host/strm",
+                emby_strm_root="/example/service/strm",
+                manual_exclusions=[
+                    {
+                        "title": "兄弟连",
+                        "tmdbid": 4613,
+                        "season": 1,
+                        "reason": "manual_exclusion:user_skip",
+                    }
+                ],
+            )
+            run_dir = Path(report["run_dir"])
+            batch_plan = json.loads((run_dir / "05-batch-plan.json").read_text(encoding="utf-8"))
+            finalize_plan = json.loads((run_dir / "12-finalize-plan.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(report["settings"]["manual_exclusion_count"], 1)
+        self.assertEqual(batch_plan["items"][0]["bucket"], "manual_exclusion")
+        self.assertEqual(finalize_plan["finalize_ready_items"], 0)
+        self.assertEqual(finalize_plan["items"][0]["status"], "skipped_finalize")
+        self.assertIn("manual_exclusion:user_skip", finalize_plan["items"][0]["skip_reasons"])
+
     def test_pipeline_reuses_ready_share_preview_report_for_transfer_stage(self) -> None:
         transfer_calls = []
 

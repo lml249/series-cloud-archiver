@@ -17,6 +17,7 @@ from .batch_runner import (
     build_batch_finalize_plan,
     build_batch_plan,
     filter_batch_plan_by_review,
+    normalize_manual_exclusions,
     render_batch_review_report,
     render_batch_finalize_plan,
     render_batch_finalize_run,
@@ -769,6 +770,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_plan_parser.add_argument("--media-root", action="append", default=[], help="Media root to scan when --scan-report is omitted")
     batch_plan_parser.add_argument("--strm-root", action="append", default=[], help="STRM root for generated cloud-check when --cloud-report is omitted")
     batch_plan_parser.add_argument("--identity-file", default=None, help="Optional identity override file for generated cloud-check")
+    batch_plan_parser.add_argument("--manual-exclusion-file", action="append", default=[], help="Local JSON list of title/TMDB/season rows to skip; can be repeated")
     batch_plan_parser.add_argument("--limit", type=int, default=0, help="Maximum rows in batch plan")
     batch_plan_parser.add_argument("--cloud-root", default=DEFAULT_CLOUD_ROOT, help="Cloud media root, usually /已整理/series")
     batch_plan_parser.add_argument("--mv3-strm-root", default=DEFAULT_STRM_ROOT, help="MV3/container STRM root used for command templates")
@@ -794,6 +796,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_plan_filter_parser.add_argument("--batch-plan", required=True, help="JSON report from batch-plan")
     batch_plan_filter_parser.add_argument("--review-report", required=True, help="JSON report from batch-review-report")
     batch_plan_filter_parser.add_argument("--decision", action="append", default=[], help="Review decision to keep; can be repeated. Defaults to ready_for_finalize_gates")
+    batch_plan_filter_parser.add_argument("--manual-exclusion-file", action="append", default=[], help="Local JSON list of title/TMDB/season rows to skip; can be repeated")
     batch_plan_filter_parser.add_argument("--limit", type=int, default=0, help="Maximum kept rows; 0 means all")
     batch_plan_filter_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     batch_plan_filter_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
@@ -969,6 +972,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_finalize_parser.add_argument("--service-strm-root", default="", help="Emby visible STRM root, defaults to batch-plan emby_strm_root setting")
     batch_finalize_parser.add_argument("--required-target-prefix", default="", help="Required STRM target prefix; defaults per item to cloud media path")
     batch_finalize_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
+    batch_finalize_parser.add_argument("--manual-exclusion-file", action="append", default=[], help="Local JSON list of title/TMDB/season rows to skip; can be repeated")
     batch_finalize_parser.add_argument("--offset", type=int, default=0, help="Skip this many ready finalize rows before planning")
     batch_finalize_parser.add_argument("--limit", type=int, default=0, help="Maximum planned finalize rows; 0 means all")
     batch_finalize_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
@@ -1014,6 +1018,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_finalize_run_parser.add_argument("--offset", type=int, default=0, help="Skip this many planned finalize rows before processing")
     batch_finalize_run_parser.add_argument("--limit", type=int, default=0, help="Maximum planned finalize rows to process; 0 means all")
     batch_finalize_run_parser.add_argument("--title", action="append", default=[], help="Only process titles containing this text; can be repeated")
+    batch_finalize_run_parser.add_argument("--manual-exclusion-file", action="append", default=[], help="Local JSON list of title/TMDB/season rows to skip; can be repeated")
     batch_finalize_run_parser.add_argument("--continue-on-error", action="store_true", help="Continue to the next item after a gate failure")
     batch_finalize_run_parser.add_argument("--execute-scrape", action="store_true", help="Actually request MoviePilot to scrape STRM-side paths")
     batch_finalize_run_parser.add_argument("--approve-cloud-duplicate-delete", action="store_true", help="Actually delete duplicate cloud videos after STRM target protection verifies")
@@ -1041,6 +1046,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_pipeline_parser.add_argument("--media-root", action="append", default=[], help="Media root to scan when no scan/cloud report is supplied")
     batch_pipeline_parser.add_argument("--strm-root", action="append", default=[], help="STRM root for cloud-check when cloud report is omitted")
     batch_pipeline_parser.add_argument("--identity-file", default="", help="Optional identity override file for generated cloud-check")
+    batch_pipeline_parser.add_argument("--manual-exclusion-file", action="append", default=[], help="Local JSON list of title/TMDB/season rows to skip; can be repeated")
     batch_pipeline_parser.add_argument("--cloud-root", default=DEFAULT_CLOUD_ROOT, help="Cloud media root for planning, usually /已整理/series")
     batch_pipeline_parser.add_argument("--mv3-strm-root", default=DEFAULT_STRM_ROOT, help="MV3/container STRM root")
     batch_pipeline_parser.add_argument("--host-strm-root", default="", help="Host STRM root, e.g. /example/host/strm")
@@ -1718,6 +1724,14 @@ def _parse_int_list_args(values: List[str]) -> List[int]:
     for value in values:
         items.update(_parse_episode_list(str(value or "")))
     return sorted(item for item in items if item > 0)
+
+
+def _load_manual_exclusions(paths: Sequence[str]) -> List[Dict[str, object]]:
+    exclusions: List[Dict[str, object]] = []
+    for path in paths or []:
+        report = load_optional_json_report(path)
+        exclusions.extend(normalize_manual_exclusions(report or []))
+    return exclusions
 
 
 def _first_string_arg(values: List[str]) -> str:
@@ -2915,6 +2929,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             for plan in (load_optional_json_report(path) for path in args.cleanup_preview_report)
             if isinstance(plan, dict)
         ]
+        manual_exclusions = _load_manual_exclusions(args.manual_exclusion_file)
         report = build_batch_plan(
             cloud_report=cloud_report,
             transfer_plan=transfer_plan,
@@ -2930,6 +2945,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             max_auto_size_delta=args.max_auto_size_delta,
             required_target_prefix=args.required_target_prefix,
             forbidden_target_prefixes=args.forbidden_target_prefix,
+            manual_exclusions=manual_exclusions,
             limit=args.limit,
         )
         rendered = render_batch_plan(report, args.format)
@@ -2988,6 +3004,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             batch_plan,
             review_report,
             decisions=args.decision,
+            manual_exclusions=_load_manual_exclusions(args.manual_exclusion_file),
             limit=args.limit,
         )
         rendered = render_batch_plan(report, args.format)
@@ -3276,6 +3293,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             service_strm_root=args.service_strm_root,
             required_target_prefix=args.required_target_prefix,
             forbidden_target_prefixes=args.forbidden_target_prefix,
+            manual_exclusions=_load_manual_exclusions(args.manual_exclusion_file),
             offset=args.offset,
             limit=args.limit,
         )
@@ -3320,6 +3338,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             offset=args.offset,
             limit=args.limit,
             title_filters=args.title,
+            manual_exclusions=_load_manual_exclusions(args.manual_exclusion_file),
             continue_on_error=args.continue_on_error,
             execute_scrape=args.execute_scrape,
             approve_cloud_duplicate_delete=args.approve_cloud_duplicate_delete,
@@ -3375,6 +3394,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             media_roots=args.media_root,
             strm_roots=args.strm_root,
             identity_file=args.identity_file,
+            manual_exclusions=_load_manual_exclusions(args.manual_exclusion_file),
             cloud_root=args.cloud_root,
             mv3_strm_root=args.mv3_strm_root,
             host_strm_root=args.host_strm_root,

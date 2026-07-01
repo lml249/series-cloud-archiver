@@ -9,6 +9,7 @@ from series_cloud_archiver.batch_runner import (
     AUTO_CLEANUP,
     AUTO_TRANSFER,
     BatchFinalizeActions,
+    MANUAL_EXCLUSION,
     MANUAL_REVIEW,
     apply_finalize_expected_updates,
     build_batch_finalize_plan,
@@ -16,6 +17,7 @@ from series_cloud_archiver.batch_runner import (
     build_batch_review_report,
     filter_batch_plan_by_review,
     merge_share_search_plans,
+    normalize_manual_exclusions,
     render_batch_finalize_plan,
     render_batch_finalize_run,
     render_batch_plan,
@@ -1385,6 +1387,28 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("Batch Finalize Run", rendered)
         self.assertIn("cleanup_waiting_for_approval", rendered)
 
+    def test_batch_finalize_run_skips_manual_exclusion_without_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            actions = FinalizeFakeActions()
+            report = run_batch_finalize(
+                self._finalize_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(path_aliases={}),
+                manual_exclusions=[
+                    {
+                        "title": "折腰",
+                        "tmdbid": 296753,
+                        "season": 1,
+                        "reason": "manual_exclusion:user_skip",
+                    }
+                ],
+                actions=_batch_finalize_actions(actions),
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["status_counts"], {"skipped_manual_exclusion": 1})
+        self.assertEqual(actions.calls, [])
+
     def test_batch_finalize_run_uses_moviepilot_path_separately_from_emby_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             actions = FinalizeFakeActions()
@@ -1931,6 +1955,44 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertNotIn("--approve-delete", commands)
         self.assertNotIn("--approve-mp-cleanup", commands)
         self.assertNotIn("/已整理/series/series", commands)
+
+    def test_manual_exclusion_marks_cloud_complete_item_as_skipped(self) -> None:
+        plan = build_batch_plan(
+            cloud_report={
+                "mode": "readonly-cloud-check",
+                "items": [
+                    {
+                        "status": "cloud_strm_complete",
+                        "title": "真相捕捉 (2019) {tmdbid=93166}",
+                        "tmdbid": 93166,
+                        "season": 3,
+                        "size_bytes": 100,
+                        "expected_count": 6,
+                        "source_paths": ["/example/local-tv/真相捕捉/Season 03"],
+                        "strm_paths_sample": [
+                            "/example/strm/series/真相捕捉 (2019) {tmdbid=93166}/Season 03/真相捕捉 S03E01.strm"
+                        ],
+                    }
+                ],
+            },
+            host_strm_root="/example/strm",
+            emby_strm_root="/example/service/strm",
+            manual_exclusions=[
+                {
+                    "title": "真相捕捉",
+                    "tmdbid": 93166,
+                    "season": 3,
+                    "reason": "manual_exclusion:subtitle_not_available",
+                }
+            ],
+        )
+
+        self.assertEqual(plan["bucket_counts"], {MANUAL_EXCLUSION: 1})
+        item = plan["items"][0]
+        self.assertEqual(item["bucket"], MANUAL_EXCLUSION)
+        self.assertEqual(item["state"], "skipped_by_manual_exclusion")
+        self.assertIn("manual_exclusion", item["blockers"])
+        self.assertIn("manual_exclusion:subtitle_not_available", item["review_reasons"])
 
     def test_not_found_with_good_share_candidate_gets_transfer_preview_bucket(self) -> None:
         plan = build_batch_plan(
@@ -3193,6 +3255,45 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(filtered["items"][0]["title"], "西部世界")
         self.assertEqual(filtered["items"][0]["review_decision"], "ready_for_finalize_gates")
         self.assertEqual(len(filtered["filter_skipped_items"]), 2)
+
+    def test_filter_batch_plan_by_review_applies_manual_exclusions(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {"bucket": AUTO_CLEANUP, "title": "真相捕捉", "tmdbid": 93166, "season": 3},
+                {"bucket": AUTO_CLEANUP, "title": "西部世界", "tmdbid": 63247, "season": 1},
+            ],
+        }
+        review_report = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {"decision": "ready_for_finalize_gates", "title": "真相捕捉", "tmdbid": 93166, "season": 3},
+                {"decision": "ready_for_finalize_gates", "title": "西部世界", "tmdbid": 63247, "season": 1},
+            ],
+        }
+
+        filtered = filter_batch_plan_by_review(
+            batch_plan,
+            review_report,
+            manual_exclusions=normalize_manual_exclusions(
+                {
+                    "manual_exclusions": [
+                        {
+                            "title": "真相捕捉",
+                            "tmdbid": 93166,
+                            "season": 3,
+                            "reason": "manual_exclusion:subtitle_not_available",
+                        }
+                    ]
+                }
+            ),
+        )
+
+        self.assertEqual(filtered["planned_items"], 1)
+        self.assertEqual(filtered["items"][0]["title"], "西部世界")
+        skipped = filtered["filter_skipped_items"][0]
+        self.assertEqual(skipped["filter_skip_reason"], "manual_exclusion")
+        self.assertEqual(skipped["bucket"], MANUAL_EXCLUSION)
 
     def test_filter_batch_plan_by_review_accepts_global_coverage_report(self) -> None:
         batch_plan = {

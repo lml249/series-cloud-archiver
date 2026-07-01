@@ -35,8 +35,8 @@ scan_files() {
 
 tracked_private_files() {
   if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git ls-files | grep -E '(^|/)\.env(\..*)?$|(^|/)cookies\.txt$|(^|/)manual-completions.*\.json$|^(data|logs|outputs|reports|artifacts|backups|secrets)/|.*\.(sqlite|sqlite3|db|log)$' \
-      | grep -Ev '^\.env\.example$|^examples/manual-completions\.example\.json$' || true
+    git ls-files | grep -E '(^|/)\.env(\..*)?$|(^|/)cookies\.txt$|(^|/)manual-(completions|exclusions).*\.json$|^(data|logs|outputs|reports|artifacts|backups|secrets)/|.*\.(sqlite|sqlite3|db|log)$' \
+      | grep -Ev '^\.env\.example$|^examples/manual-completions\.example\.json$|^examples/manual-exclusions\.example\.json$' || true
   fi
 }
 
