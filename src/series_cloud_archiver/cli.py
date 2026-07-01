@@ -72,12 +72,14 @@ from .hlink_cleanup import (
     execute_cloud_hlink_orphan_multiseason_cleanup,
     execute_cloud_hlink_orphan_cleanup,
     execute_cloud_hlink_cleanup,
+    execute_cloud_source_residual_cleanup,
     execute_cloud_source_orphan_cleanup,
     execute_cloud_source_orphan_multiroot_cleanup,
     preview_cloud_hlink_source_multiseason_cleanup,
     preview_cloud_hlink_orphan_multiseason_cleanup,
     preview_cloud_hlink_orphan_cleanup,
     preview_cloud_hlink_cleanup,
+    preview_cloud_source_residual_cleanup,
     preview_cloud_source_orphan_cleanup,
     preview_cloud_source_orphan_multiroot_cleanup,
     render_cloud_hlink_cleanup,
@@ -514,6 +516,50 @@ def build_parser() -> argparse.ArgumentParser:
     hlink_source_multi_exec_parser.add_argument("--approve-delete", action="store_true", help="Required: actually delete qB torrent files and the explicit hlink root")
     hlink_source_multi_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     hlink_source_multi_exec_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    source_residual_preview_parser = subcommands.add_parser(
+        "cloud-source-residual-cleanup-preview",
+        help="Readonly cleanup preview for explicit residual source videos after qB hash removal",
+    )
+    source_residual_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    source_residual_preview_parser.add_argument("--title", required=True, help="Series title for reporting")
+    source_residual_preview_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Expected TMDB ID")
+    source_residual_preview_parser.add_argument("--source-root", required=True, help="Explicit source root containing only residual videos to remove")
+    source_residual_preview_parser.add_argument("--expected-absent-qb-hash", action="append", required=True, help="Expected full qB hash that must now be absent; can be repeated or comma-separated")
+    source_residual_preview_parser.add_argument(
+        "--season",
+        action="append",
+        type=_parse_hlink_source_multiseason_spec,
+        required=True,
+        help=(
+            "Season spec. Use season:strm_root:count:min:max, optionally with "
+            ":target=/已整理/... and :source=/host/residual.mkv; repeat per season"
+        ),
+    )
+    source_residual_preview_parser.add_argument("--required-target-prefix", default="", help="Default STRM target prefix when a season spec omits target=")
+    source_residual_preview_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
+    source_residual_preview_parser.add_argument("--cloud-media-path", default="", help="MV3 cloud media path that must not contain NFO/JPG/PNG/WEBP before cleanup")
+    source_residual_preview_parser.add_argument("--cloud-media-folder-id", default="", help="MV3 cloud media folder id that must not contain NFO/JPG/PNG/WEBP before cleanup")
+    source_residual_preview_parser.add_argument("--cloud-media-storage", default="115-default", help="MV3 cloud storage slug for cloud media sidecar verification")
+    source_residual_preview_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    source_residual_preview_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    source_residual_preview_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    source_residual_exec_parser = subcommands.add_parser(
+        "cloud-source-residual-cleanup-execute",
+        help="Execute approved cleanup for explicit residual source videos after qB hash removal",
+    )
+    source_residual_exec_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    source_residual_exec_parser.add_argument("--preview-report", required=True, help="JSON report from cloud-source-residual-cleanup-preview")
+    source_residual_exec_parser.add_argument("--expected-title", required=True, help="Safety check: title must exactly match preview")
+    source_residual_exec_parser.add_argument("--expected-tmdbid", type=int, required=True, help="Safety check: expected TMDB ID")
+    source_residual_exec_parser.add_argument("--expected-source-root", required=True, help="Safety check: source root must exactly match preview")
+    source_residual_exec_parser.add_argument("--expected-absent-qb-hash", action="append", required=True, help="Expected absent full qB hash from preview; can be repeated or comma-separated")
+    source_residual_exec_parser.add_argument("--expected-season", action="append", type=int, required=True, help="Safety check: expected season number; repeat per season")
+    source_residual_exec_parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds")
+    source_residual_exec_parser.add_argument("--approve-delete", action="store_true", help="Required: actually delete explicit residual source files")
+    source_residual_exec_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    source_residual_exec_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     hlink_orphan_preview_parser = subcommands.add_parser("cloud-hlink-orphan-cleanup-preview", help="Readonly hlink-only cleanup preview when cloud STRM is complete and qB no longer tracks the files")
     hlink_orphan_preview_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -2598,6 +2644,78 @@ def main(argv: Optional[List[str]] = None) -> int:
         if report_seasons != expected_seasons:
             parser.error("cloud-hlink-source-multiseason-cleanup-execute expected seasons mismatch")
         report = execute_cloud_hlink_source_multiseason_cleanup(
+            preview,
+            config.qb_base_url,
+            config.qb_user,
+            config.qb_pass,
+            path_aliases=config.path_aliases,
+            mv3_base_url=config.mv3_base_url,
+            mv3_token=config.mv3_token,
+            timeout=args.timeout,
+        )
+        rendered = render_cloud_hlink_cleanup(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "cloud-source-residual-cleanup-preview":
+        config = config_from_env(args.env_file, [])
+        if not config.qb_base_url:
+            parser.error("cloud-source-residual-cleanup-preview requires QB_BASE_URL")
+        report = preview_cloud_source_residual_cleanup(
+            title=args.title,
+            source_root=args.source_root,
+            season_specs=args.season,
+            expected_absent_qb_hashes=args.expected_absent_qb_hash,
+            expected_tmdbid=args.expected_tmdbid,
+            qb_base_url=config.qb_base_url,
+            qb_user=config.qb_user,
+            qb_pass=config.qb_pass,
+            path_aliases=config.path_aliases,
+            required_target_prefix=args.required_target_prefix,
+            forbidden_target_prefixes=args.forbidden_target_prefix,
+            mv3_base_url=config.mv3_base_url,
+            mv3_token=config.mv3_token,
+            cloud_media_path=args.cloud_media_path,
+            cloud_media_folder_id=args.cloud_media_folder_id,
+            cloud_media_storage=args.cloud_media_storage,
+            timeout=args.timeout,
+        )
+        rendered = render_cloud_hlink_cleanup(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "cloud-source-residual-cleanup-execute":
+        if not args.approve_delete:
+            parser.error("cloud-source-residual-cleanup-execute requires --approve-delete")
+        config = config_from_env(args.env_file, [])
+        if not config.qb_base_url:
+            parser.error("cloud-source-residual-cleanup-execute requires QB_BASE_URL")
+        preview = load_optional_json_report(args.preview_report)
+        if not isinstance(preview, dict):
+            parser.error("preview report must be a JSON object")
+        preview_expected = preview.get("expected") if isinstance(preview.get("expected"), dict) else {}
+        expected_hashes = sorted({str(item).lower() for item in _parse_string_list_args(args.expected_absent_qb_hash) if str(item)})
+        preview_hashes = sorted({str(item).lower() for item in preview_expected.get("absent_qb_hashes", [])}) if isinstance(preview_expected.get("absent_qb_hashes"), list) else []
+        preview_seasons = preview_expected.get("seasons") if isinstance(preview_expected.get("seasons"), list) else []
+        expected_seasons = sorted({int(item) for item in args.expected_season if int(item) >= 0})
+        report_seasons = sorted({int(item.get("season") or 0) for item in preview_seasons if isinstance(item, dict) and int(item.get("season") or 0) >= 0})
+        if str(preview.get("title") or "") != args.expected_title:
+            parser.error("cloud-source-residual-cleanup-execute expected title mismatch")
+        if int(preview_expected.get("tmdbid") or 0) != args.expected_tmdbid:
+            parser.error("cloud-source-residual-cleanup-execute expected TMDB ID mismatch")
+        if str(preview_expected.get("source_root") or "").rstrip("/") != args.expected_source_root.rstrip("/"):
+            parser.error("cloud-source-residual-cleanup-execute expected source root mismatch")
+        if preview_hashes != expected_hashes:
+            parser.error("cloud-source-residual-cleanup-execute expected absent qB hashes mismatch")
+        if report_seasons != expected_seasons:
+            parser.error("cloud-source-residual-cleanup-execute expected seasons mismatch")
+        report = execute_cloud_source_residual_cleanup(
             preview,
             config.qb_base_url,
             config.qb_user,

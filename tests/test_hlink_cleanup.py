@@ -13,12 +13,14 @@ from series_cloud_archiver.hlink_cleanup import (
     execute_cloud_hlink_orphan_multiseason_cleanup,
     execute_cloud_hlink_orphan_cleanup,
     execute_cloud_hlink_cleanup,
+    execute_cloud_source_residual_cleanup,
     execute_cloud_source_orphan_cleanup,
     execute_cloud_source_orphan_multiroot_cleanup,
     preview_cloud_hlink_source_multiseason_cleanup,
     preview_cloud_hlink_orphan_multiseason_cleanup,
     preview_cloud_hlink_orphan_cleanup,
     preview_cloud_hlink_cleanup,
+    preview_cloud_source_residual_cleanup,
     preview_cloud_source_orphan_cleanup,
     preview_cloud_source_orphan_multiroot_cleanup,
 )
@@ -612,6 +614,147 @@ class CloudHlinkCleanupTest(unittest.TestCase):
         self.assertFalse(hlink_root.exists())
         self.assertFalse(source.exists())
         self.assertEqual(FakeClient.calls, [([torrent_hash], True)])
+
+    def test_source_residual_preview_allows_only_explicit_leftover_videos_after_qb_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "qb" / "TV" / "Show.S01.SP"
+            sp2 = source / "Show.SP2.mkv"
+            write(sp2)
+            write(source / "poster.jpg")
+            s00_strm = tmp_path / "strm" / "Show" / "Season 00"
+            write(s00_strm / "Show.S00E01.strm", "/已整理/series/Show/Season 00/S00E01.mkv")
+            write(s00_strm / "Show.S00E02.strm", "/已整理/series/Show/Season 00/S00E02.mkv")
+            torrent_hash = "0123456789abcdef0123456789abcdef01234567"
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", FakeClient):
+                report = preview_cloud_source_residual_cleanup(
+                    "Show",
+                    str(source),
+                    [
+                        {
+                            "season": 0,
+                            "strm_root": str(s00_strm),
+                            "required_target_prefix": "/已整理/series/Show/Season 00",
+                            "expected_episode_count": 2,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 2,
+                            "source_paths": [str(sp2)],
+                        }
+                    ],
+                    [torrent_hash],
+                    expected_tmdbid=1,
+                    qb_base_url="http://qb.example",
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["ready_for_execute"])
+        self.assertEqual(report["source"]["video_count"], 1)
+        self.assertTrue(report["source_residual_coverage"]["complete"])
+
+    def test_source_residual_preview_blocks_unlisted_leftover_video(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "qb" / "TV" / "Show.S01.SP"
+            sp1 = source / "Show.SP1.mkv"
+            sp2 = source / "Show.SP2.mkv"
+            write(sp1)
+            write(sp2)
+            s00_strm = tmp_path / "strm" / "Show" / "Season 00"
+            write(s00_strm / "Show.S00E01.strm", "/已整理/series/Show/Season 00/S00E01.mkv")
+            write(s00_strm / "Show.S00E02.strm", "/已整理/series/Show/Season 00/S00E02.mkv")
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", FakeClient):
+                report = preview_cloud_source_residual_cleanup(
+                    "Show",
+                    str(source),
+                    [
+                        {
+                            "season": 0,
+                            "strm_root": str(s00_strm),
+                            "required_target_prefix": "/已整理/series/Show/Season 00",
+                            "expected_episode_count": 2,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 2,
+                            "source_paths": [str(sp2)],
+                        }
+                    ],
+                    ["0123456789abcdef0123456789abcdef01234567"],
+                    expected_tmdbid=1,
+                    qb_base_url="http://qb.example",
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("source_residual_video_set_mismatch", report["blockers"])
+
+    def test_source_residual_execute_deletes_only_explicit_video_and_verifies_no_video_left(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "qb" / "TV" / "Show.S01.SP"
+            sp2 = source / "Show.SP2.mkv"
+            note = source / "readme.txt"
+            write(sp2)
+            write(note)
+            s00_strm = tmp_path / "strm" / "Show" / "Season 00"
+            write(s00_strm / "Show.S00E01.strm", "/已整理/series/Show/Season 00/S00E01.mkv")
+            write(s00_strm / "Show.S00E02.strm", "/已整理/series/Show/Season 00/S00E02.mkv")
+            torrent_hash = "0123456789abcdef0123456789abcdef01234567"
+
+            class FakeClient:
+                def __init__(self, base_url, user="", qb_pass="", timeout=20):
+                    pass
+
+                def login(self):
+                    pass
+
+                def torrents(self):
+                    return []
+
+            with patch("series_cloud_archiver.hlink_cleanup.QBClient", FakeClient):
+                preview = preview_cloud_source_residual_cleanup(
+                    "Show",
+                    str(source),
+                    [
+                        {
+                            "season": 0,
+                            "strm_root": str(s00_strm),
+                            "required_target_prefix": "/已整理/series/Show/Season 00",
+                            "expected_episode_count": 2,
+                            "expected_episode_min": 1,
+                            "expected_episode_max": 2,
+                            "source_paths": [str(sp2)],
+                        }
+                    ],
+                    [torrent_hash],
+                    expected_tmdbid=1,
+                    qb_base_url="http://qb.example",
+                )
+                report = execute_cloud_source_residual_cleanup(preview, "http://qb.example")
+
+            self.assertTrue(report["ok"])
+            self.assertFalse(sp2.exists())
+            self.assertTrue(note.exists())
+            self.assertEqual(report["verification"]["source"]["video_count"], 0)
 
     def test_preview_allows_duplicate_episode_formats_when_unique_episodes_are_complete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

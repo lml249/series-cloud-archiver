@@ -418,6 +418,43 @@ PYTHONPATH=src python3 -m series_cloud_archiver cloud-hlink-source-multiseason-c
 
 execute 会先重跑 fresh preview；只有 fresh preview 仍全绿时，才对显式 qB hash 调用 `deleteFiles=true`，再删除显式 hlink root，并验证 qB hash 已消失、source root 已不存在或没有视频、hlink root 已不存在、STRM 仍完整。它不刮削云盘实体目录，不刷新全库，不写 NFO/JPG，不删除任何未显式传入的路径。
 
+如果 qB 删除已经成功，但底层下载器或文件系统只移除了部分内容，导致 source root 只剩少量已经由 STRM/NFO/Emby 验证过的显式残留视频，不要手工 `rm`。先用 residual cleanup preview 精确列出仍应删除的 source 文件，并要求对应 qB hash 已经从 qB 消失：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver cloud-source-residual-cleanup-preview \
+  --env-file /example/app/series-cloud-archiver/.env \
+  --title "Example Show" \
+  --expected-tmdbid 12345 \
+  --source-root "/media/local-series/Example.Show.S01.Specials" \
+  --expected-absent-qb-hash 0123456789abcdef0123456789abcdef01234567 \
+  --season "0:/media/cloud-strm/series/Example Show (2025) {tmdbid=12345}/Season 00:2:1:2:target=/已整理/series/Example Show (2025) {tmdbid=12345}/Season 00:source=/media/local-series/Example.Show.S01.Specials/Example.Show.Special.2.mkv" \
+  --forbidden-target-prefix /未整理 \
+  --forbidden-target-prefix /series/series \
+  --forbidden-target-prefix /已整理/series/series \
+  --cloud-media-path "/已整理/series/Example Show (2025) {tmdbid=12345}" \
+  --cloud-media-storage 115-default \
+  --format json \
+  --output reports/example-source-residual-cleanup-preview.json
+```
+
+这个 preview 只读，并要求 source root 是窄目录、source root 里剩余视频 inode 正好等于显式 `source=` 列表、每个 STRM season 仍完整且 target prefix 正确、云盘实体目录没有 metadata sidecar、qB full hash 已经不存在。preview 全绿后，才允许执行：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver cloud-source-residual-cleanup-execute \
+  --env-file /example/app/series-cloud-archiver/.env \
+  --preview-report reports/example-source-residual-cleanup-preview.json \
+  --expected-title "Example Show" \
+  --expected-tmdbid 12345 \
+  --expected-source-root "/media/local-series/Example.Show.S01.Specials" \
+  --expected-absent-qb-hash 0123456789abcdef0123456789abcdef01234567 \
+  --expected-season 0 \
+  --approve-delete \
+  --format json \
+  --output reports/example-source-residual-cleanup-execute.json
+```
+
+execute 会先 fresh preview，然后只删除显式 source 视频文件；非视频 sidecar 不会被删除，除非目录因此完全为空。最后会验证 qB hash 仍不存在、source root 不再包含视频、STRM 仍完整。
+
 如果 `13-finalize-run.json` 里某一季是 `already_cleaned_noop`，表示 STRM、NFO、Emby 和云盘侧检查已经通过，同时扫描报告里的完整 qB hash 已确认不在 qB，source/hlink 根也没有视频可删。这个状态不会执行 qB 删除或文件删除，只是把“本地早已清完”的季节从失败项中摘出来，避免后续批量复跑时反复卡在已经不存在的本地目录。
 
 如果 `batch-review-report` 里还有 `blocked_after_finalize_gates`，先生成统一的只读修复计划，再用 runner 按类别批量收集诊断证据。默认 runner 仍然只 dry-run，不执行诊断命令：
