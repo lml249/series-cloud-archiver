@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from series_cloud_archiver.identity import (
+    resolve_identity_overrides_from_cloud_report_emby,
     resolve_identity_overrides_from_cloud_report,
     resolve_identity_overrides_from_scan_report,
 )
@@ -82,12 +83,31 @@ class EmptyMoviePilotClient:
         return {"meta_info": {}, "media_info": {}}
 
 
+class FakeEmbyClient:
+    calls = []
+    init_kwargs = []
+    items = []
+
+    def __init__(self, base_url, api_key, **kwargs):
+        self.base_url = base_url
+        self.api_key = api_key
+        self.timeout = kwargs.get("timeout")
+        self.__class__.init_kwargs.append(kwargs)
+
+    def items_by_search(self, search_term):
+        self.__class__.calls.append(search_term)
+        return self.__class__.items
+
+
 class IdentityResolveTest(unittest.TestCase):
     def setUp(self) -> None:
         FakeMoviePilotClient.calls = []
         FakeMoviePilotClient.init_kwargs = []
         VariantMoviePilotClient.calls = []
         EmptyMoviePilotClient.calls = []
+        FakeEmbyClient.calls = []
+        FakeEmbyClient.init_kwargs = []
+        FakeEmbyClient.items = []
 
     def test_resolves_missing_candidate_identity(self) -> None:
         report = {
@@ -332,6 +352,94 @@ class IdentityResolveTest(unittest.TestCase):
         self.assertEqual(unresolved[0]["title"], "难哄 (2025) Season 01")
         self.assertGreaterEqual(len(unresolved[0]["queries"]), 2)
         self.assertEqual(unresolved[0]["queries"][0]["status"], "unresolved")
+
+    def test_emby_resolves_provider_id_with_exact_series_path(self) -> None:
+        report = {
+            "items": [
+                {
+                    "status": "needs_identity_review",
+                    "title": "难哄 (2025) Season 01",
+                    "season": 1,
+                    "expected_count": 3,
+                    "expected_episodes": [1, 2, 3],
+                    "source_paths": ["/volume3/volume3/hlink/TV/难哄 (2025)/Season 1"],
+                }
+            ]
+        }
+        FakeEmbyClient.items = [
+            {
+                "Type": "Series",
+                "Id": "emby-series-1",
+                "Name": "难哄",
+                "Path": "/volume3/hlink/TV/难哄 (2025)",
+                "ProviderIds": {"Tmdb": "250060", "Tvdb": "437909"},
+            },
+            {
+                "Type": "Episode",
+                "Path": "/volume3/hlink/TV/难哄 (2025)/Season 1/E01.mkv",
+                "ProviderIds": {"Tmdb": "250060"},
+            },
+        ]
+
+        import series_cloud_archiver.identity as identity_module
+
+        original = identity_module.EmbyClient
+        identity_module.EmbyClient = FakeEmbyClient
+        try:
+            payload = resolve_identity_overrides_from_cloud_report_emby(
+                report,
+                "http://emby.example",
+                "key",
+                timeout=9,
+            )
+        finally:
+            identity_module.EmbyClient = original
+
+        self.assertEqual(payload["summary"], {"input_candidates": 1, "attempted": 1, "resolved": 1})
+        self.assertEqual(FakeEmbyClient.init_kwargs, [{"timeout": 9}])
+        record = payload["identity_overrides"][0]
+        self.assertEqual(record["tmdbid"], 250060)
+        self.assertEqual(record["season"], 1)
+        self.assertEqual(record["expected_episodes"], [1, 2, 3])
+        self.assertEqual(record["method"], "emby_providerids_exact_series_path")
+        self.assertEqual(record["emby_item_id"], "emby-series-1")
+
+    def test_emby_title_match_without_series_path_stays_unresolved(self) -> None:
+        report = {
+            "items": [
+                {
+                    "status": "needs_identity_review",
+                    "title": "难哄 (2025) Season 01",
+                    "season": 1,
+                    "expected_count": 3,
+                    "expected_episodes": [1, 2, 3],
+                    "source_paths": ["/volume3/hlink/TV/难哄 (2025)/Season 1"],
+                }
+            ]
+        }
+        FakeEmbyClient.items = [
+            {
+                "Type": "Series",
+                "Id": "wrong-series",
+                "Name": "难哄",
+                "Path": "/volume3/hlink/TV/难哄 特别版 (2025)",
+                "ProviderIds": {"Tmdb": "250060"},
+            }
+        ]
+
+        import series_cloud_archiver.identity as identity_module
+
+        original = identity_module.EmbyClient
+        identity_module.EmbyClient = FakeEmbyClient
+        try:
+            payload = resolve_identity_overrides_from_cloud_report_emby(report, "http://emby.example", "key")
+        finally:
+            identity_module.EmbyClient = original
+
+        self.assertEqual(payload["summary"]["resolved"], 0)
+        unresolved = payload["unresolved_identity"][0]
+        self.assertEqual(unresolved["queries"][0]["reason"], "no_exact_series_path_match")
+        self.assertEqual(unresolved["queries"][0]["rejected_items"][0]["path_status"], "path_mismatch")
 
 
 if __name__ == "__main__":

@@ -83,6 +83,7 @@ from .hlink_cleanup import (
 from .identity import (
     render_identity_overrides,
     resolve_identity_overrides_from_cloud_report,
+    resolve_identity_overrides_from_cloud_report_emby,
     resolve_identity_overrides_from_scan_report,
 )
 from .extra_source_media import (
@@ -748,13 +749,15 @@ def build_parser() -> argparse.ArgumentParser:
     owner_cloud_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
     owner_cloud_parser.add_argument("--top", type=int, default=None, help="Maximum rows in report")
 
-    identity_parser = subcommands.add_parser("identity-resolve", help="Resolve missing candidate TMDB identities through MoviePilot")
+    identity_parser = subcommands.add_parser("identity-resolve", help="Resolve missing candidate TMDB identities through MoviePilot or Emby")
     identity_parser.add_argument("--env-file", default=None, help="Local env file; never commit real values")
     identity_parser.add_argument("--scan-report", default="", help="JSON report from scan/evaluate")
     identity_parser.add_argument("--cloud-report", default="", help="Optional JSON report from cloud-check; resolves only needs_identity_review rows")
+    identity_parser.add_argument("--source", choices=["moviepilot", "emby"], default="moviepilot", help="Readonly identity source")
+    identity_parser.add_argument("--path-alias", action="append", default=[], help="Map host path to service path, e.g. /host=/service; can be repeated")
     identity_parser.add_argument("--output", required=True, help="Write identity override JSON to file")
     identity_parser.add_argument("--top", type=int, default=None, help="Maximum missing-identity candidates to resolve")
-    identity_parser.add_argument("--timeout", type=int, default=20, help="MoviePilot request timeout in seconds")
+    identity_parser.add_argument("--timeout", type=int, default=20, help="Identity request timeout in seconds")
 
     transfer_parser = subcommands.add_parser("plan-mv3-transfer", help="Create a readonly MV3 transfer queue from cloud-check JSON")
     transfer_parser.add_argument("--cloud-report", required=True, help="JSON report from cloud-check")
@@ -2927,12 +2930,27 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "identity-resolve":
         config = config_from_env(args.env_file, [])
-        if not config.mp_base_url or not config.mp_token:
-            parser.error("identity-resolve requires MP_BASE_URL and MP_API_TOKEN")
         if not args.scan_report and not args.cloud_report:
             parser.error("identity-resolve requires --scan-report or --cloud-report")
+        if args.source == "emby" and args.scan_report:
+            parser.error("identity-resolve --source emby currently requires --cloud-report")
         top = args.top if args.top is not None else 0
-        if args.cloud_report:
+        if args.source == "emby":
+            if not config.emby_base_url or not config.emby_key:
+                parser.error("identity-resolve --source emby requires EMBY_BASE_URL and EMBY_API_KEY")
+            payload = resolve_identity_overrides_from_cloud_report_emby(
+                load_optional_json_report(args.cloud_report),
+                config.emby_base_url,
+                config.emby_key,
+                top=top,
+                output_path=args.output,
+                timeout=args.timeout,
+                path_aliases=_parse_path_alias_args(args.path_alias) or config.path_aliases,
+                progress=lambda message: print(message, flush=True),
+            )
+        elif args.cloud_report:
+            if not config.mp_base_url or not config.mp_token:
+                parser.error("identity-resolve requires MP_BASE_URL and MP_API_TOKEN")
             payload = resolve_identity_overrides_from_cloud_report(
                 load_optional_json_report(args.cloud_report),
                 config.mp_base_url,
@@ -2943,6 +2961,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 progress=lambda message: print(message, flush=True),
             )
         else:
+            if not config.mp_base_url or not config.mp_token:
+                parser.error("identity-resolve requires MP_BASE_URL and MP_API_TOKEN")
             payload = resolve_identity_overrides_from_scan_report(
                 load_scan_report(args.scan_report),
                 config.mp_base_url,

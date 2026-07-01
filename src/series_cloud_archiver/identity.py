@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
+from .emby import EmbyClient
 from .moviepilot import MoviePilotClient
 from .redaction import redact_sensitive_text
 
@@ -100,6 +101,28 @@ def resolve_identity_overrides_from_cloud_report(
     )
 
 
+def resolve_identity_overrides_from_cloud_report_emby(
+    cloud_report: Dict[str, object],
+    emby_base_url: str,
+    emby_api_key: str,
+    top: int = 0,
+    output_path: str = "",
+    timeout: int = 20,
+    path_aliases: Optional[Dict[str, str]] = None,
+    progress: Optional[Callable[[str], None]] = None,
+) -> Dict[str, object]:
+    return _resolve_identity_overrides_from_candidates_emby(
+        _candidates_from_cloud_identity_review(cloud_report),
+        emby_base_url,
+        emby_api_key,
+        top=top,
+        output_path=output_path,
+        timeout=timeout,
+        path_aliases=path_aliases or {},
+        progress=progress,
+    )
+
+
 def _resolve_identity_overrides_from_candidates(
     candidates: List[Dict[str, object]],
     mp_base_url: str,
@@ -145,6 +168,62 @@ def _resolve_identity_overrides_from_candidates(
             progress(f"[{index}/{len(candidates)}] skipped: {title}")
         else:
             unresolved.append(_unresolved_identity(candidate, diagnostics))
+        attempted = index
+        persist(attempted)
+
+    return _identity_payload(records, unresolved, warnings, len(candidates), attempted)
+
+
+def _resolve_identity_overrides_from_candidates_emby(
+    candidates: List[Dict[str, object]],
+    emby_base_url: str,
+    emby_api_key: str,
+    top: int = 0,
+    output_path: str = "",
+    timeout: int = 20,
+    path_aliases: Optional[Dict[str, str]] = None,
+    progress: Optional[Callable[[str], None]] = None,
+) -> Dict[str, object]:
+    client = EmbyClient(emby_base_url, emby_api_key, timeout=timeout)
+    aliases = _normalize_aliases(path_aliases or {})
+    records: List[Dict[str, object]] = []
+    unresolved: List[Dict[str, object]] = []
+    warnings = [
+        "emby_identity_resolve_is_readonly",
+        "emby_provider_ids_are_identity_hints_only_episode_gates_still_required",
+    ]
+    if top > 0:
+        candidates = candidates[:top]
+
+    def persist(attempted: int) -> None:
+        if not output_path:
+            return
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            render_identity_overrides(_identity_payload(records, unresolved, warnings, len(candidates), attempted)) + "\n",
+            encoding="utf-8",
+        )
+
+    persist(0)
+    attempted = 0
+    for index, candidate in enumerate(candidates, start=1):
+        title = str(candidate.get("title") or "")
+        if progress:
+            progress(f"[{index}/{len(candidates)}] resolving from Emby: {title}")
+        record, diagnostics = _resolve_candidate_identity_from_emby(client, candidate, aliases)
+        if record:
+            records.append(record)
+            if progress:
+                progress(
+                    f"[{index}/{len(candidates)}] resolved from Emby: {title} -> tmdbid={record['tmdbid']} "
+                    f"season={record['season']} item={record.get('emby_item_id', '')}"
+                )
+        else:
+            unresolved.append(_unresolved_identity(candidate, diagnostics))
+            if progress:
+                reason = diagnostics[-1].get("reason") if diagnostics else "no_match"
+                progress(f"[{index}/{len(candidates)}] skipped from Emby: {title} ({reason})")
         attempted = index
         persist(attempted)
 
@@ -426,6 +505,213 @@ def _season_note(meta: Dict[str, object], media: Dict[str, object], season: int)
     end = meta.get("end_season")
     seasons = sorted(str(key) for key in (media.get("seasons") or {}).keys())
     return f"Season unresolved; meta range={begin}-{end}, media seasons={','.join(seasons)}"
+
+
+def _resolve_candidate_identity_from_emby(
+    client: EmbyClient,
+    candidate: Dict[str, object],
+    path_aliases: Dict[str, str],
+) -> Tuple[Optional[Dict[str, object]], List[Dict[str, object]]]:
+    diagnostics: List[Dict[str, object]] = []
+    search_terms = _emby_identity_search_terms(candidate)
+    if not search_terms:
+        diagnostics.append({"query": "", "status": "unresolved", "reason": "no_search_terms"})
+        return None, diagnostics
+    for term in search_terms:
+        try:
+            items = client.items_by_search(term)
+        except Exception as exc:  # noqa: BLE001
+            diagnostics.append(
+                {
+                    "query": term,
+                    "status": "error",
+                    "error_type": exc.__class__.__name__,
+                    "error": redact_sensitive_text(str(exc)),
+                }
+            )
+            continue
+        record, diagnostic = _override_from_emby_items(candidate, items, term, path_aliases)
+        diagnostics.append(diagnostic)
+        if record:
+            return record, diagnostics
+    return None, diagnostics
+
+
+def _emby_identity_search_terms(candidate: Dict[str, object]) -> List[str]:
+    terms: List[str] = []
+    for value in [str(candidate.get("title") or ""), *_path_query_variants(str(candidate.get("path") or ""))]:
+        for variant in _title_query_variants(value):
+            clean = _strip_season_suffix(variant)
+            for item in (variant, clean):
+                item = item.strip()
+                if item and item not in terms and not _is_generic_season_query(item):
+                    terms.append(item)
+    return terms
+
+
+def _override_from_emby_items(
+    candidate: Dict[str, object],
+    items: Sequence[Dict[str, object]],
+    query: str,
+    path_aliases: Dict[str, str],
+) -> Tuple[Optional[Dict[str, object]], Dict[str, object]]:
+    series_items = [item for item in items if isinstance(item, dict) and str(item.get("Type") or item.get("type") or "") == "Series"]
+    matches: List[Dict[str, object]] = []
+    path_rejections: List[Dict[str, object]] = []
+    missing_provider = 0
+    for item in series_items:
+        provider_ids = _provider_ids_from_item(item)
+        tmdbid = int(provider_ids.get("Tmdb") or provider_ids.get("tmdb") or 0)
+        if not tmdbid:
+            missing_provider += 1
+            continue
+        path_status = _emby_path_match_status(candidate, item, path_aliases)
+        row = _emby_item_diagnostic(item, path_status, tmdbid)
+        if path_status == "exact_series_path_match":
+            matches.append(row)
+        else:
+            path_rejections.append(row)
+    if len(matches) == 1:
+        item = matches[0]
+        record = _override_from_emby_item(candidate, item, query)
+        return record, {
+            "query": query,
+            "status": "resolved",
+            "reason": "",
+            "series_results": len(series_items),
+            "path_matches": len(matches),
+            "missing_tmdbid_results": missing_provider,
+            "matched_item": item,
+            "rejected_items": path_rejections[:5],
+        }
+    reason = "no_exact_series_path_match"
+    if len(matches) > 1:
+        reason = "ambiguous_series_path_match"
+    elif not series_items:
+        reason = "no_series_results"
+    elif missing_provider == len(series_items):
+        reason = "missing_tmdbid"
+    return None, {
+        "query": query,
+        "status": "unresolved",
+        "reason": reason,
+        "series_results": len(series_items),
+        "path_matches": len(matches),
+        "missing_tmdbid_results": missing_provider,
+        "matched_items": matches[:5],
+        "rejected_items": path_rejections[:5],
+    }
+
+
+def _override_from_emby_item(candidate: Dict[str, object], item: Dict[str, object], query: str) -> Dict[str, object]:
+    season = _season_from_candidate(candidate)
+    expected = candidate.get("episode_numbers") if isinstance(candidate.get("episode_numbers"), list) else []
+    return {
+        "match_title": str(candidate.get("title") or ""),
+        "match_path": str(candidate.get("path") or ""),
+        "title": str(item.get("Name") or item.get("name") or _strip_season_suffix(str(candidate.get("title") or ""))),
+        "en_title": "",
+        "year": _year_from_text(str(candidate.get("title") or "") + " " + str(candidate.get("path") or "")),
+        "tmdbid": int(item.get("tmdbid") or 0),
+        "season": season,
+        "expected_episodes": sorted(int(value) for value in expected if isinstance(value, int) or str(value).isdigit()),
+        "method": "emby_providerids_exact_series_path",
+        "confidence": "high" if season else "needs_season_review",
+        "note": "Resolved from Emby Series ProviderIds after exact series path match; episode completeness still requires STRM/cloud gates.",
+        "matched_query": query,
+        "emby_item_id": item.get("Id") or item.get("id"),
+        "emby_path": str(item.get("Path") or item.get("path") or ""),
+        "provider_ids": _provider_ids_from_item(item),
+    }
+
+
+def _emby_path_match_status(candidate: Dict[str, object], item: Dict[str, object], path_aliases: Dict[str, str]) -> str:
+    emby_path = str(item.get("Path") or item.get("path") or "")
+    candidate_series_paths = _candidate_series_path_variants(candidate, path_aliases)
+    emby_paths = _path_variants(emby_path, path_aliases)
+    if candidate_series_paths & emby_paths:
+        return "exact_series_path_match"
+    return "path_mismatch"
+
+
+def _candidate_series_path_variants(candidate: Dict[str, object], path_aliases: Dict[str, str]) -> Set[str]:
+    paths = [str(candidate.get("path") or "")]
+    source_paths = candidate.get("source_paths")
+    if isinstance(source_paths, list):
+        paths.extend(str(path) for path in source_paths if path)
+    series_paths: Set[str] = set()
+    for path in paths:
+        for variant in _path_variants(path, path_aliases):
+            series_paths.add(_strip_season_path(variant))
+    return {path for path in series_paths if path}
+
+
+def _path_variants(path: str, path_aliases: Dict[str, str]) -> Set[str]:
+    normalized = _dedupe_volume_prefix(_normalize_path(path))
+    if not normalized:
+        return set()
+    variants = {normalized}
+    for left, right in path_aliases.items():
+        left_norm = _normalize_path(left)
+        right_norm = _normalize_path(right)
+        current = list(variants)
+        for value in current:
+            if left_norm and value == left_norm:
+                variants.add(right_norm)
+            elif left_norm and value.startswith(left_norm + "/"):
+                variants.add(right_norm + value[len(left_norm) :])
+            if right_norm and value == right_norm:
+                variants.add(left_norm)
+            elif right_norm and value.startswith(right_norm + "/"):
+                variants.add(left_norm + value[len(right_norm) :])
+    return {_dedupe_volume_prefix(_normalize_path(value)) for value in variants if value}
+
+
+def _emby_item_diagnostic(item: Dict[str, object], path_status: str, tmdbid: int) -> Dict[str, object]:
+    return {
+        "id": item.get("Id") or item.get("id"),
+        "name": str(item.get("Name") or item.get("name") or ""),
+        "path": str(item.get("Path") or item.get("path") or ""),
+        "tmdbid": tmdbid,
+        "ProviderIds": _provider_ids_from_item(item),
+        "path_status": path_status,
+    }
+
+
+def _provider_ids_from_item(item: Dict[str, object]) -> Dict[str, object]:
+    if isinstance(item.get("ProviderIds"), dict):
+        return item["ProviderIds"]  # type: ignore[return-value]
+    if isinstance(item.get("provider_ids"), dict):
+        return item["provider_ids"]  # type: ignore[return-value]
+    return {}
+
+
+def _strip_season_path(path: str) -> str:
+    text = _normalize_path(path)
+    return re.sub(r"(?i)/(?:Season|S)\s*0?\d{1,2}$", "", text).rstrip("/")
+
+
+def _strip_season_suffix(text: str) -> str:
+    return re.sub(r"(?i)\s+Season\s+\d{1,2}\b", "", str(text or "")).strip()
+
+
+def _is_generic_season_query(text: str) -> bool:
+    return bool(re.fullmatch(r"(?i)Season\s*\d{1,2}", str(text or "").strip()))
+
+
+def _year_from_text(text: str) -> str:
+    match = re.search(r"\((\d{4})\)|\b(19\d{2}|20\d{2})\b", text or "")
+    if not match:
+        return ""
+    return str(match.group(1) or match.group(2) or "")
+
+
+def _normalize_aliases(path_aliases: Dict[str, str]) -> Dict[str, str]:
+    return {_normalize_path(left): _normalize_path(right) for left, right in path_aliases.items() if left and right}
+
+
+def _dedupe_volume_prefix(path: str) -> str:
+    return re.sub(r"^(/volume\d+)(?:\1)+/", r"\1/", path)
 
 
 def _season_from_text(text: str) -> int:

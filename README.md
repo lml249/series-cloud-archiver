@@ -161,6 +161,18 @@ PYTHONPATH=src python3 -m series_cloud_archiver identity-resolve \
   --output /example/app/series-cloud-archiver/outputs/current-20260629/identity-overrides-current.json
 ```
 
+如果 MoviePilot 识别失败，但 Emby 已经给本地剧集写入 ProviderIds，可以改用只读 Emby 解析。这个模式只读取 Emby Series 条目的 `ProviderIds`，并且只有候选季的父级 series 路径与 Emby Series `Path` 精确匹配时才输出 override；标题相同但路径不一致、结果多义或缺少 TMDB ID 都会继续写入 `unresolved_identity`：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver identity-resolve \
+  --env-file /example/app/series-cloud-archiver/.env \
+  --source emby \
+  --cloud-report /example/app/series-cloud-archiver/outputs/current-20260629/cloud-check-current.json \
+  --output /example/app/series-cloud-archiver/outputs/current-20260629/identity-overrides-from-emby.json
+```
+
+Emby 身份解析同样不会刷新 Emby、不会刮削、不会写 NFO/JPG、不会操作 MV3/qB/hlink/source。它只补 TMDB/季号身份提示；集数完整性、STRM target、中文 NFO、Emby 入库和清理精确匹配仍然必须由后续 `cloud-check`、`batch-pipeline`、`batch-finalize-plan/run` 门禁验证。
+
 ## MV3 转存待办 dry-run
 
 云端 STRM 复核后，可以把 `cloud_strm_not_found` 的项目整理成“待转存清单”：

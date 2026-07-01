@@ -136,6 +136,64 @@ class CliEntrypointTest(unittest.TestCase):
             self.assertEqual(calls[0]["timeout"], 7)
             self.assertEqual(calls[0]["output_path"], str(output))
 
+    def test_identity_resolve_cli_can_use_emby_provider_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cloud_report = tmp_path / "cloud.json"
+            output = tmp_path / "identity.json"
+            cloud_report.write_text(json.dumps({"items": []}), encoding="utf-8")
+            calls = []
+
+            class FakeConfig:
+                mp_base_url = ""
+                mp_token = ""
+                emby_base_url = "http://emby.example"
+                emby_key = "key"
+                path_aliases = {"/host": "/service"}
+
+            def fake_resolve(report, base_url, token, top=0, output_path="", timeout=20, path_aliases=None, progress=None):
+                calls.append(
+                    {
+                        "report": report,
+                        "base_url": base_url,
+                        "token": token,
+                        "top": top,
+                        "output_path": output_path,
+                        "timeout": timeout,
+                        "path_aliases": path_aliases,
+                        "progress": progress,
+                    }
+                )
+                return {"summary": {"input_candidates": 0, "attempted": 0, "resolved": 0}, "warnings": []}
+
+            from series_cloud_archiver import cli
+
+            with patch.object(cli, "config_from_env", return_value=FakeConfig()), patch.object(
+                cli,
+                "resolve_identity_overrides_from_cloud_report_emby",
+                side_effect=fake_resolve,
+            ):
+                code = cli.main(
+                    [
+                        "identity-resolve",
+                        "--env-file",
+                        str(tmp_path / ".env"),
+                        "--source",
+                        "emby",
+                        "--cloud-report",
+                        str(cloud_report),
+                        "--output",
+                        str(output),
+                        "--path-alias",
+                        "/extra=/mapped",
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["base_url"], "http://emby.example")
+            self.assertEqual(calls[0]["path_aliases"], {"/extra": "/mapped"})
+
     def test_share_search_checkpoint_updates_after_each_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
