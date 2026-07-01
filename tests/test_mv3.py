@@ -65,6 +65,7 @@ from series_cloud_archiver.mv3 import (
     execute_mv3_organize_transfer_from_browse_report,
     execute_mv3_organize_transfer_from_confirmed_local_map,
     execute_mv3_organize_transfer_from_scan_report,
+    execute_mv3_organize_transfer_from_staged_local_map,
     generate_mv3_strm,
     regenerate_mv3_strm_records,
     build_mv3_transfer_remediation_plan,
@@ -4983,6 +4984,191 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("mv3_transfer_response_success_count_below_expected", report["blockers"])
         self.assertEqual(report["transfer"]["organize_outcome"]["bad_item_statuses"][0]["status"], "skipped: blocked")
 
+    def test_organize_transfer_from_staged_local_map_dry_run_plans_copy_without_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "source" / "Demo.SP1.mkv"
+            source.parent.mkdir()
+            source.write_bytes(b"video")
+            staging = tmp_path / "movecache"
+            mapping = {
+                "mode": "confirmed-extra-source-media-map",
+                "items": [
+                    {
+                        "source_path": str(source),
+                        "tmdbid": 123,
+                        "season": 0,
+                        "episode": 1,
+                    }
+                ],
+            }
+            calls = []
+
+            with patch("urllib.request.urlopen", lambda request, timeout: calls.append(request)):
+                report = execute_mv3_organize_transfer_from_staged_local_map(
+                    "http://mv3.example",
+                    "token",
+                    mapping,
+                    target_dir="/已整理",
+                    strm_dir="/strm",
+                    tmdb_id=123,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    staging_host_dir=str(staging),
+                    staging_container_dir="/movecache",
+                    staging_subdir="brothers-s00",
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["dry_run"])
+        self.assertEqual(calls, [])
+        self.assertFalse((staging / "brothers-s00" / "S00E01 Demo.SP1.mkv").exists())
+        self.assertEqual(report["staging"]["copy"]["items"][0]["status"], "planned")
+        self.assertEqual(report["confirmed_mapping"]["items"][0]["source_path"], "/movecache/brothers-s00/S00E01 Demo.SP1.mkv")
+
+    def test_organize_transfer_from_staged_local_map_requires_stage_copy_for_transfer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "source" / "Demo.SP1.mkv"
+            source.parent.mkdir()
+            source.write_bytes(b"video")
+            calls = []
+
+            with patch("urllib.request.urlopen", lambda request, timeout: calls.append(request)):
+                report = execute_mv3_organize_transfer_from_staged_local_map(
+                    "http://mv3.example",
+                    "token",
+                    {
+                        "items": [
+                            {
+                                "source_path": str(source),
+                                "tmdbid": 123,
+                                "season": 0,
+                                "episode": 1,
+                            }
+                        ]
+                    },
+                    target_dir="/已整理",
+                    strm_dir="/strm",
+                    tmdb_id=123,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    staging_host_dir=str(tmp_path / "movecache"),
+                    staging_container_dir="/movecache",
+                    staging_subdir="demo",
+                    approve_transfer=True,
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(calls, [])
+        self.assertIn("staging_copy_approval_required_for_transfer", report["blockers"])
+        self.assertEqual(report["transfer"], {"skipped": True, "reason": "dry_run"})
+
+    def test_organize_transfer_from_staged_local_map_copies_without_transfer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "source" / "Demo.SP1.mkv"
+            source.parent.mkdir()
+            source.write_bytes(b"video")
+            staging = tmp_path / "movecache"
+            calls = []
+
+            with patch("urllib.request.urlopen", lambda request, timeout: calls.append(request)):
+                report = execute_mv3_organize_transfer_from_staged_local_map(
+                    "http://mv3.example",
+                    "token",
+                    {
+                        "items": [
+                            {
+                                "source_path": str(source),
+                                "tmdbid": 123,
+                                "season": 0,
+                                "episode": 1,
+                            }
+                        ]
+                    },
+                    target_dir="/已整理",
+                    strm_dir="/strm",
+                    tmdb_id=123,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    staging_host_dir=str(staging),
+                    staging_container_dir="/movecache",
+                    staging_subdir="demo",
+                    approve_stage_copy=True,
+                )
+
+            staged_file = staging / "demo" / "S00E01 Demo.SP1.mkv"
+            self.assertTrue(report["ok"])
+            self.assertTrue(staged_file.exists())
+            self.assertEqual(staged_file.read_bytes(), b"video")
+            self.assertEqual(calls, [])
+            self.assertEqual(report["staging"]["copy"]["copied_count"], 1)
+
+    def test_organize_transfer_from_staged_local_map_posts_staged_paths_after_approvals(self) -> None:
+        seen = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "source" / "Demo.SP1.mkv"
+            source.parent.mkdir()
+            source.write_bytes(b"video")
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    return b'{"success":true,"data":{"task_id":"task-1"}}'
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            def fake_urlopen(request, timeout):
+                seen["body"] = json.loads(request.data.decode("utf-8"))
+                return FakeResponse()
+
+            with patch("urllib.request.urlopen", fake_urlopen):
+                report = execute_mv3_organize_transfer_from_staged_local_map(
+                    "http://mv3.example",
+                    "token",
+                    {
+                        "items": [
+                            {
+                                "source_path": str(source),
+                                "tmdbid": 123,
+                                "season": 0,
+                                "episode": 1,
+                            }
+                        ]
+                    },
+                    target_dir="/已整理",
+                    strm_dir="/strm",
+                    tmdb_id=123,
+                    expected_episode_count=1,
+                    expected_episode_min=1,
+                    expected_episode_max=1,
+                    staging_host_dir=str(tmp_path / "movecache"),
+                    staging_container_dir="/movecache",
+                    staging_subdir="demo",
+                    approve_stage_copy=True,
+                    approve_transfer=True,
+                )
+
+        self.assertTrue(report["ok"])
+        self.assertFalse(report["dry_run"])
+        self.assertEqual(seen["body"]["files"][0]["source_path"], "/movecache/demo/S00E01 Demo.SP1.mkv")
+        self.assertEqual(seen["body"]["files"][0]["name"], "S00E01 Demo.SP1.mkv")
+        self.assertEqual(report["staging"]["copy"]["copied_count"], 1)
+
     def test_organize_transfer_from_confirmed_local_map_dry_run_skips_request(self) -> None:
         calls = []
         mapping = {
@@ -7596,6 +7782,143 @@ class MV3ProbeTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["confirmed_mapping"]["items"][0]["episode"], 5)
+
+    def test_cli_writes_staged_local_map_dry_run_without_copy_or_transfer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            mapping_file = tmp_path / "mapping.json"
+            output = tmp_path / "dry-run.json"
+            source = tmp_path / "source" / "Demo.SP1.mkv"
+            source.parent.mkdir()
+            source.write_bytes(b"video")
+            staging = tmp_path / "movecache"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+            mapping_file.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "source_path": str(source),
+                                "tmdbid": 123,
+                                "season": 0,
+                                "episode": 1,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calls = []
+
+            with patch("urllib.request.urlopen", lambda request, timeout: calls.append(request)):
+                code = main(
+                    [
+                        "mv3-organize-transfer-from-staged-local-map",
+                        "--env-file",
+                        str(env_file),
+                        "--mapping-file",
+                        str(mapping_file),
+                        "--staging-host-dir",
+                        str(staging),
+                        "--staging-container-dir",
+                        "/movecache",
+                        "--staging-subdir",
+                        "demo",
+                        "--target-dir",
+                        "/已整理",
+                        "--strm-dir",
+                        "/strm",
+                        "--tmdb-id",
+                        "123",
+                        "--expected-episode-count",
+                        "1",
+                        "--expected-episode-min",
+                        "1",
+                        "--expected-episode-max",
+                        "1",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(code, 0)
+            self.assertEqual(calls, [])
+            self.assertFalse((staging / "demo" / "S00E01 Demo.SP1.mkv").exists())
+            self.assertTrue(payload["dry_run"])
+            self.assertEqual(payload["staging"]["copy"]["items"][0]["status"], "planned")
+
+    def test_cli_staged_local_map_approve_stage_copy_without_transfer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            mapping_file = tmp_path / "mapping.json"
+            output = tmp_path / "stage.json"
+            source = tmp_path / "source" / "Demo.SP1.mkv"
+            source.parent.mkdir()
+            source.write_bytes(b"video")
+            staging = tmp_path / "movecache"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+            mapping_file.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "source_path": str(source),
+                                "tmdbid": 123,
+                                "season": 0,
+                                "episode": 1,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calls = []
+
+            with patch("urllib.request.urlopen", lambda request, timeout: calls.append(request)):
+                code = main(
+                    [
+                        "mv3-organize-transfer-from-staged-local-map",
+                        "--env-file",
+                        str(env_file),
+                        "--mapping-file",
+                        str(mapping_file),
+                        "--staging-host-dir",
+                        str(staging),
+                        "--staging-container-dir",
+                        "/movecache",
+                        "--staging-subdir",
+                        "demo",
+                        "--target-dir",
+                        "/已整理",
+                        "--strm-dir",
+                        "/strm",
+                        "--tmdb-id",
+                        "123",
+                        "--expected-episode-count",
+                        "1",
+                        "--expected-episode-min",
+                        "1",
+                        "--expected-episode-max",
+                        "1",
+                        "--approve-stage-copy",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(code, 0)
+            self.assertEqual(calls, [])
+            self.assertTrue((staging / "demo" / "S00E01 Demo.SP1.mkv").exists())
+            self.assertTrue(payload["dry_run"])
+            self.assertEqual(payload["staging"]["copy"]["copied_count"], 1)
 
     def test_cli_writes_organize_transfer_report_with_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

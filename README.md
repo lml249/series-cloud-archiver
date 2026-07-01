@@ -1047,6 +1047,66 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-local
   --output reports/demo-sp1-transfer-execute.json
 ```
 
+如果 MV3 容器没有挂载原始 qB/source 根，`mv3-organize-transfer-from-local-map` 可能会被 MV3 服务端逐项返回 `skipped: blocked`。不要手工复制到云盘目录，也不要绕过项目改 STRM；先使用 staged local-map runner，把源文件复制到 MV3 容器已经可见的临时 staging 目录，例如宿主机 `/volume4/volume4/mv3/movecache` 对应容器内 `/movecache`。这个 runner 有两个独立审批闸：默认 dry-run 不复制、不调用 MV3；`--approve-stage-copy` 只复制到 staging；只有同时加 `--approve-transfer` 才把 staging 后的 `/movecache/...` 路径提交给 MV3 转存并生成 STRM：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-staged-local-map \
+  --env-file .env \
+  --mapping-file reports/demo-extra-local-map.json \
+  --staging-host-dir /volume4/volume4/mv3/movecache \
+  --staging-container-dir /movecache \
+  --staging-subdir demo-s00 \
+  --target-dir /已整理 \
+  --strm-dir /strm \
+  --tmdb-id 123 \
+  --expected-episode-count 1 \
+  --expected-episode-min 5 \
+  --expected-episode-max 5 \
+  --format json \
+  --output reports/demo-sp1-staged-dry-run.json
+```
+
+dry-run 通过后，先只审批 staging copy，确认报告里的 `staging.copy` 为 `copied` 或同大小 `reused`：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-staged-local-map \
+  --env-file .env \
+  --mapping-file reports/demo-extra-local-map.json \
+  --staging-host-dir /volume4/volume4/mv3/movecache \
+  --staging-container-dir /movecache \
+  --staging-subdir demo-s00 \
+  --target-dir /已整理 \
+  --strm-dir /strm \
+  --tmdb-id 123 \
+  --expected-episode-count 1 \
+  --expected-episode-min 5 \
+  --expected-episode-max 5 \
+  --approve-stage-copy \
+  --format json \
+  --output reports/demo-sp1-staged-copy.json
+```
+
+最后才同时带上 `--approve-stage-copy --approve-transfer` 执行 MV3 转存。这个命令不会移动或删除原始 source，也不会清理 staging；staging 目录只是 MV3 可见的临时源。转存后仍必须回到 STRM 侧跑 STRM、中文 NFO、Emby、qB/MP/hlink/source 全部门禁，全部绿灯前不能删除本地。
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-staged-local-map \
+  --env-file .env \
+  --mapping-file reports/demo-extra-local-map.json \
+  --staging-host-dir /volume4/volume4/mv3/movecache \
+  --staging-container-dir /movecache \
+  --staging-subdir demo-s00 \
+  --target-dir /已整理 \
+  --strm-dir /strm \
+  --tmdb-id 123 \
+  --expected-episode-count 1 \
+  --expected-episode-min 5 \
+  --expected-episode-max 5 \
+  --approve-stage-copy \
+  --approve-transfer \
+  --format json \
+  --output reports/demo-sp1-staged-transfer.json
+```
+
 这条链路不会移动或删除本地源文件，强制使用 copy 模式；映射文件里的季/集只作为项目的安全门禁和报告证据，最终命名仍由 MV3 根据 `tmdb_id` 和源文件信息完成。本地 qB/source/hlink 仍然必须等 STRM 完整、中文 NFO、Emby 和清理预览全部变绿后，才由最终 cleanup 阶段处理。云盘实体目录仍然只做转存和 STRM 生成，不做刮削，不写 NFO/JPG。
 
 如果怀疑 115 里已经有同内容，或者分享预览暂时不可用，可以先用只读云盘搜索找候选目录。这个命令只查 115 文件名，不转存、不整理、不生成 STRM，也不会刮削云盘媒体目录：

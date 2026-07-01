@@ -128,6 +128,7 @@ from .mv3 import (
     execute_mv3_organize_transfer_from_browse_report,
     execute_mv3_organize_transfer_from_confirmed_local_map,
     execute_mv3_organize_transfer_from_scan_report,
+    execute_mv3_organize_transfer_from_staged_local_map,
     generate_mv3_strm,
     inspect_mv3_capabilities,
     inspect_mv3_instances,
@@ -1359,6 +1360,28 @@ def build_parser() -> argparse.ArgumentParser:
     organize_transfer_local_map_parser.add_argument("--approve-transfer", action="store_true", help="Actually send one MV3 organize transfer request; omitted means dry-run only")
     organize_transfer_local_map_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     organize_transfer_local_map_parser.add_argument("--output", default=None, help="Write aggregate report to file instead of stdout")
+
+    organize_transfer_staged_local_map_parser = subcommands.add_parser("mv3-organize-transfer-from-staged-local-map", help="Stage local source files into an MV3-visible directory, then execute approved MV3 organize transfer from the staged mapping")
+    organize_transfer_staged_local_map_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
+    organize_transfer_staged_local_map_parser.add_argument("--mapping-file", required=True, help="JSON mapping with items containing source_path, tmdb_id/tmdbid, season, and episode")
+    organize_transfer_staged_local_map_parser.add_argument("--staging-host-dir", required=True, help="Host directory mounted into the MV3 container, e.g. /volume4/volume4/mv3/movecache")
+    organize_transfer_staged_local_map_parser.add_argument("--staging-container-dir", required=True, help="Same directory as seen by MV3, e.g. /movecache")
+    organize_transfer_staged_local_map_parser.add_argument("--staging-subdir", required=True, help="Relative staging subdirectory for this run")
+    organize_transfer_staged_local_map_parser.add_argument("--target-dir", required=True, help="MV3 organize root, e.g. /已整理; MV3 adds media categories such as series")
+    organize_transfer_staged_local_map_parser.add_argument("--strm-dir", required=True, help="MV3 STRM output dir")
+    organize_transfer_staged_local_map_parser.add_argument("--tmdb-id", type=int, required=True, help="Expected TMDB ID")
+    organize_transfer_staged_local_map_parser.add_argument("--expected-episode-count", type=int, required=True, help="Expected distinct episode count")
+    organize_transfer_staged_local_map_parser.add_argument("--expected-episode-min", type=int, required=True, help="Expected first episode number")
+    organize_transfer_staged_local_map_parser.add_argument("--expected-episode-max", type=int, required=True, help="Expected last episode number")
+    organize_transfer_staged_local_map_parser.add_argument("--expected-episode", action="append", default=[], help="Optional explicit expected episode list, comma-separated; can be repeated")
+    organize_transfer_staged_local_map_parser.add_argument("--mode", choices=["copy"], default="copy", help="Local extras must be copied, never moved")
+    organize_transfer_staged_local_map_parser.add_argument("--local-target", action="store_true", help="Treat target as local instead of cloud")
+    organize_transfer_staged_local_map_parser.add_argument("--background", action="store_true", help="Ask MV3 to run transfer in background")
+    organize_transfer_staged_local_map_parser.add_argument("--timeout", type=int, default=180, help="Per-request timeout in seconds")
+    organize_transfer_staged_local_map_parser.add_argument("--approve-stage-copy", action="store_true", help="Copy local source files into the staging directory; omitted means dry-run only")
+    organize_transfer_staged_local_map_parser.add_argument("--approve-transfer", action="store_true", help="After staging succeeds, send one MV3 organize transfer request; requires --approve-stage-copy")
+    organize_transfer_staged_local_map_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    organize_transfer_staged_local_map_parser.add_argument("--output", default=None, help="Write aggregate report to file instead of stdout")
 
     strm_generate_parser = subcommands.add_parser("mv3-strm-generate", help="Execute one approved MV3 STRM generation request")
     strm_generate_parser.add_argument("--env-file", required=True, help="Local env file; never commit real values")
@@ -4048,6 +4071,41 @@ def main(argv: Optional[List[str]] = None) -> int:
             is_cloud_target=not args.local_target,
             background=args.background,
             dry_run=not args.approve_transfer,
+            timeout=args.timeout,
+        )
+        rendered = render_mv3_organize_transfer_report(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") or report.get("dry_run") and not report.get("blockers") else 1
+
+    if args.command == "mv3-organize-transfer-from-staged-local-map":
+        config = config_from_env(args.env_file, [])
+        if not config.mv3_base_url or not config.mv3_token:
+            parser.error("mv3-organize-transfer-from-staged-local-map requires MV3_BASE_URL and MV3_API_TOKEN")
+        mapping_report = load_optional_json_report(args.mapping_file)
+        if not isinstance(mapping_report, dict):
+            parser.error("mapping file must be a JSON object")
+        report = execute_mv3_organize_transfer_from_staged_local_map(
+            config.mv3_base_url,
+            config.mv3_token,
+            mapping_report,
+            target_dir=args.target_dir,
+            strm_dir=args.strm_dir,
+            tmdb_id=args.tmdb_id,
+            expected_episode_count=args.expected_episode_count,
+            expected_episode_min=args.expected_episode_min,
+            expected_episode_max=args.expected_episode_max,
+            expected_episodes=_parse_int_list_args(args.expected_episode),
+            staging_host_dir=args.staging_host_dir,
+            staging_container_dir=args.staging_container_dir,
+            staging_subdir=args.staging_subdir,
+            mode=args.mode,
+            is_cloud_target=not args.local_target,
+            background=args.background,
+            approve_stage_copy=args.approve_stage_copy,
+            approve_transfer=args.approve_transfer,
             timeout=args.timeout,
         )
         rendered = render_mv3_organize_transfer_report(report, args.format)

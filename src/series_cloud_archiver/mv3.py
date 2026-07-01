@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+import shutil
 import socket
 import urllib.error
 import urllib.parse
@@ -2730,9 +2731,10 @@ def execute_mv3_organize_transfer_from_confirmed_local_map(
     background: bool = False,
     dry_run: bool = False,
     timeout: int = 180,
+    allowed_source_prefixes: Optional[Sequence[str]] = None,
 ) -> Dict[str, object]:
     rows = _confirmed_local_mapping_rows(mapping_report)
-    mapping_blockers = _confirmed_local_mapping_blockers(rows, tmdb_id)
+    mapping_blockers = _confirmed_local_mapping_blockers(rows, tmdb_id, allowed_source_prefixes=allowed_source_prefixes)
     if mode != "copy":
         mapping_blockers.append("confirmed_local_mapping_requires_copy_mode")
     files = [] if mapping_blockers else _transfer_files_from_confirmed_local_mapping(rows)
@@ -2768,6 +2770,95 @@ def execute_mv3_organize_transfer_from_confirmed_local_map(
         "items": [_confirmed_local_mapping_public_row(row, index) for index, row in enumerate(rows, start=1)],
         "note": "season/episode are used as explicit safety gates and report evidence; MV3 organize/transfer still derives final naming from tmdb_id and source file metadata.",
     }
+    return report
+
+
+def execute_mv3_organize_transfer_from_staged_local_map(
+    base_url: str,
+    token: str,
+    mapping_report: Dict[str, object],
+    target_dir: str,
+    strm_dir: str,
+    tmdb_id: int,
+    expected_episode_count: int,
+    expected_episode_min: int,
+    expected_episode_max: int,
+    expected_episodes: Optional[List[int]] = None,
+    staging_host_dir: str = "",
+    staging_container_dir: str = "",
+    staging_subdir: str = "",
+    mode: str = "copy",
+    is_cloud_target: bool = True,
+    background: bool = False,
+    approve_stage_copy: bool = False,
+    approve_transfer: bool = False,
+    timeout: int = 180,
+) -> Dict[str, object]:
+    rows = _confirmed_local_mapping_rows(mapping_report)
+    mapping_blockers = _confirmed_local_mapping_blockers(rows, tmdb_id, allowed_source_prefixes=["/"])
+    staging_plan = _build_staged_local_mapping_plan(
+        rows,
+        staging_host_dir=staging_host_dir,
+        staging_container_dir=staging_container_dir,
+        staging_subdir=staging_subdir,
+    )
+    staging_blockers = [str(item) for item in staging_plan.get("blockers", []) if str(item)]
+    stage_copy = _execute_staged_local_mapping_copy(staging_plan, approve_stage_copy=approve_stage_copy)
+    stage_copy_blockers = [str(item) for item in stage_copy.get("blockers", []) if str(item)]
+    if approve_transfer and not approve_stage_copy:
+        stage_copy_blockers.append("staging_copy_approval_required_for_transfer")
+    staged_mapping = _staged_confirmed_local_mapping_report(mapping_report, staging_plan)
+    pre_transfer_blockers = mapping_blockers + staging_blockers + stage_copy_blockers
+    dry_transfer = not approve_transfer or bool(pre_transfer_blockers)
+
+    report = execute_mv3_organize_transfer_from_confirmed_local_map(
+        base_url,
+        token,
+        staged_mapping,
+        target_dir=target_dir,
+        strm_dir=strm_dir,
+        tmdb_id=tmdb_id,
+        expected_episode_count=expected_episode_count,
+        expected_episode_min=expected_episode_min,
+        expected_episode_max=expected_episode_max,
+        expected_episodes=expected_episodes,
+        mode=mode,
+        is_cloud_target=is_cloud_target,
+        background=background,
+        dry_run=dry_transfer,
+        timeout=timeout,
+        allowed_source_prefixes=[str(staging_plan.get("staging_container_dir") or "")],
+    )
+    staged_mapping_blockers = _confirmed_local_mapping_blockers(
+        _confirmed_local_mapping_rows(staged_mapping),
+        tmdb_id,
+        allowed_source_prefixes=[str(staging_plan.get("staging_container_dir") or "")],
+    )
+    blockers = sorted(set([str(item) for item in report.get("blockers", [])] + pre_transfer_blockers))
+    blockers = sorted(set(blockers + staged_mapping_blockers))
+    if blockers:
+        report["ok"] = False
+        report["blockers"] = blockers
+    report["mode"] = "mv3-organize-transfer-from-staged-local-map-result"
+    report["dry_run"] = not approve_transfer
+    report["stage_copy_approved"] = approve_stage_copy
+    report["transfer_approved"] = approve_transfer
+    report["staging"] = {
+        "host_dir": str(staging_plan.get("staging_host_dir") or ""),
+        "container_dir": str(staging_plan.get("staging_container_dir") or ""),
+        "subdir": str(staging_plan.get("staging_subdir") or ""),
+        "items": staging_plan.get("items", []),
+        "copy": stage_copy,
+        "blockers": staging_blockers,
+    }
+    report["source_path"] = str(staged_mapping.get("source_path") or report.get("source_path") or "")
+    report["safety"] = (
+        "staged local-map transfer; source media is copied to an MV3-visible staging directory only when "
+        "--approve-stage-copy is provided, and MV3 organize/transfer is called only when --approve-transfer is "
+        "provided. The original source files are never moved or deleted. Cloud media is used only for transfer "
+        "and STRM generation; scraping, NFO/JPG generation, Emby refresh, qBittorrent action, hlink deletion, "
+        "and source cleanup remain outside this command."
+    )
     return report
 
 
@@ -6309,8 +6400,14 @@ def _confirmed_local_mapping_rows(mapping_report: Dict[str, object]) -> List[Dic
     return []
 
 
-def _confirmed_local_mapping_blockers(rows: List[Dict[str, object]], expected_tmdb_id: int) -> List[str]:
+def _confirmed_local_mapping_blockers(
+    rows: List[Dict[str, object]],
+    expected_tmdb_id: int,
+    *,
+    allowed_source_prefixes: Optional[Sequence[str]] = None,
+) -> List[str]:
     blockers: List[str] = []
+    prefixes = tuple(str(prefix).rstrip("/") for prefix in (allowed_source_prefixes or ["/volume"]) if str(prefix))
     if not rows:
         blockers.append("confirmed_local_mapping_items_required")
     seen_sources: Set[str] = set()
@@ -6323,7 +6420,7 @@ def _confirmed_local_mapping_blockers(rows: List[Dict[str, object]], expected_tm
         tmdb_id = _positive_int(row.get("tmdb_id", row.get("tmdbid")), allow_zero=False)
         if not source_path:
             blockers.append("confirmed_local_mapping_source_path_required")
-        elif not source_path.startswith("/volume"):
+        elif prefixes and not source_path.startswith(prefixes):
             blockers.append("confirmed_local_mapping_source_must_be_local_volume_path")
         if source_path in seen_sources:
             blockers.append("confirmed_local_mapping_duplicate_source_path")
@@ -6380,6 +6477,213 @@ def _confirmed_local_mapping_source_path(rows: List[Dict[str, object]], mapping_
         return first
     parents = {str(PurePosixPath(str(row.get("source_path") or row.get("path") or "")).parent) for row in rows}
     return sorted(parents)[0] if len(parents) == 1 else first
+
+
+def _build_staged_local_mapping_plan(
+    rows: List[Dict[str, object]],
+    *,
+    staging_host_dir: str,
+    staging_container_dir: str,
+    staging_subdir: str,
+) -> Dict[str, object]:
+    host_root = Path(staging_host_dir).expanduser()
+    container_root = _normalize_cloud_path(staging_container_dir)
+    subdir = _safe_staging_subdir(staging_subdir)
+    blockers: List[str] = []
+    if not staging_host_dir:
+        blockers.append("staging_host_dir_required")
+    elif not host_root.is_absolute():
+        blockers.append("staging_host_dir_must_be_absolute")
+    if not container_root:
+        blockers.append("staging_container_dir_required")
+    elif not container_root.startswith("/"):
+        blockers.append("staging_container_dir_must_be_absolute")
+    if not subdir:
+        blockers.append("staging_subdir_required")
+    elif subdir in {".", "/"} or subdir.startswith("../") or "/../" in f"/{subdir}/":
+        blockers.append("staging_subdir_must_be_relative_safe")
+    if container_root and looks_like_strm_side_path(container_root):
+        blockers.append("staging_container_dir_must_not_be_strm_side")
+    if container_root and container_root.startswith(("/已整理", "/未整理", "/series")):
+        blockers.append("staging_container_dir_must_not_be_cloud_media_side")
+
+    items: List[Dict[str, object]] = []
+    seen_targets: Set[str] = set()
+    for index, row in enumerate(rows, start=1):
+        source_path = str(row.get("source_path") or row.get("path") or "")
+        season = _positive_int(row.get("season"), allow_zero=True)
+        episode = _positive_int(row.get("episode"), allow_zero=False)
+        file_name = str(row.get("file_name") or row.get("name") or PurePosixPath(source_path).name)
+        staged_name = _staged_local_file_name(file_name, season, episode)
+        host_path = host_root / subdir / staged_name if staging_host_dir and subdir and staged_name else Path("")
+        container_path = f"{container_root.rstrip('/')}/{subdir}/{staged_name}" if container_root and subdir and staged_name else ""
+        source = Path(source_path) if source_path else Path("")
+        source_exists = bool(source_path and source.is_file())
+        source_size = source.stat().st_size if source_exists else None
+        target_exists = bool(str(host_path) and host_path.is_file())
+        target_size = host_path.stat().st_size if target_exists else None
+        item_blockers: List[str] = []
+        if not source_path:
+            item_blockers.append("staging_source_path_required")
+        elif not source.is_absolute():
+            item_blockers.append("staging_source_must_be_absolute")
+        elif looks_like_strm_side_path(source_path) or source_path.startswith(("/已整理", "/未整理", "/series")):
+            item_blockers.append("staging_source_must_not_be_media_library_path")
+        if source_path and not source_exists:
+            item_blockers.append("staging_source_file_missing")
+        if not staged_name:
+            item_blockers.append("staging_target_name_required")
+        if str(host_path) in seen_targets:
+            item_blockers.append("staging_duplicate_target_path")
+        seen_targets.add(str(host_path))
+        if target_exists and source_size is not None and target_size != source_size:
+            item_blockers.append("staging_target_exists_size_mismatch")
+        blockers.extend(item_blockers)
+        items.append(
+            {
+                "index": index,
+                "source_path": source_path,
+                "source_exists": source_exists,
+                "source_size_bytes": source_size,
+                "host_staging_path": str(host_path) if str(host_path) != "." else "",
+                "container_staging_path": container_path,
+                "target_exists": target_exists,
+                "target_size_bytes": target_size,
+                "season": season if season is not None else "",
+                "episode": episode if episode is not None else "",
+                "file_name": file_name,
+                "staged_name": staged_name,
+                "blockers": sorted(set(item_blockers)),
+            }
+        )
+
+    return {
+        "mode": "staged-local-mapping-plan",
+        "ok": not blockers,
+        "staging_host_dir": str(host_root) if staging_host_dir else "",
+        "staging_container_dir": container_root,
+        "staging_subdir": subdir,
+        "items": items,
+        "blockers": sorted(set(blockers)),
+    }
+
+
+def _execute_staged_local_mapping_copy(plan: Dict[str, object], *, approve_stage_copy: bool) -> Dict[str, object]:
+    items = [item for item in plan.get("items", []) if isinstance(item, dict)]
+    blockers = [str(item) for item in plan.get("blockers", []) if str(item)]
+    rows: List[Dict[str, object]] = []
+    if not approve_stage_copy:
+        return {
+            "approved": False,
+            "ok": not blockers,
+            "copied_count": 0,
+            "reused_count": sum(1 for item in items if bool(item.get("target_exists")) and not item.get("blockers")),
+            "items": [
+                _staged_copy_row(item, status="planned_reuse" if item.get("target_exists") and not item.get("blockers") else "planned")
+                for item in items
+            ],
+            "blockers": sorted(set(blockers)),
+            "safety": "dry-run only; no source file is copied to staging",
+        }
+    if blockers:
+        return {
+            "approved": True,
+            "ok": False,
+            "copied_count": 0,
+            "reused_count": 0,
+            "items": [_staged_copy_row(item, status="blocked") for item in items],
+            "blockers": sorted(set(blockers)),
+        }
+
+    copy_blockers: List[str] = []
+    copied_count = 0
+    reused_count = 0
+    for item in items:
+        source = Path(str(item.get("source_path") or ""))
+        target = Path(str(item.get("host_staging_path") or ""))
+        source_size = item.get("source_size_bytes")
+        if target.exists() and source_size is not None and target.stat().st_size == int(source_size):
+            rows.append(_staged_copy_row(item, status="reused"))
+            reused_count += 1
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        except OSError as exc:
+            copy_blockers.append("staging_copy_failed")
+            row = _staged_copy_row(item, status="failed")
+            row["error"] = str(exc)
+            rows.append(row)
+            continue
+        target_size = target.stat().st_size if target.exists() else None
+        if source_size is not None and target_size != int(source_size):
+            copy_blockers.append("staging_copy_size_mismatch")
+            rows.append(_staged_copy_row(item, status="failed_size_mismatch", target_size_bytes=target_size))
+            continue
+        rows.append(_staged_copy_row(item, status="copied", target_size_bytes=target_size))
+        copied_count += 1
+
+    return {
+        "approved": True,
+        "ok": not copy_blockers,
+        "copied_count": copied_count,
+        "reused_count": reused_count,
+        "items": rows,
+        "blockers": sorted(set(copy_blockers)),
+    }
+
+
+def _staged_confirmed_local_mapping_report(mapping_report: Dict[str, object], staging_plan: Dict[str, object]) -> Dict[str, object]:
+    source_to_stage = {
+        str(item.get("source_path") or ""): item
+        for item in staging_plan.get("items", [])
+        if isinstance(item, dict)
+    }
+    staged_items: List[Dict[str, object]] = []
+    for row in _confirmed_local_mapping_rows(mapping_report):
+        source_path = str(row.get("source_path") or row.get("path") or "")
+        stage = source_to_stage.get(source_path, {})
+        staged_row = dict(row)
+        staged_row["original_source_path"] = source_path
+        staged_row["source_path"] = str(stage.get("container_staging_path") or "")
+        staged_row["file_name"] = str(row.get("file_name") or row.get("name") or PurePosixPath(source_path).name)
+        staged_items.append(staged_row)
+    parents = {
+        str(PurePosixPath(str(item.get("source_path") or "")).parent)
+        for item in staged_items
+        if str(item.get("source_path") or "")
+    }
+    return {
+        "mode": "confirmed-extra-source-media-map-staged",
+        "source_mode": str(mapping_report.get("mode") or ""),
+        "source_path": sorted(parents)[0] if len(parents) == 1 else "",
+        "items": staged_items,
+    }
+
+
+def _staged_copy_row(item: Dict[str, object], *, status: str, target_size_bytes: object = None) -> Dict[str, object]:
+    row = {
+        "index": item.get("index"),
+        "status": status,
+        "source_path": item.get("source_path"),
+        "host_staging_path": item.get("host_staging_path"),
+        "container_staging_path": item.get("container_staging_path"),
+        "source_size_bytes": item.get("source_size_bytes"),
+        "target_size_bytes": item.get("target_size_bytes") if target_size_bytes is None else target_size_bytes,
+        "blockers": item.get("blockers") or [],
+    }
+    return row
+
+
+def _safe_staging_subdir(value: str) -> str:
+    normalized = str(PurePosixPath(str(value or "").strip().strip("/")))
+    return "" if normalized in {".", ""} else normalized
+
+
+def _staged_local_file_name(file_name: str, season: Optional[int], episode: Optional[int]) -> str:
+    if season is None or episode is None or not file_name:
+        return ""
+    return f"S{season:02d}E{episode:02d} {PurePosixPath(file_name).name}"
 
 
 def _confirmed_local_mapping_public_row(row: Dict[str, object], index: int) -> Dict[str, object]:
