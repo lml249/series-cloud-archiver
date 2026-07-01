@@ -4081,6 +4081,141 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertIn("review_decision_blocked:manual_review_transfer_failed", blocked["skip_reasons"])
         self.assertEqual(ready["status"], "planned_preview")
 
+    def test_preview_plan_allows_changed_candidate_after_prior_preview_block(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_TRANSFER,
+                    "title": "隐秘的角落",
+                    "tmdbid": 104960,
+                    "season": 1,
+                    "expected_episode_count": 12,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 4,
+                            "search_keyword": "隐秘的角落",
+                            "title": "隐秘的角落.全12集.2020.1080P",
+                            "score": 70,
+                            "size_delta_ratio": 0.11,
+                            "blockers": [],
+                        }
+                    },
+                }
+            ],
+        }
+        prior_review = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "manual_review_preview_blocked",
+                    "title": "隐秘的角落",
+                    "tmdbid": 104960,
+                    "season": 1,
+                    "best_candidate_title": "隐秘的角落.全12集.2020.2160P",
+                    "best_candidate_score": 75,
+                    "best_candidate_size_delta_ratio": 0.3134,
+                }
+            ],
+        }
+
+        report = build_batch_share_preview_plan(batch_plan, env_file="/safe/.env", review_reports=[prior_review])
+        item = report["items"][0]
+
+        self.assertEqual(item["status"], "planned_preview")
+        self.assertTrue(item["review_candidate_changed"])
+        self.assertNotIn("review_decision_blocked:manual_review_preview_blocked", item["skip_reasons"])
+
+    def test_preview_plan_keeps_same_candidate_blocked_after_prior_preview_block(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_TRANSFER,
+                    "title": "隐秘的角落",
+                    "tmdbid": 104960,
+                    "season": 1,
+                    "expected_episode_count": 12,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 3,
+                            "search_keyword": "隐秘的角落",
+                            "title": "隐秘的角落.全12集.2020.2160P",
+                            "score": 75,
+                            "size_delta_ratio": 0.3134,
+                            "blockers": [],
+                        }
+                    },
+                }
+            ],
+        }
+        prior_review = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "manual_review_preview_blocked",
+                    "title": "隐秘的角落",
+                    "tmdbid": 104960,
+                    "season": 1,
+                    "best_candidate_title": "隐秘的角落.全12集.2020.2160P",
+                    "best_candidate_score": 75,
+                    "best_candidate_size_delta_ratio": 0.3134,
+                }
+            ],
+        }
+
+        report = build_batch_share_preview_plan(batch_plan, env_file="/safe/.env", review_reports=[prior_review])
+        item = report["items"][0]
+
+        self.assertEqual(item["status"], "skipped_preview")
+        self.assertFalse(item["review_candidate_changed"])
+        self.assertIn("review_decision_blocked:manual_review_preview_blocked", item["skip_reasons"])
+
+    def test_preview_plan_never_reruns_finalize_blocked_rows_from_review(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_TRANSFER,
+                    "title": "兄弟连",
+                    "tmdbid": 4613,
+                    "season": 1,
+                    "expected_episode_count": 10,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 6,
+                            "search_keyword": "兄弟连",
+                            "title": "兄弟连 新候选",
+                            "score": 90,
+                            "size_delta_ratio": 0.01,
+                            "blockers": [],
+                        }
+                    },
+                }
+            ],
+        }
+        prior_review = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "blocked_after_finalize_gates",
+                    "title": "兄弟连",
+                    "tmdbid": 4613,
+                    "season": 1,
+                    "best_candidate_title": "兄弟连 旧候选",
+                    "best_candidate_score": 60,
+                    "best_candidate_size_delta_ratio": 0.4,
+                }
+            ],
+        }
+
+        report = build_batch_share_preview_plan(batch_plan, env_file="/safe/.env", review_reports=[prior_review])
+        item = report["items"][0]
+
+        self.assertEqual(item["status"], "skipped_preview")
+        self.assertTrue(item["review_candidate_changed"])
+        self.assertIn("review_decision_blocked:blocked_after_finalize_gates", item["skip_reasons"])
+
     def test_review_preserves_prior_decision_when_preview_skips_from_review(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",

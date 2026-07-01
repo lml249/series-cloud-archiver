@@ -12,6 +12,7 @@ AUTO_TRANSFER = "auto_ready_for_transfer_preview"
 MANUAL_REVIEW = "manual_review"
 DEFAULT_PREVIEW_BUCKETS = [AUTO_TRANSFER, MANUAL_REVIEW]
 DEFAULT_REVIEW_PREVIEW_DECISIONS = ["manual_review_required", "ready_for_share_preview"]
+RERUNNABLE_REVIEW_PREVIEW_DECISIONS = {"manual_review_preview_blocked", "manual_review_transfer_failed"}
 
 
 PreviewFunc = Callable[..., Dict[str, object]]
@@ -390,11 +391,14 @@ def _preview_row(
     selection_index = int(best.get("search_index") or 0)
     blockers = set(_string_list(best.get("blockers")))
     skip_reasons: List[str] = []
+    review_candidate_changed = False
 
     if review_item:
         review_decision = str(review_item.get("decision") or "")
         if review_decision and review_decision not in allowed_review_decisions:
-            skip_reasons.append(f"review_decision_blocked:{review_decision}")
+            review_candidate_changed = _review_candidate_changed(review_item, best)
+            if review_decision not in RERUNNABLE_REVIEW_PREVIEW_DECISIONS or not review_candidate_changed:
+                skip_reasons.append(f"review_decision_blocked:{review_decision}")
     if str(item.get("bucket") or "") not in wanted_buckets:
         skip_reasons.append("bucket_not_selected")
     if not best:
@@ -431,6 +435,7 @@ def _preview_row(
         "candidate_blockers": sorted(blockers),
         "review_decision": str(review_item.get("decision") or "") if review_item else "",
         "review_next_action": str(review_item.get("next_action") or "") if review_item else "",
+        "review_candidate_changed": review_candidate_changed,
         "cloud_media_path": str(item.get("cloud_media_path") or ""),
         "cloud_title_path": str(item.get("cloud_title_path") or ""),
         "required_target_prefix": str(item.get("required_target_prefix") or ""),
@@ -439,6 +444,36 @@ def _preview_row(
     if status == "planned_preview":
         row["command"] = _preview_command(row, env_file=env_file, storage=storage)
     return row
+
+
+def _review_candidate_changed(review_item: Dict[str, object], best: Dict[str, object]) -> bool:
+    current = _candidate_fingerprint(best)
+    previous = _review_candidate_fingerprint(review_item)
+    return bool(current and previous and current != previous)
+
+
+def _candidate_fingerprint(candidate: Dict[str, object]) -> Optional[tuple[str, str, str]]:
+    title = _compact_text(str(candidate.get("title") or ""))
+    score = str(candidate.get("score") or "")
+    size_delta = str(candidate.get("size_delta_ratio") or "")
+    return (title, score, size_delta) if title else None
+
+
+def _review_candidate_fingerprint(item: Dict[str, object]) -> Optional[tuple[str, str, str]]:
+    title = str(item.get("best_candidate_title") or item.get("recommended_candidate_title") or item.get("candidate_title") or "")
+    score = str(item.get("best_candidate_score") or item.get("recommended_candidate_score") or item.get("candidate_score") or "")
+    size_delta = str(
+        item.get("best_candidate_size_delta_ratio")
+        or item.get("recommended_candidate_size_delta_ratio")
+        or item.get("candidate_size_delta_ratio")
+        or ""
+    )
+    compact = _compact_text(title)
+    return (compact, score, size_delta) if compact else None
+
+
+def _compact_text(value: str) -> str:
+    return re.sub(r"[\W_]+", "", value.casefold(), flags=re.UNICODE)
 
 
 def _preview_review_by_identity(review_reports: Sequence[Dict[str, object]]) -> Dict[tuple[int, int], Dict[str, object]]:
