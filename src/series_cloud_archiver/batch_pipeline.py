@@ -269,6 +269,7 @@ def run_batch_pipeline(
             storage=transfer_storage,
             timeout=transfer_timeout,
             transfer_timeout=organize_timeout,
+            host_strm_root=host_strm_root,
             actions=actions.transfer_actions,
         )
         phases.append(_write_phase(pipeline_dir, "08-transfer-run", transfer_run_report, ok=bool(transfer_run_report.get("ok"))))

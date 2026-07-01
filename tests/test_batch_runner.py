@@ -596,6 +596,14 @@ class BatchRunnerTest(unittest.TestCase):
     def test_batch_transfer_run_receives_browses_and_organizes_after_approval(self) -> None:
         actions = TransferFakeActions()
         with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm"
+            season_root = strm_root / "series" / "折腰 (2025) {tmdbid=296753}" / "Season 1"
+            season_root.mkdir(parents=True)
+            for episode in range(1, 37):
+                (season_root / f"折腰 - S01E{episode:02d}.strm").write_text(
+                    f"/已整理/series/折腰 (2025) {{tmdbid=296753}}/Season 1/折腰 - S01E{episode:02d}.mkv\n",
+                    encoding="utf-8",
+                )
             preview = Path(tmp) / "preview.json"
             preview.write_text(
                 json.dumps({"ok": True, "episodes": list(range(1, 37)), "video_file_count": 36}),
@@ -607,6 +615,7 @@ class BatchRunnerTest(unittest.TestCase):
                 config=FinalizeFakeConfig(),
                 approve_receive=True,
                 approve_transfer=True,
+                host_strm_root=str(strm_root),
                 actions=BatchTransferActions(
                     receive_share=actions.receive_share,
                     browse_cloud=actions.browse_cloud,
@@ -630,7 +639,8 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(actions.calls[3][1]["kwargs"]["path"], "/已整理/series/折腰 {tmdbid=296753}/Season 1")
         self.assertEqual(actions.calls[4][1]["kwargs"]["path"], "/未整理/折腰")
         self.assertEqual(report["items"][0]["status"], "organized_requires_finalize")
-        self.assertEqual(len(stage_files), 5)
+        self.assertIn("strm_output_verify", report["items"][0]["stage_reports"])
+        self.assertEqual(len(stage_files), 6)
 
     def test_batch_transfer_run_resolves_received_folder_by_root_listing_when_path_has_slash(self) -> None:
         actions = TransferFakeActions(
@@ -787,6 +797,43 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("organized_duplicate_episodes_present", item["blockers"])
         self.assertIn("organized_video_file_count_mismatch", item["blockers"])
         self.assertIn("staging_video_files_remain", item["blockers"])
+
+    def test_batch_transfer_run_blocks_strm_written_to_unrecognized_root(self) -> None:
+        actions = TransferFakeActions()
+        with tempfile.TemporaryDirectory() as tmp:
+            strm_root = Path(tmp) / "strm"
+            misplaced_root = strm_root / "未识别" / "折腰 (2025) {tmdbid=296753}" / "Season 1"
+            misplaced_root.mkdir(parents=True)
+            for episode in range(1, 37):
+                (misplaced_root / f"折腰 - S01E{episode:02d}.strm").write_text(
+                    f"/已整理/series/折腰 (2025) {{tmdbid=296753}}/Season 1/折腰 - S01E{episode:02d}.mkv\n",
+                    encoding="utf-8",
+                )
+            preview = Path(tmp) / "preview.json"
+            preview.write_text(
+                json.dumps({"ok": True, "episodes": list(range(1, 37)), "video_file_count": 36}),
+                encoding="utf-8",
+            )
+            report = run_batch_transfer(
+                self._receive_plan(str(preview)),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(),
+                approve_receive=True,
+                approve_transfer=True,
+                host_strm_root=str(strm_root),
+                actions=BatchTransferActions(
+                    receive_share=actions.receive_share,
+                    browse_cloud=actions.browse_cloud,
+                    organize_transfer=actions.organize_transfer,
+                ),
+            )
+
+        item = report["items"][0]
+        self.assertFalse(report["ok"])
+        self.assertEqual(item["status"], "failed_post_organize_verify")
+        self.assertIn("strm_written_to_unrecognized_root", item["blockers"])
+        self.assertIn("expected_strm_root_missing", item["blockers"])
+        self.assertIn("strm_output_verify", item["stage_reports"])
 
     def test_batch_finalize_plan_builds_ordered_post_transfer_gates(self) -> None:
         batch_plan = {

@@ -38,6 +38,7 @@ def run_batch_transfer(
     storage: str = "115-default",
     timeout: int = 60,
     transfer_timeout: int = 180,
+    host_strm_root: str = "",
     actions: Optional[BatchTransferActions] = None,
 ) -> Dict[str, object]:
     actions = actions or BatchTransferActions()
@@ -64,6 +65,7 @@ def run_batch_transfer(
                 storage=storage,
                 timeout=timeout,
                 transfer_timeout=transfer_timeout,
+                host_strm_root=host_strm_root,
             )
         )
 
@@ -84,6 +86,7 @@ def run_batch_transfer(
             "strm_dir": strm_dir,
             "storage": storage,
             "limit": limit,
+            "host_strm_root": host_strm_root,
             "title_filters": filters,
         },
         "items": results,
@@ -157,6 +160,7 @@ def _run_transfer_item(
     storage: str,
     timeout: int,
     transfer_timeout: int,
+    host_strm_root: str,
 ) -> Dict[str, object]:
     title = str(item.get("title") or "")
     tmdbid = int(item.get("tmdbid") or 0)
@@ -318,9 +322,25 @@ def _run_transfer_item(
     _write_json(staging_verify_path, staging_browse)
     row["stage_reports"]["staging_browse_verify"] = str(staging_verify_path)
 
+    strm_output_report: Dict[str, object] = {}
+    if host_strm_root:
+        strm_output_report = _verify_transfer_strm_outputs(
+            host_strm_root=host_strm_root,
+            title=title,
+            tmdbid=tmdbid,
+            season=season,
+            expected_count=expected_count,
+            expected_min=expected_min,
+            expected_max=expected_max,
+        )
+        strm_output_path = _stage_report_path(output_dir, prefix, "strm-output-verify")
+        _write_json(strm_output_path, strm_output_report)
+        row["stage_reports"]["strm_output_verify"] = str(strm_output_path)
+
     verify_blockers = _post_organize_verify_blockers(
         organized_browse,
         staging_browse,
+        strm_output_report=strm_output_report,
         expected_count=expected_count,
         expected_min=expected_min,
         expected_max=expected_max,
@@ -708,6 +728,7 @@ def _post_organize_verify_blockers(
     organized_browse: Dict[str, object],
     staging_browse: Dict[str, object],
     *,
+    strm_output_report: Optional[Dict[str, object]] = None,
     expected_count: int,
     expected_min: int,
     expected_max: int,
@@ -740,6 +761,8 @@ def _post_organize_verify_blockers(
         blockers.append("staging_video_files_remain")
     if not staging_browse.get("ok") and not _staging_path_absent(staging_browse):
         blockers.append("staging_browse_failed")
+    if isinstance(strm_output_report, dict) and strm_output_report.get("enabled"):
+        blockers.extend(_string_list(strm_output_report.get("blockers")))
     return sorted(set(blockers))
 
 
@@ -757,6 +780,140 @@ def _video_episodes(report: Dict[str, object]) -> List[int]:
         if isinstance(episode, int) and episode > 0:
             episodes.append(episode)
     return episodes
+
+
+def _verify_transfer_strm_outputs(
+    *,
+    host_strm_root: str,
+    title: str,
+    tmdbid: int,
+    season: int,
+    expected_count: int,
+    expected_min: int,
+    expected_max: int,
+) -> Dict[str, object]:
+    root = Path(host_strm_root)
+    expected_roots = _candidate_strm_season_roots(root, "series", title, tmdbid, season)
+    misplaced_roots = _candidate_strm_season_roots(root, "未识别", title, tmdbid, season)
+    expected_files = _strm_files_under(expected_roots)
+    misplaced_files = _strm_files_under(misplaced_roots)
+    expected_episodes = _episodes_from_paths(expected_files)
+    misplaced_episodes = _episodes_from_paths(misplaced_files)
+    distinct_expected = sorted(set(expected_episodes))
+    expected_set = set(range(expected_min, expected_max + 1)) if expected_min and expected_max else set()
+    missing = sorted(expected_set - set(distinct_expected)) if expected_set else []
+    blockers: List[str] = []
+    warnings: List[str] = []
+
+    if not root.exists():
+        blockers.append("host_strm_root_missing")
+    if misplaced_files:
+        blockers.append("strm_written_to_unrecognized_root")
+    if expected_count and not expected_files:
+        blockers.append("expected_strm_root_missing")
+    elif expected_count and len(distinct_expected) != expected_count:
+        blockers.append("expected_strm_episode_count_mismatch")
+    if missing:
+        blockers.append("expected_strm_episode_range_incomplete")
+    if expected_episodes and len(expected_episodes) != len(distinct_expected):
+        blockers.append("expected_strm_duplicate_episodes_present")
+    if misplaced_files:
+        warnings.append("misplaced_strm_requires_manual_repair_before_finalize")
+
+    return {
+        "mode": "readonly-transfer-strm-output-verify",
+        "enabled": True,
+        "ok": not blockers,
+        "host_strm_root": str(root),
+        "expected": {
+            "title": title,
+            "tmdbid": tmdbid,
+            "season": season,
+            "episode_count": expected_count,
+            "episode_min": expected_min,
+            "episode_max": expected_max,
+        },
+        "expected_roots": [_strm_root_summary(path) for path in expected_roots],
+        "misplaced_roots": [_strm_root_summary(path) for path in misplaced_roots],
+        "expected_episode_count": len(distinct_expected),
+        "expected_episodes": distinct_expected,
+        "missing_expected": missing,
+        "misplaced_episode_count": len(set(misplaced_episodes)),
+        "misplaced_episodes": sorted(set(misplaced_episodes)),
+        "blockers": sorted(set(blockers)),
+        "warnings": sorted(set(warnings)),
+        "safety": (
+            "readonly STRM output verification after MV3 transfer; it only scans the host STRM root "
+            "to ensure generated STRM files are under the expected series library path and not under 未识别. "
+            "It does not scrape, refresh Emby, write STRM/NFO/JPG, touch qBittorrent, or delete files."
+        ),
+    }
+
+
+def _candidate_strm_season_roots(root: Path, category: str, title: str, tmdbid: int, season: int) -> List[Path]:
+    category_root = root / category
+    title_token = _title_contains(title)
+    tmdb_token = f"{{tmdbid={tmdbid}}}" if tmdbid else ""
+    title_dirs: List[Path] = []
+    direct_title = f"{title_token} {tmdb_token}".strip()
+    if direct_title:
+        title_dirs.append(category_root / direct_title)
+    if category_root.exists():
+        for child in category_root.iterdir():
+            if not child.is_dir():
+                continue
+            name = child.name
+            if tmdb_token and tmdb_token in name:
+                title_dirs.append(child)
+            elif title_token and _title_contains(name) == title_token:
+                title_dirs.append(child)
+
+    roots: List[Path] = []
+    seen: set[str] = set()
+    for title_dir in title_dirs:
+        for season_name in (f"Season {season}", f"Season {season:02d}"):
+            candidate = title_dir / season_name
+            key = str(candidate)
+            if key not in seen:
+                seen.add(key)
+                roots.append(candidate)
+    return roots
+
+
+def _strm_files_under(roots: Sequence[Path]) -> List[Path]:
+    files: List[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        if not root.exists() or not root.is_dir():
+            continue
+        for path in sorted(root.glob("*.strm")):
+            key = str(path)
+            if key not in seen:
+                seen.add(key)
+                files.append(path)
+    return files
+
+
+def _episodes_from_paths(paths: Sequence[Path]) -> List[int]:
+    episodes: List[int] = []
+    for path in paths:
+        match = re.search(r"[Ss]\d{1,2}[Ee](\d{1,4})", path.name)
+        if match:
+            episodes.append(int(match.group(1)))
+    return sorted(episode for episode in episodes if episode > 0)
+
+
+def _strm_root_summary(path: Path) -> Dict[str, object]:
+    files = _strm_files_under([path])
+    episodes = _episodes_from_paths(files)
+    return {
+        "path": str(path),
+        "exists": path.exists(),
+        "file_count": len(files),
+        "episode_count": len(set(episodes)),
+        "episodes": sorted(set(episodes)),
+        "sample_files": [str(item) for item in files[:5]],
+    }
 
 
 def _title_contains(title: str) -> str:

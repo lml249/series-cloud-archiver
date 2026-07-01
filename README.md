@@ -239,6 +239,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
 - `--execute-preview`：实际解析分享并 browse，只读，不转存。
 - `--run-transfer-stage --approve-receive`：允许把预览完整的分享接收到 `/未整理`。
 - `--run-transfer-stage --approve-transfer`：允许交给 MV3 整理到 `/已整理` 并生成 STRM。
+- 转存整理后，runner 会只读检查 `--host-strm-root` 下的预期 `series/...` STRM 输出，并阻断误落到 `未识别/...` 的条目；这类条目不能进入刮削、Emby 或本地清理。
 - `--run-finalize-stage --execute-scrape`：只对 STRM 路径请求 MoviePilot 刮削。
 - `--approve-cloud-duplicate-delete`：只在 STRM 保护目标完整时删云盘重复视频。
 - `--approve-emby-stale-delete`：只在 STRM 替代完整时删 Emby 旧本地条目。

@@ -955,6 +955,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_transfer_run_parser.add_argument("--target-path", default="/未整理", help="115 staging receive root; must start with /未整理")
     batch_transfer_run_parser.add_argument("--organize-target-dir", default="/已整理", help="MV3 organize root; must be /已整理")
     batch_transfer_run_parser.add_argument("--strm-dir", default="/strm", help="MV3 STRM output root; must be STRM-side")
+    batch_transfer_run_parser.add_argument("--host-strm-root", default="", help="Host STRM root for readonly post-transfer STRM output verification")
     batch_transfer_run_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
     batch_transfer_run_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     batch_transfer_run_parser.add_argument("--transfer-timeout", type=int, default=180, help="MV3 organize transfer timeout in seconds")
@@ -3269,6 +3270,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             target_path=args.target_path,
             organize_target_dir=args.organize_target_dir,
             strm_dir=args.strm_dir,
+            host_strm_root=args.host_strm_root,
             storage=args.storage,
             timeout=args.timeout,
             transfer_timeout=args.transfer_timeout,
