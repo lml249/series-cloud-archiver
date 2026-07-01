@@ -5857,9 +5857,9 @@ def _resolve_mv3_share(
     selected_for_transfer = selected
     expected_resource_title = str(expected_resource_title or "").strip()
     if expected_resource_title and selected_title != expected_resource_title:
-        relocated = _unique_resource_by_title(items, expected_resource_title)
-        if relocated:
-            selection_index, selected = relocated
+        relocated_index, relocated_selected = _unique_resource_by_title(items, expected_resource_title)
+        if relocated_selected:
+            selection_index, selected = relocated_index, relocated_selected
             selected_summary = _resource_search_summary(selected, selection_index)
             selected_title = str(selected_summary.get("title") or "")
             selected_for_transfer = selected

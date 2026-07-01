@@ -3391,6 +3391,62 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("selection_index_relocated_by_expected_resource_title", report["warnings"])
         self.assertEqual([item[0] for item in seen], ["/api/v1/resource-search/search", "/api/v1/share-transfer/parse", "/api/v1/share-transfer/browse"])
 
+    def test_share_preview_blocks_when_expected_resource_title_missing(self) -> None:
+        seen = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.replace("http://mv3.example", "")
+            seen.append(path)
+            if path == "/api/v1/resource-search/search":
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {"title": "Other", "share_link": "https://example.test/s/other", "share_code": "other"},
+                            ]
+                        },
+                    }
+                )
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = preview_mv3_share(
+                "http://mv3.example",
+                "token",
+                "目标剧",
+                selection_index=1,
+                expected_episode_count=1,
+                expected_title_contains="目标剧",
+                expected_resource_title="目标剧 S01E01",
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["selection_index"], 1)
+        self.assertEqual(report["selected"]["title"], "Other")
+        self.assertIn("expected_resource_title_mismatch", report["warnings"])
+        self.assertIn("expected_resource_title_mismatch", report["blockers"])
+        self.assertEqual(seen, ["/api/v1/resource-search/search"])
+
     def test_share_preview_requests_full_folder_and_keeps_more_than_50_items(self) -> None:
         seen = []
 
