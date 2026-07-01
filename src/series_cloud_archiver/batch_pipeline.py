@@ -255,6 +255,7 @@ def run_batch_pipeline(
         env_file=env_file,
         target_path=transfer_target_path,
         storage=transfer_storage,
+        review_reports=provided_review_reports,
     )
     phases.append(_write_phase(pipeline_dir, "07-receive-plan", receive_plan))
 

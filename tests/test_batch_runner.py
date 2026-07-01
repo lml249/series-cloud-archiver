@@ -3573,6 +3573,50 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("manual_review_transfer_failed", rendered)
         self.assertIn("ywzc-share-receive", rendered)
 
+    def test_batch_receive_plan_blocks_stale_ready_preview_from_failed_review(self) -> None:
+        preview_report = {
+            "mode": "readonly-batch-mv3-share-preview",
+            "items": [
+                {
+                    "status": "preview_ready_for_receive",
+                    "title": "爱情公寓",
+                    "tmdbid": 68809,
+                    "season": 1,
+                    "keyword": "爱情公寓",
+                    "selection_index": 1,
+                    "expected_episode_count": 20,
+                    "expected_episode_min": 1,
+                    "expected_episode_max": 20,
+                    "preview_report_path": "/reports/love-apartment-preview.json",
+                    "preview_report": {
+                        "ok": True,
+                        "browse": {"path": "/share/爱情公寓/Season 1", "items": []},
+                    },
+                }
+            ],
+        }
+        review_report = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "manual_review_transfer_failed",
+                    "title": "爱情公寓",
+                    "tmdbid": 68809,
+                    "season": 1,
+                }
+            ],
+        }
+
+        report = build_batch_share_receive_plan(preview_report, env_file="/safe/.env", review_reports=[review_report])
+
+        self.assertEqual(report["approval_required_items"], 0)
+        self.assertEqual(report["skipped_items"], 1)
+        item = report["items"][0]
+        self.assertEqual(item["status"], "skipped_receive")
+        self.assertEqual(item["review_decision"], "manual_review_transfer_failed")
+        self.assertIn("review_decision_blocked:manual_review_transfer_failed", item["skip_reasons"])
+        self.assertEqual(item["command"], "")
+
     def test_batch_review_report_uses_post_cleanup_summary_as_verified_done(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",

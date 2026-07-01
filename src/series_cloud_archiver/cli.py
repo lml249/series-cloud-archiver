@@ -1092,6 +1092,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_share_receive_plan_parser.add_argument("--target-path", default="/未整理", help="115 receive target path; must stay under /未整理")
     batch_share_receive_plan_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
     batch_share_receive_plan_parser.add_argument("--limit", type=int, default=0, help="Maximum approval-required rows; 0 means all")
+    batch_share_receive_plan_parser.add_argument("--review-report", action="append", default=[], help="Latest batch-review-report JSON used to block stale ready previews; can be repeated")
     batch_share_receive_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     batch_share_receive_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
@@ -3722,6 +3723,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             target_path=args.target_path,
             storage=args.storage,
             limit=args.limit,
+            review_reports=[
+                report
+                for report in (load_optional_json_report(path) for path in args.review_report)
+                if isinstance(report, dict)
+            ],
         )
         rendered = render_batch_share_receive_plan(report, args.format)
         if args.output:

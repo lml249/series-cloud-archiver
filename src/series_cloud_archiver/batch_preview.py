@@ -31,6 +31,19 @@ PRIOR_REVIEW_DECISION_RANK = {
     "manual_review_required": 20,
     "ready_for_share_preview": 10,
 }
+RECEIVE_BLOCKING_REVIEW_DECISIONS = {
+    "blocked_after_finalize_gates",
+    "blocked_after_transfer_run",
+    "done_already_cleaned_noop",
+    "done_cleanup_executed",
+    "done_cleanup_verified",
+    "manual_review_preview_blocked",
+    "manual_review_transfer_failed",
+    "ready_for_cleanup_approval",
+    "ready_for_finalize_gates",
+    "ready_for_transfer_approval",
+    "skipped_manual_exclusion",
+}
 
 
 PreviewFunc = Callable[..., Dict[str, object]]
@@ -320,9 +333,11 @@ def build_batch_share_receive_plan(
     target_path: str = "/未整理",
     storage: str = "115-default",
     limit: int = 0,
+    review_reports: Optional[Sequence[Dict[str, object]]] = None,
 ) -> Dict[str, object]:
     """Build approval-gated MV3 share receive commands from successful previews."""
 
+    review_by_key = _preview_review_by_identity(review_reports or [])
     rows: List[Dict[str, object]] = []
     for index, item in enumerate(batch_share_preview_report.get("items", []), start=1):
         if not isinstance(item, dict):
@@ -333,6 +348,7 @@ def build_batch_share_receive_plan(
             env_file=env_file,
             target_path=target_path,
             storage=storage,
+            review_item=review_by_key.get(_identity_key(item), {}),
         )
         rows.append(row)
         if limit > 0 and sum(1 for candidate in rows if candidate.get("status") == "approval_required") >= limit:
@@ -348,6 +364,7 @@ def build_batch_share_receive_plan(
             "target_path": target_path,
             "storage": storage,
             "limit": limit,
+            "review_report_count": len(review_reports or []),
         },
         "items": rows,
         "safety": (
@@ -672,12 +689,17 @@ def _receive_plan_row(
     env_file: str,
     target_path: str,
     storage: str,
+    review_item: Optional[Dict[str, object]] = None,
 ) -> Dict[str, object]:
+    review_item = review_item or {}
     skip_reasons: List[str] = []
     if item.get("status") != "preview_ready_for_receive":
         skip_reasons.append("preview_not_ready_for_receive")
     if not item.get("preview_report_path"):
         skip_reasons.append("preview_report_path_missing")
+    review_decision = str(review_item.get("decision") or "")
+    if review_decision in RECEIVE_BLOCKING_REVIEW_DECISIONS:
+        skip_reasons.append(f"review_decision_blocked:{review_decision}")
 
     nested_previews = [row for row in item.get("nested_previews", []) if isinstance(row, dict)]
     receive_mode = ""
@@ -724,6 +746,8 @@ def _receive_plan_row(
         "keyword": str(item.get("keyword") or ""),
         "selection_index": int(item.get("selection_index") or 0),
         "expected_resource_title": str(item.get("expected_resource_title") or item.get("candidate_title") or ""),
+        "review_decision": review_decision,
+        "review_next_action": str(review_item.get("next_action") or ""),
         "channels": _preview_receive_channels(item),
         "browse_cid": browse_cid,
         "browse_index": browse_index,

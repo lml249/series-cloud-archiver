@@ -273,6 +273,8 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
 
 继续跑后续小批搜索/预览时，建议把最新 `batch-review-report` 用 `--review-report` 传给 `batch-pipeline` 或 `batch-share-preview`。预览 runner 会按 TMDB ID + 季号跳过已经是 `manual_review_transfer_failed`、`manual_review_preview_blocked`、`blocked_after_finalize_gates`、`skipped_manual_exclusion` 等决策的条目，避免把半完成转存、缺集预览或清理阻断项反复排回可执行预览队列。这个过滤只影响只读预览计划，不会接收分享、整理云盘、刮削、刷新 Emby 或删除本地。
 
+如果复用旧的 `batch-share-preview` 执行结果来生成接收计划，也要把最新 `batch-review-report` 传给 `batch-pipeline` 或 `batch-share-receive-plan --review-report`。这样同一 TMDB ID + 季号一旦已经被标成 `manual_review_transfer_failed`、`skipped_manual_exclusion`、`blocked_after_finalize_gates` 或已完成清理，就不会因为旧 preview 仍是 `preview_ready_for_receive` 而重新生成 `approval_required` 接收项。
+
 输出目录里最重要的文件：
 
 - `05-batch-plan.json`：分桶结果，决定哪些能自动预览、哪些要人工复核。

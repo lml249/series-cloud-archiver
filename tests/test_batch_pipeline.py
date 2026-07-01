@@ -467,6 +467,39 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertEqual(review["decision_counts"], {"manual_review_transfer_failed": 1})
         self.assertEqual(review["items"][0]["decision"], "manual_review_transfer_failed")
 
+    def test_pipeline_receive_plan_blocks_stale_ready_preview_by_existing_review(self) -> None:
+        review_report = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "manual_review_transfer_failed",
+                    "title": "干净剧 (2025) {tmdbid=456}",
+                    "tmdbid": 456,
+                    "season": 1,
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_pipeline(
+                output_dir=tmp,
+                run_id="stale-ready-preview-blocked",
+                config=ScanConfig(media_roots=[]),
+                env_file="/safe/.env",
+                cloud_report=self._cloud_report(),
+                share_search_plans=[self._share_search_plan()],
+                share_preview_report=self._ready_share_preview_report(),
+                review_reports=[review_report],
+                refresh_after_transfer=False,
+            )
+            receive_plan = json.loads((Path(report["run_dir"]) / "07-receive-plan.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(receive_plan["approval_required_items"], 0)
+        self.assertEqual(receive_plan["skipped_items"], 1)
+        self.assertEqual(receive_plan["items"][0]["status"], "skipped_receive")
+        self.assertIn("review_decision_blocked:manual_review_transfer_failed", receive_plan["items"][0]["skip_reasons"])
+        self.assertEqual(report["summary"]["receive_plan"]["approval_required_items"], 0)
+
     def test_pipeline_executes_share_search_when_requested(self) -> None:
         calls = []
 
