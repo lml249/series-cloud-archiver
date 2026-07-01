@@ -1488,6 +1488,8 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_search_plan_parser.add_argument("--cid", default="", help="Optional cloud folder id to search under")
     cloud_search_plan_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
     cloud_search_plan_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    cloud_search_plan_parser.add_argument("--checkpoint-output", default=None, help="Write a partial JSON/Markdown report after each searched row")
+    cloud_search_plan_parser.add_argument("--checkpoint-each", action="store_true", help="Keep checkpoint-output updated after every row instead of only at the end")
     cloud_search_plan_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     cloud_search_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
@@ -4287,6 +4289,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         config = config_from_env(args.env_file, [])
         if not config.mv3_base_url or not config.mv3_token:
             parser.error("mv3-cloud-search-plan requires MV3_BASE_URL and MV3_API_TOKEN")
+        checkpoint_path = args.checkpoint_output or (args.output if args.checkpoint_each else None)
+
+        def write_cloud_search_checkpoint(partial_report: Dict[str, object]) -> None:
+            checkpoint = partial_report.get("checkpoint") if isinstance(partial_report.get("checkpoint"), dict) else {}
+            status = str(checkpoint.get("status") or "")
+            completed = int(checkpoint.get("completed_items") or 0)
+            planned = int(checkpoint.get("planned_items") or 0)
+            current_title = str(checkpoint.get("current_title") or "")
+            print(f"[{completed}/{planned}] {status} MV3 cloud search: {current_title}", flush=True)
+            if checkpoint_path and args.checkpoint_each:
+                _write_text_output(checkpoint_path, render_mv3_cloud_search_plan_report(partial_report, args.format))
+
         report = search_mv3_cloud_files_for_transfer_plan(
             config.mv3_base_url,
             config.mv3_token,
@@ -4297,7 +4311,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             cid=args.cid,
             storage=args.storage,
             timeout=args.timeout,
+            checkpoint_callback=write_cloud_search_checkpoint,
         )
+        if checkpoint_path and not args.checkpoint_each:
+            _write_text_output(checkpoint_path, render_mv3_cloud_search_plan_report(report, args.format))
         rendered = render_mv3_cloud_search_plan_report(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)

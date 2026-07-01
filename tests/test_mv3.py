@@ -2231,6 +2231,55 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertIn("STRM library side", report["safety"])
         self.assertNotIn("secret-pickcode", rendered)
 
+    def test_cloud_search_plan_checkpoint_updates_after_each_row(self) -> None:
+        transfer_plan = {
+            "mode": "readonly-mv3-transfer-plan",
+            "items": [
+                {"title": "第一部", "tmdbid": 101, "season": 1, "expected_count": 1},
+                {"title": "第二部", "tmdbid": 102, "season": 1, "expected_count": 1},
+            ],
+        }
+        checkpoints = []
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps({"success": True, "data": {"items": [{"fn": "Demo", "fid": "folder-1", "fc": "0"}]}}).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+            report = search_mv3_cloud_files_for_transfer_plan(
+                "http://mv3.example",
+                "token",
+                transfer_plan,
+                limit=2,
+                keyword_limit=1,
+                checkpoint_callback=checkpoints.append,
+            )
+
+        self.assertEqual(report["planned_items"], 2)
+        self.assertEqual(report["items_with_results"], 2)
+        self.assertEqual(len(checkpoints), 4)
+        self.assertEqual(checkpoints[0]["checkpoint"]["status"], "in_progress")
+        self.assertEqual(checkpoints[0]["checkpoint"]["completed_items"], 0)
+        self.assertEqual(checkpoints[0]["checkpoint"]["current_title"], "第一部")
+        self.assertEqual(checkpoints[1]["checkpoint"]["status"], "completed")
+        self.assertEqual(checkpoints[1]["checkpoint"]["completed_items"], 1)
+        self.assertFalse(checkpoints[1]["checkpoint"]["complete"])
+        self.assertEqual(checkpoints[-1]["checkpoint"]["status"], "completed")
+        self.assertEqual(checkpoints[-1]["checkpoint"]["completed_items"], 2)
+        self.assertTrue(checkpoints[-1]["checkpoint"]["complete"])
+
     def test_cli_writes_cloud_search_plan_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -2285,6 +2334,81 @@ class MV3ProbeTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["mode"], "readonly-mv3-cloud-search-plan")
             self.assertEqual(payload["items_with_results"], 1)
+
+    def test_cli_writes_cloud_search_plan_checkpoint_each(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / ".env"
+            transfer_plan = tmp_path / "transfer.json"
+            output = tmp_path / "cloud-search-plan.json"
+            checkpoint = tmp_path / "cloud-search-plan.checkpoint.json"
+            env_file.write_text("MV3_BASE_URL=http://mv3.example\nMV3_API_TOKEN=token\n", encoding="utf-8")
+            transfer_plan.write_text(
+                json.dumps(
+                    {
+                        "mode": "readonly-mv3-transfer-plan",
+                        "items": [
+                            {"title": "第一部", "tmdbid": 101, "season": 1, "expected_count": 1},
+                            {"title": "第二部", "tmdbid": 102, "season": 1, "expected_count": 1},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            in_progress_payloads = []
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb):
+                    return False
+
+                def read(self, _limit=-1):
+                    if checkpoint.exists():
+                        in_progress_payloads.append(json.loads(checkpoint.read_text(encoding="utf-8")))
+                    return json.dumps({"success": True, "data": {"items": [{"fn": "Demo", "fid": "folder-1", "fc": "0"}]}}).encode("utf-8")
+
+                @property
+                def headers(self):
+                    return {"Content-Type": "application/json"}
+
+            with patch("urllib.request.urlopen", lambda _request, timeout: FakeResponse()):
+                code = main(
+                    [
+                        "mv3-cloud-search-plan",
+                        "--env-file",
+                        str(env_file),
+                        "--transfer-plan",
+                        str(transfer_plan),
+                        "--limit",
+                        "2",
+                        "--keyword-limit",
+                        "1",
+                        "--checkpoint-output",
+                        str(checkpoint),
+                        "--checkpoint-each",
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            self.assertTrue(in_progress_payloads)
+            self.assertEqual(in_progress_payloads[0]["checkpoint"]["status"], "in_progress")
+            self.assertEqual(in_progress_payloads[0]["checkpoint"]["completed_items"], 0)
+            checkpoint_payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+            output_payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(checkpoint_payload["checkpoint"]["status"], "completed")
+            self.assertEqual(checkpoint_payload["checkpoint"]["completed_items"], 2)
+            self.assertTrue(checkpoint_payload["checkpoint"]["complete"])
+            self.assertEqual(output_payload["planned_items"], 2)
+            self.assertEqual(output_payload["items_with_results"], 2)
 
     def test_cloud_index_plan_matches_root_folders_by_tmdb_and_title(self) -> None:
         transfer_plan = {

@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from .cleanup_verify import rewrite_strm_targets
 from .path_safety import looks_like_strm_side_path
@@ -718,30 +718,95 @@ def search_mv3_cloud_files_for_transfer_plan(
     cid: str = "",
     storage: str = "115-default",
     timeout: int = 60,
+    checkpoint_callback: Optional[Callable[[Dict[str, object]], None]] = None,
 ) -> Dict[str, object]:
     raw_items = [item for item in transfer_plan.get("items", []) if isinstance(item, dict)]
     start = max(0, offset)
     stop = start + limit if limit > 0 else len(raw_items)
     selected_items = raw_items[start:stop]
-    items = [
-        _cloud_search_plan_item(
-            base_url,
-            token,
-            index=start + local_index,
-            item=item,
-            keyword_limit=keyword_limit,
-            cid=cid,
-            storage=storage,
-            timeout=timeout,
+    items: List[Dict[str, object]] = []
+    for local_index, item in enumerate(selected_items, start=1):
+        title = str(item.get("title") or "")
+        if checkpoint_callback:
+            checkpoint_callback(
+                _build_mv3_cloud_search_plan_report(
+                    transfer_plan=transfer_plan,
+                    raw_item_count=len(raw_items),
+                    selected_item_count=len(selected_items),
+                    items=items,
+                    offset=start,
+                    limit=limit,
+                    keyword_limit=keyword_limit,
+                    cid=cid,
+                    storage=storage,
+                    completed_items=local_index - 1,
+                    current_title=title,
+                    status="in_progress",
+                )
+            )
+        items.append(
+            _cloud_search_plan_item(
+                base_url,
+                token,
+                index=start + local_index,
+                item=item,
+                keyword_limit=keyword_limit,
+                cid=cid,
+                storage=storage,
+                timeout=timeout,
+            )
         )
-        for local_index, item in enumerate(selected_items, start=1)
-    ]
-    return {
+        if checkpoint_callback:
+            checkpoint_callback(
+                _build_mv3_cloud_search_plan_report(
+                    transfer_plan=transfer_plan,
+                    raw_item_count=len(raw_items),
+                    selected_item_count=len(selected_items),
+                    items=items,
+                    offset=start,
+                    limit=limit,
+                    keyword_limit=keyword_limit,
+                    cid=cid,
+                    storage=storage,
+                    completed_items=local_index,
+                    current_title=title,
+                    status="completed",
+                )
+            )
+    return _build_mv3_cloud_search_plan_report(
+        transfer_plan=transfer_plan,
+        raw_item_count=len(raw_items),
+        selected_item_count=len(selected_items),
+        items=items,
+        offset=start,
+        limit=limit,
+        keyword_limit=keyword_limit,
+        cid=cid,
+        storage=storage,
+    )
+
+
+def _build_mv3_cloud_search_plan_report(
+    *,
+    transfer_plan: Dict[str, object],
+    raw_item_count: int,
+    selected_item_count: int,
+    items: List[Dict[str, object]],
+    offset: int,
+    limit: int,
+    keyword_limit: int,
+    cid: str,
+    storage: str,
+    completed_items: Optional[int] = None,
+    current_title: str = "",
+    status: str = "",
+) -> Dict[str, object]:
+    report: Dict[str, object] = {
         "mode": "readonly-mv3-cloud-search-plan",
         "source_mode": transfer_plan.get("mode", ""),
-        "available_items": len(raw_items),
-        "planned_items": len(items),
-        "offset": start,
+        "available_items": raw_item_count,
+        "planned_items": selected_item_count,
+        "offset": offset,
         "limit": limit,
         "keyword_limit": keyword_limit,
         "storage": storage,
@@ -750,10 +815,20 @@ def search_mv3_cloud_files_for_transfer_plan(
         "total_result_count": sum(int(item.get("result_count") or 0) for item in items),
         "folder_result_count": sum(int(item.get("folder_count") or 0) for item in items),
         "file_result_count": sum(int(item.get("file_count") or 0) for item in items),
-        "items": items,
+        "items": list(items),
         "warnings": list(transfer_plan.get("warnings", [])) if isinstance(transfer_plan.get("warnings"), list) else [],
         "safety": "readonly cloud search plan only; cloud storage is used only for transfer and STRM generation, and scraping must happen against the STRM library side. No share receive, organize transfer, STRM generation, rename, move, delete, qBittorrent action, hlink deletion, or filesystem deletion is performed",
     }
+    if completed_items is not None:
+        report["checkpoint"] = {
+            "enabled": True,
+            "completed_items": completed_items,
+            "planned_items": selected_item_count,
+            "current_title": current_title,
+            "status": status,
+            "complete": completed_items == selected_item_count,
+        }
+    return report
 
 
 def render_mv3_cloud_search_plan_report(report: Dict[str, object], output_format: str) -> str:

@@ -1060,6 +1060,24 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-cloud-search \
   --output reports/mv3-cloud-search-chuhan.json
 ```
 
+批量处理 transfer plan 时，用 `mv3-cloud-search-plan` 按行只读搜索云盘已有文件。长批次建议开启 checkpoint；命令会在每条开始和完成时刷新 partial report，便于中断后判断已经搜到哪里：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-cloud-search-plan \
+  --env-file /volume1/docker/series-cloud-archiver/.env \
+  --transfer-plan /volume1/docker/series-cloud-archiver/outputs/current-YYYYMMDD/mv3-transfer-plan.json \
+  --offset 0 \
+  --limit 5 \
+  --keyword-limit 4 \
+  --storage 115-default \
+  --checkpoint-output /volume1/docker/series-cloud-archiver/outputs/current-YYYYMMDD/cloud-search-plan-00-05.checkpoint.json \
+  --checkpoint-each \
+  --format json \
+  --output /volume1/docker/series-cloud-archiver/outputs/current-YYYYMMDD/cloud-search-plan-00-05.json
+```
+
+`checkpoint.complete=true` 只表示这一段只读搜索已跑完，不代表候选可自动转存；仍需后续 browse、集数/体积/路径、STRM、中文 NFO、Emby 和 cleanup 预览门禁全部通过。
+
 转存完成后，或者云盘搜索找到了候选目录后，先只读确认云盘目录内容：
 
 ```bash
