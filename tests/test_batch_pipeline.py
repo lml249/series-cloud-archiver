@@ -280,6 +280,73 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertIn("organize", [call[0] for call in transfer_calls])
         self.assertEqual(next(phase for phase in report["phases"] if phase["name"] == "share-preview")["status"], "input")
 
+    def test_pipeline_review_includes_transfer_failures(self) -> None:
+        class FailingTransferActions:
+            def receive_share(self, *args, **kwargs):
+                return {
+                    "mode": "mv3-share-receive-one-result",
+                    "ok": True,
+                    "target_path": kwargs.get("target_path"),
+                    "browse_selection": {"name": "干净剧"},
+                    "warnings": [],
+                }
+
+            def browse_cloud(self, *args, **kwargs):
+                path = str(kwargs.get("path") or "")
+                if path.startswith("/未整理"):
+                    return {
+                        "mode": "mv3-cloud-browse",
+                        "ok": True,
+                        "path": path,
+                        "summary": {"video_file_count": 10, "metadata_sidecar_file_count": 0},
+                        "items": [
+                            {"kind": "file", "media_kind": "video", "name": f"干净剧.E{episode:02d}.mkv", "episode": episode}
+                            for episode in range(1, 11)
+                        ],
+                    }
+                return {
+                    "mode": "mv3-cloud-browse",
+                    "ok": False,
+                    "path": path,
+                    "summary": {},
+                    "items": [],
+                    "warnings": ["path_info_not_found"],
+                }
+
+            def organize_transfer(self, *args, **kwargs):
+                return {
+                    "mode": "mv3-organize-transfer-result",
+                    "ok": False,
+                    "blockers": ["mv3_transfer_request_failed"],
+                    "warnings": ["mv3_transfer_request_failed:timeout:timed out"],
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_pipeline(
+                output_dir=tmp,
+                run_id="transfer-failed-review",
+                config=ScanConfig(media_roots=[], mv3_base_url="http://mv3.local", mv3_token="token"),
+                env_file="/safe/.env",
+                cloud_report=self._cloud_report(),
+                share_search_plans=[self._share_search_plan()],
+                share_preview_report=self._ready_share_preview_report(),
+                run_transfer_stage=True,
+                approve_receive=True,
+                approve_transfer=True,
+                refresh_after_transfer=False,
+                actions=BatchPipelineActions(transfer_actions=FailingTransferActions()),
+            )
+            run_dir = Path(report["run_dir"])
+            review = json.loads((run_dir / "14-review.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(report["summary"]["transfer_run"]["failed_items"], 1)
+        self.assertEqual(review["decision_counts"]["manual_review_transfer_failed"], 1)
+        item = review["items"][0]
+        self.assertEqual(item["decision"], "manual_review_transfer_failed")
+        self.assertEqual(item["transfer_status"], "failed_organize_transfer")
+        self.assertIn("mv3_transfer_request_failed", item["transfer_blockers"])
+        self.assertIn("不要清理本地", item["next_action"])
+
     def test_pipeline_executes_share_search_when_requested(self) -> None:
         calls = []
 
