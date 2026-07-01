@@ -203,6 +203,12 @@ from .transfer_plan import (
     render_mv3_transfer_plan,
     search_keywords_for_item,
 )
+from .transfer_wrong_root_remediation import (
+    build_transfer_wrong_root_repair_plan,
+    render_transfer_wrong_root_repair_plan,
+    render_transfer_wrong_root_repair_run,
+    run_transfer_wrong_root_repair_plan,
+)
 
 
 DEFAULT_SHARE_SEARCH_FALLBACK_CHANNELS = ["pansou"]
@@ -839,6 +845,41 @@ def build_parser() -> argparse.ArgumentParser:
     finalize_cleanup_remediation_run_parser.add_argument("--process-timeout", type=int, default=300, help="Per-command process timeout in seconds")
     finalize_cleanup_remediation_run_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
     finalize_cleanup_remediation_run_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    wrong_root_repair_plan_parser = subcommands.add_parser(
+        "mv3-transfer-wrong-root-repair-plan",
+        help="Build a conservative batch repair plan for transfer rows written under the MV3 unrecognized root",
+    )
+    wrong_root_repair_plan_parser.add_argument("--review-report", required=True, help="JSON report from batch-review-report")
+    wrong_root_repair_plan_parser.add_argument("--env-file", default="", help="Local env file; used only for generated command templates")
+    wrong_root_repair_plan_parser.add_argument("--cloud-media-storage", default="115-default", help="MV3 cloud storage slug")
+    wrong_root_repair_plan_parser.add_argument("--wrong-cloud-category", default="/已整理/未识别", help="Wrong cloud category root")
+    wrong_root_repair_plan_parser.add_argument("--correct-cloud-category", default="/已整理/series", help="Correct cloud category root")
+    wrong_root_repair_plan_parser.add_argument("--wrong-strm-segment", default="未识别", help="Wrong STRM path segment")
+    wrong_root_repair_plan_parser.add_argument("--correct-strm-segment", default="series", help="Correct STRM path segment")
+    wrong_root_repair_plan_parser.add_argument("--timeout", type=int, default=120, help="Per-request timeout in generated command templates")
+    wrong_root_repair_plan_parser.add_argument("--limit", type=int, default=1000, help="Maximum cloud folder items to request")
+    wrong_root_repair_plan_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
+    wrong_root_repair_plan_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
+
+    wrong_root_repair_run_parser = subcommands.add_parser(
+        "mv3-transfer-wrong-root-repair-run",
+        help="Dry-run or execute allowlisted wrong-root repair commands from a batch plan",
+    )
+    wrong_root_repair_run_parser.add_argument("--plan", required=True, help="JSON report from mv3-transfer-wrong-root-repair-plan")
+    wrong_root_repair_run_parser.add_argument("--output-dir", required=True, help="Directory for per-command reports")
+    wrong_root_repair_run_parser.add_argument("--title", action="append", default=[], help="Limit to titles containing this text; can be repeated")
+    wrong_root_repair_run_parser.add_argument("--limit", type=int, default=0, help="Maximum selected plan items; 0 means all")
+    wrong_root_repair_run_parser.add_argument("--execute-dry-run", action="store_true", help="Actually run the allowlisted cloud wrong-root repair dry-run commands")
+    wrong_root_repair_run_parser.add_argument(
+        "--execute-approved",
+        action="store_true",
+        help="Actually run approved cloud move/STRM rewrite followed by STRM-side root relocate",
+    )
+    wrong_root_repair_run_parser.add_argument("--cwd", default="", help="Working directory for executed commands; defaults to current directory")
+    wrong_root_repair_run_parser.add_argument("--process-timeout", type=int, default=600, help="Per-command process timeout in seconds")
+    wrong_root_repair_run_parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown")
+    wrong_root_repair_run_parser.add_argument("--output", default=None, help="Write report to file instead of stdout")
 
     finalize_remediation_run_parser = subcommands.add_parser("finalize-remediation-run", help="Dry-run or execute allowlisted readonly commands from a finalize remediation plan")
     finalize_remediation_run_parser.add_argument("--plan", required=True, help="JSON report from finalize-remediation-plan")
@@ -3102,6 +3143,49 @@ def main(argv: Optional[List[str]] = None) -> int:
             process_timeout=args.process_timeout,
         )
         rendered = render_finalize_remediation_run(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0 if report.get("ok") else 1
+
+    if args.command == "mv3-transfer-wrong-root-repair-plan":
+        review_report = load_optional_json_report(args.review_report)
+        if not isinstance(review_report, dict):
+            parser.error("mv3-transfer-wrong-root-repair-plan requires a valid --review-report JSON report")
+        report = build_transfer_wrong_root_repair_plan(
+            review_report,
+            env_file=args.env_file,
+            cloud_media_storage=args.cloud_media_storage,
+            wrong_cloud_category=args.wrong_cloud_category,
+            correct_cloud_category=args.correct_cloud_category,
+            wrong_strm_segment=args.wrong_strm_segment,
+            correct_strm_segment=args.correct_strm_segment,
+            timeout=args.timeout,
+            limit=args.limit,
+        )
+        rendered = render_transfer_wrong_root_repair_plan(report, args.format)
+        if args.output:
+            _write_text_output(args.output, rendered)
+        else:
+            print(rendered)
+        return 0
+
+    if args.command == "mv3-transfer-wrong-root-repair-run":
+        plan_report = load_optional_json_report(args.plan)
+        if not isinstance(plan_report, dict):
+            parser.error("mv3-transfer-wrong-root-repair-run requires a valid --plan JSON report")
+        report = run_transfer_wrong_root_repair_plan(
+            plan_report,
+            output_dir=args.output_dir,
+            titles=args.title,
+            limit=args.limit,
+            execute_dry_run=args.execute_dry_run,
+            execute_approved=args.execute_approved,
+            cwd=args.cwd,
+            process_timeout=args.process_timeout,
+        )
+        rendered = render_transfer_wrong_root_repair_run(report, args.format)
         if args.output:
             _write_text_output(args.output, rendered)
         else:
