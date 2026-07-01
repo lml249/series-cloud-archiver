@@ -273,6 +273,25 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
 - `15-extra-source-media-plan.json`：如果 finalize 被“源目录有额外视频但 hlink 未覆盖”阻断，这里会列出这些额外视频的 MV3 只读扫描命令和人工映射要求。
 - `00-pipeline-state.json`：整次运行的索引和摘要。
 
+如果 `08-transfer-run.json` 里出现整理超时、`strm_written_to_unrecognized_root`、staging 残留，或者云端媒体/STRM 被拆到多个目录，先用只读诊断命令固化现场，不要直接修目录或清理本地：
+
+```bash
+PYTHONPATH=src python3 -m series_cloud_archiver mv3-transfer-remediation-plan \
+  --transfer-run-report /example/app/outputs/current/pipeline-runs/RUN_ID/08-transfer-run.json \
+  --cloud-report /example/app/outputs/current/failed-season-cloud-browse-a.json \
+  --cloud-report /example/app/outputs/current/failed-season-cloud-browse-b.json \
+  --host-strm-root /example/host/strm \
+  --expected-tmdbid 286997 \
+  --expected-season 2 \
+  --expected-episode-count 30 \
+  --expected-episode-min 1 \
+  --expected-episode-max 30 \
+  --format json \
+  --output /example/app/outputs/current/failed-season-transfer-remediation-plan.json
+```
+
+`mv3-transfer-remediation-plan` 只读取 transfer-run、云端 browse/search 报告和本机 STRM 文件，输出云端分段、STRM 分段、集数覆盖和阻断原因。它不会移动云端媒体、生成或改写 STRM、刮削、刷新 Emby、操作 qB，也不会删除 hlink/source/本地文件。只要报告里还有 `cloud_media_split_across_multiple_roots`、`strm_split_across_multiple_roots`、`staging_media_still_present` 或 `unrecognized_root_present`，该剧季必须留在人工复核，不能进入 finalize/cleanup。
+
 如果 `13-finalize-run.json` 出现 `source_root_check_failed`，不要直接删除源目录。通常意思是 qB 源目录里还有 hlink 没覆盖的视频，例如 SP、making-of、花絮或错季文件。`batch-pipeline` 会自动生成 `15-extra-source-media-plan.json`；也可以单独重跑：
 
 ```bash
