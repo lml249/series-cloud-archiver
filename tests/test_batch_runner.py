@@ -633,6 +633,31 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("receive_approval_required", report["items"][0]["blockers"])
         self.assertIn("Batch Transfer Run", render_batch_transfer_run(report, "markdown"))
 
+    def test_batch_transfer_run_preflight_staging_browses_without_receive_approval(self) -> None:
+        actions = TransferFakeActions()
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_transfer(
+                self._receive_plan(),
+                output_dir=tmp,
+                config=FinalizeFakeConfig(),
+                preflight_staging=True,
+                actions=BatchTransferActions(
+                    receive_share=actions.receive_share,
+                    browse_cloud=actions.browse_cloud,
+                    organize_transfer=actions.organize_transfer,
+                ),
+            )
+
+        item = report["items"][0]
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["dry_run_items"], 1)
+        self.assertEqual(report["staging_preflight_items"], 1)
+        self.assertEqual(item["status"], "approval_required")
+        self.assertTrue(item["staging_preflight_ok"])
+        self.assertIn("staging_preflight", item["stage_reports"])
+        self.assertIn("receive_approval_required", item["blockers"])
+        self.assertEqual([call[0] for call in actions.calls], ["browse"])
+
     def test_batch_transfer_run_receives_browses_and_organizes_after_approval(self) -> None:
         actions = TransferFakeActions()
         with tempfile.TemporaryDirectory() as tmp:

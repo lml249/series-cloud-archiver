@@ -432,6 +432,7 @@ class CliEntrypointTest(unittest.TestCase):
                     "settings": {
                         "approve_receive": kwargs["approve_receive"],
                         "approve_transfer": kwargs["approve_transfer"],
+                        "preflight_staging": kwargs["preflight_staging"],
                         "output_dir": kwargs["output_dir"],
                         "host_strm_root": kwargs["host_strm_root"],
                     },
@@ -451,6 +452,7 @@ class CliEntrypointTest(unittest.TestCase):
                         str(stages),
                         "--host-strm-root",
                         "/example/host/strm",
+                        "--preflight-staging",
                         "--format",
                         "json",
                         "--output",
@@ -462,6 +464,7 @@ class CliEntrypointTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["mode"], "batch-transfer-run")
             self.assertEqual(payload["settings"]["approve_receive"], False)
+            self.assertTrue(payload["settings"]["preflight_staging"])
             self.assertEqual(payload["settings"]["host_strm_root"], "/example/host/strm")
             self.assertIn("receive_approval_required", payload["items"][0]["blockers"])
 

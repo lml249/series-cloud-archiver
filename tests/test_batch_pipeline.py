@@ -293,6 +293,53 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertIn("organize", [call[0] for call in transfer_calls])
         self.assertEqual(next(phase for phase in report["phases"] if phase["name"] == "share-preview")["status"], "input")
 
+    def test_pipeline_can_preflight_staging_without_receiving(self) -> None:
+        transfer_calls = []
+
+        class TransferActions:
+            def receive_share(self, *args, **kwargs):
+                transfer_calls.append(("receive", args, kwargs))
+                raise AssertionError("receive should not run during staging preflight")
+
+            def browse_cloud(self, *args, **kwargs):
+                transfer_calls.append(("browse", args, kwargs))
+                return {
+                    "mode": "mv3-cloud-browse",
+                    "ok": False,
+                    "path": kwargs.get("path"),
+                    "summary": {"video_file_count": 0, "metadata_sidecar_file_count": 0},
+                    "items": [],
+                    "warnings": ["path_info_not_found"],
+                }
+
+            def organize_transfer(self, *args, **kwargs):
+                transfer_calls.append(("organize", args, kwargs))
+                raise AssertionError("organize should not run during staging preflight")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_pipeline(
+                output_dir=tmp,
+                run_id="staging-preflight",
+                config=ScanConfig(media_roots=[], mv3_base_url="http://mv3.local", mv3_token="token"),
+                env_file="/safe/.env",
+                cloud_report=self._cloud_report(),
+                share_search_plans=[self._share_search_plan()],
+                share_preview_report=self._ready_share_preview_report(),
+                run_transfer_stage=True,
+                preflight_staging=True,
+                refresh_after_transfer=False,
+                actions=BatchPipelineActions(transfer_actions=TransferActions()),
+            )
+            run_dir = Path(report["run_dir"])
+            transfer_run = json.loads((run_dir / "08-transfer-run.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(transfer_run["staging_preflight_items"], 1)
+        self.assertEqual(transfer_run["dry_run_items"], 1)
+        self.assertEqual(transfer_run["items"][0]["status"], "approval_required")
+        self.assertTrue(transfer_run["items"][0]["staging_preflight_ok"])
+        self.assertEqual([call[0] for call in transfer_calls], ["browse"])
+        self.assertEqual(report["summary"]["transfer_run"]["staging_preflight_items"], 1)
+
     def test_pipeline_review_includes_transfer_failures(self) -> None:
         class FailingTransferActions:
             def __init__(self):

@@ -238,6 +238,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-pipeline \
 - 默认分享预览计划会同时覆盖 `auto_ready_for_transfer_preview` 和可预览的 `manual_review` 条目；可以用 `--preview-bucket` 缩小范围。
 - `--execute-share-search`：实际调用 MV3 资源搜索，只读，不转存。
 - `--execute-preview`：实际解析分享并 browse，只读，不转存。
+- `--run-transfer-stage --preflight-staging`：只读检查每个接收计划的预期 staging 目录，不接收分享、不整理云盘，适合每批执行前确认 `/未整理/...` 没有残留冲突。
 - `--run-transfer-stage --approve-receive`：允许把预览完整的分享接收到 `/未整理`。
 - `--run-transfer-stage --approve-transfer`：允许交给 MV3 整理到 `/已整理` 并生成 STRM。
 - `batch-transfer-run` 在真正接收前会只读检查 `receive-plan` 里的 `expected_staging_path`，例如 `/未整理/Season 1`。如果该 staging 路径已经存在、含视频、含文件或含子目录，runner 会停在 `failed_staging_preflight`，不会调用分享接收，避免和之前半完成的 MV3 转存残留混在一起。

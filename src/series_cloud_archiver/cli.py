@@ -960,6 +960,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_transfer_run_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
     batch_transfer_run_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
     batch_transfer_run_parser.add_argument("--transfer-timeout", type=int, default=180, help="MV3 organize transfer timeout in seconds")
+    batch_transfer_run_parser.add_argument("--preflight-staging", action="store_true", help="Readonly-browse expected staging paths without receiving shares")
     batch_transfer_run_parser.add_argument("--approve-receive", action="store_true", help="Required: actually receive approved share items to staging")
     batch_transfer_run_parser.add_argument("--approve-transfer", action="store_true", help="Required: actually ask MV3 to organize received items and generate STRM")
     batch_transfer_run_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
@@ -1074,6 +1075,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_pipeline_parser.add_argument("--preview-timeout", type=int, default=60)
     batch_pipeline_parser.add_argument("--max-nested-depth", type=int, default=3)
     batch_pipeline_parser.add_argument("--run-transfer-stage", action="store_true", help="Run approval-gated MV3 receive/organize stage")
+    batch_pipeline_parser.add_argument("--preflight-staging", action="store_true", help="Readonly-browse expected transfer staging paths during the transfer stage")
     batch_pipeline_parser.add_argument("--approve-receive", action="store_true", help="Allow MV3 share receive during transfer stage")
     batch_pipeline_parser.add_argument("--approve-transfer", action="store_true", help="Allow MV3 organize transfer and STRM generation")
     batch_pipeline_parser.add_argument("--transfer-target-path", default="/未整理", help="115 staging receive root; must start with /未整理")
@@ -3274,6 +3276,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             title_filters=args.title,
             approve_receive=args.approve_receive,
             approve_transfer=args.approve_transfer,
+            preflight_staging=args.preflight_staging,
             target_path=args.target_path,
             organize_target_dir=args.organize_target_dir,
             strm_dir=args.strm_dir,
@@ -3436,6 +3439,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             run_transfer_stage=args.run_transfer_stage,
             approve_receive=args.approve_receive,
             approve_transfer=args.approve_transfer,
+            preflight_staging=args.preflight_staging,
             transfer_target_path=args.transfer_target_path,
             organize_target_dir=args.organize_target_dir,
             transfer_strm_dir=args.transfer_strm_dir,

@@ -32,6 +32,7 @@ def run_batch_transfer(
     title_filters: Optional[Sequence[str]] = None,
     approve_receive: bool = False,
     approve_transfer: bool = False,
+    preflight_staging: bool = False,
     target_path: str = "/未整理",
     organize_target_dir: str = "/已整理",
     strm_dir: str = "/strm",
@@ -59,6 +60,7 @@ def run_batch_transfer(
                 actions=actions,
                 approve_receive=approve_receive,
                 approve_transfer=approve_transfer,
+                preflight_staging=preflight_staging,
                 target_path=target_path,
                 organize_target_dir=organize_target_dir,
                 strm_dir=strm_dir,
@@ -78,9 +80,11 @@ def run_batch_transfer(
         "organized_items": sum(1 for item in results if item.get("organize_ok")),
         "dry_run_items": sum(1 for item in results if item.get("status") == "approval_required"),
         "failed_items": sum(1 for item in results if str(item.get("status") or "").startswith("failed")),
+        "staging_preflight_items": sum(1 for item in results if item.get("staging_preflight_ok") is not None),
         "settings": {
             "approve_receive": approve_receive,
             "approve_transfer": approve_transfer,
+            "preflight_staging": preflight_staging,
             "target_path": target_path,
             "organize_target_dir": organize_target_dir,
             "strm_dir": strm_dir,
@@ -94,7 +98,8 @@ def run_batch_transfer(
             "batch transfer runner is approval-gated: receive requires approve_receive=True and organize transfer "
             "requires approve_transfer=True. It only receives to the staging root, browses cloud folders, and asks MV3 "
             "to organize videos plus STRM under approved roots. It does not scrape cloud media, refresh Emby, touch "
-            "qBittorrent, delete hlinks/source files, or clean local storage."
+            "qBittorrent, delete hlinks/source files, or clean local storage. With preflight_staging=True and no "
+            "receive approval it only browses the expected staging target paths."
         ),
     }
 
@@ -154,6 +159,7 @@ def _run_transfer_item(
     actions: BatchTransferActions,
     approve_receive: bool,
     approve_transfer: bool,
+    preflight_staging: bool,
     target_path: str,
     organize_target_dir: str,
     strm_dir: str,
@@ -191,7 +197,7 @@ def _run_transfer_item(
         row["status"] = "failed_preflight"
         row["blockers"] = blockers
         return row
-    if not approve_receive:
+    if not approve_receive and not preflight_staging:
         row["blockers"] = ["receive_approval_required"]
         return row
 
@@ -208,8 +214,14 @@ def _run_transfer_item(
     row["stage_reports"]["staging_preflight"] = str(staging_preflight_path)
     staging_blockers = _staging_preflight_blockers(staging_preflight_report)
     if staging_blockers:
+        row["staging_preflight_ok"] = False
         row["status"] = "failed_staging_preflight"
         row["blockers"] = staging_blockers
+        return row
+    row["staging_preflight_ok"] = True
+    if not approve_receive:
+        row["blockers"] = ["receive_approval_required"]
+        row["warnings"] = sorted(set(_string_list(row.get("warnings")) + ["staging_preflight_ok"]))
         return row
 
     receive_report = actions.receive_share(
