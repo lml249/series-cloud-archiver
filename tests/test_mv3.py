@@ -3318,6 +3318,79 @@ class MV3ProbeTest(unittest.TestCase):
         self.assertNotIn("parsed-code", rendered)
         self.assertNotIn("abcd", rendered)
 
+    def test_share_preview_relocates_selection_by_expected_resource_title(self) -> None:
+        seen = []
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb):
+                return False
+
+            def read(self, _limit=-1):
+                return json.dumps(self.payload).encode("utf-8")
+
+            @property
+            def headers(self):
+                return {"Content-Type": "application/json"}
+
+        def fake_urlopen(request, timeout):
+            path = request.full_url.replace("http://mv3.example", "")
+            body = json.loads(request.data.decode("utf-8"))
+            seen.append((path, body))
+            if path == "/api/v1/resource-search/search":
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {"title": "Other", "share_link": "https://example.test/s/other", "share_code": "other"},
+                                {"title": "目标剧 S01E01-E02", "share_link": "https://example.test/s/target", "share_code": "safe-code"},
+                            ]
+                        },
+                    }
+                )
+            if path == "/api/v1/share-transfer/parse":
+                self.assertEqual(body["share_url"], "https://example.test/s/target")
+                return FakeResponse({"success": True, "data": {"share_code": "parsed-code"}})
+            if path == "/api/v1/share-transfer/browse":
+                return FakeResponse(
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {"name": "目标剧.S01E01.mkv", "size": "1024", "is_dir": False},
+                                {"name": "目标剧.S01E02.mkv", "size": "1024", "is_dir": False},
+                            ]
+                        },
+                    }
+                )
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            report = preview_mv3_share(
+                "http://mv3.example",
+                "token",
+                "目标剧",
+                selection_index=7,
+                expected_episode_count=2,
+                expected_episode_min=1,
+                expected_episode_max=2,
+                expected_title_contains="目标剧",
+                expected_resource_title="目标剧 S01E01-E02",
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["selection_index"], 2)
+        self.assertIn("selection_index_relocated_by_expected_resource_title", report["warnings"])
+        self.assertEqual([item[0] for item in seen], ["/api/v1/resource-search/search", "/api/v1/share-transfer/parse", "/api/v1/share-transfer/browse"])
+
     def test_share_preview_requests_full_folder_and_keeps_more_than_50_items(self) -> None:
         seen = []
 

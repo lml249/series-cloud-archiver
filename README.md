@@ -480,6 +480,8 @@ PYTHONPATH=src python3 -m series_cloud_archiver batch-share-preview \
 
 默认模式不会读取 MV3 API，也不会解析分享；它只输出将要预览的 `mv3-share-preview` 命令。默认只选择“最佳候选分数够高，且唯一阻断是 `episode_coverage_unclear`”的条目；错季、标题不匹配、体积明显不对、疑似中文副标题串剧的候选会继续跳过并写入原因。
 
+预览计划会同时记录候选的 `selection_index` 和 `expected_resource_title`。真正执行预览或接收时，脚本会重新搜索 MV3，并要求当前选中资源标题与 dry-run 计划一致；如果搜索排序变化导致索引漂移，但同标题资源在结果中唯一存在，runner 会自动重定位到新的索引并把新索引写回报告。标题不匹配或同标题不唯一时会阻断，避免把相邻搜索结果误转存。
+
 确认 dry-run 计划后，可以执行只读预览：
 
 ```bash

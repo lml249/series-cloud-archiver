@@ -1264,6 +1264,7 @@ def build_parser() -> argparse.ArgumentParser:
     share_preview_parser.add_argument("--expected-episode-max", type=int, default=0, help="Readonly safety check: last episode number")
     share_preview_parser.add_argument("--expected-episode", action="append", default=[], help="Optional explicit expected episode list/range, comma-separated; can be repeated")
     share_preview_parser.add_argument("--expected-title-contains", default="", help="Safety check: selected title must contain this text")
+    share_preview_parser.add_argument("--expected-resource-title", default="", help="Safety check: selected search result title must exactly match this value")
     share_preview_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug used when browsing the share")
     share_preview_parser.add_argument("--channel", action="append", default=[], help="Optional channel filter; can be repeated")
     share_preview_parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
@@ -1284,6 +1285,7 @@ def build_parser() -> argparse.ArgumentParser:
     share_receive_parser.add_argument("--expected-episode-min", type=int, default=0, help="Safety check for --receive-all-files: first episode number")
     share_receive_parser.add_argument("--expected-episode-max", type=int, default=0, help="Safety check for --receive-all-files: last episode number")
     share_receive_parser.add_argument("--expected-title-contains", required=True, help="Safety check: selected title must contain this text")
+    share_receive_parser.add_argument("--expected-resource-title", default="", help="Safety check: selected search result title must exactly match this value")
     share_receive_parser.add_argument("--target-path", default="/未整理", help="115 target path; defaults to /未整理")
     share_receive_parser.add_argument("--storage", default="115-default", help="MV3 cloud storage slug")
     share_receive_parser.add_argument("--channel", action="append", default=[], help="Optional channel filter; can be repeated")
@@ -3891,6 +3893,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             expected_episodes=_parse_int_list_args(args.expected_episode),
             channels=args.channel,
             expected_title_contains=args.expected_title_contains,
+            expected_resource_title=args.expected_resource_title,
             storage=args.storage,
             timeout=args.timeout,
         )
@@ -3923,6 +3926,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             expected_episode_max=args.expected_episode_max,
             channels=args.channel,
             expected_title_contains=args.expected_title_contains,
+            expected_resource_title=args.expected_resource_title,
             target_path=args.target_path,
             storage=args.storage,
             timeout=args.timeout,

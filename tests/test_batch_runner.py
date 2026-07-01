@@ -5279,6 +5279,7 @@ class BatchSharePreviewTest(unittest.TestCase):
             calls.append((base_url, token, keyword, kwargs))
             return {
                 "ok": True,
+                "selection_index": 5,
                 "episode_count": 4,
                 "episodes": [1, 2, 3, 4],
                 "blockers": [],
@@ -5301,8 +5302,10 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertEqual(report["ready_for_receive_items"], 1)
         self.assertEqual(report["items"][0]["status"], "preview_ready_for_receive")
         self.assertEqual(report["items"][0]["preview_episode_count"], 4)
+        self.assertEqual(report["items"][0]["selection_index"], 5)
         self.assertEqual(calls[0][2], "巅峰对决")
         self.assertEqual(calls[0][3]["selection_index"], 3)
+        self.assertEqual(calls[0][3]["expected_resource_title"], "巅峰对决 S01E04")
         self.assertEqual(calls[0][3]["expected_episode_count"], 4)
         self.assertEqual(len(written), 1)
 

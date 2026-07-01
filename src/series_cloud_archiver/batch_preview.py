@@ -140,6 +140,8 @@ def build_batch_share_preview_plan(
             row["preview_episode_count"] = int(report.get("episode_count") or 0)
             row["preview_missing_expected"] = _int_list(report.get("missing_expected"))
             row["preview_unexpected_episodes"] = _int_list(report.get("unexpected_episodes"))
+            if int(report.get("selection_index") or 0):
+                row["selection_index"] = int(report.get("selection_index") or 0)
             row["status"] = "preview_ready_for_receive" if bool(report.get("ok")) else "preview_blocked"
             if preview_dir:
                 report_path = preview_dir / _preview_report_filename(row)
@@ -206,6 +208,7 @@ def _run_preview(
         expected_episodes=_int_list(row.get("expected_episodes")),
         channels=channels,
         expected_title_contains=str(row.get("expected_title_contains") or ""),
+        expected_resource_title=str(row.get("expected_resource_title") or row.get("candidate_title") or ""),
         storage=storage,
         timeout=timeout,
     )
@@ -452,6 +455,7 @@ def _preview_row(
         "expected_title_contains": _title_contains(title),
         "keyword": keyword,
         "selection_index": selection_index,
+        "expected_resource_title": str(best.get("title") or ""),
         "candidate_title": str(best.get("title") or ""),
         "candidate_score": int(best.get("score") or 0) if best else 0,
         "candidate_size_delta_ratio": best.get("size_delta_ratio") if best else None,
@@ -630,6 +634,8 @@ def _preview_command(row: Dict[str, object], *, env_file: str, storage: str) -> 
             str(row.get("expected_episode_count") or 0),
             "--expected-title-contains",
             str(row.get("expected_title_contains") or ""),
+            "--expected-resource-title",
+            str(row.get("expected_resource_title") or row.get("candidate_title") or ""),
             "--storage",
             storage,
             "--format",
@@ -717,6 +723,7 @@ def _receive_plan_row(
         "season": int(item.get("season") or 0),
         "keyword": str(item.get("keyword") or ""),
         "selection_index": int(item.get("selection_index") or 0),
+        "expected_resource_title": str(item.get("expected_resource_title") or item.get("candidate_title") or ""),
         "channels": _preview_receive_channels(item),
         "browse_cid": browse_cid,
         "browse_index": browse_index,
@@ -791,6 +798,8 @@ def _receive_command(row: Dict[str, object], *, env_file: str) -> str:
             str(row.get("expected_episode_max") or 0),
             "--expected-title-contains",
             str(row.get("expected_title_contains") or ""),
+            "--expected-resource-title",
+            str(row.get("expected_resource_title") or ""),
             "--target-path",
             str(row.get("target_path") or ""),
             "--storage",

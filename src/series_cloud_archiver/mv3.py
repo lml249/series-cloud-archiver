@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .cleanup_verify import rewrite_strm_targets
 from .path_safety import looks_like_strm_side_path
@@ -2231,11 +2231,22 @@ def preview_mv3_share(
     expected_episodes: Optional[List[int]] = None,
     channels: Optional[List[str]] = None,
     expected_title_contains: str = "",
+    expected_resource_title: str = "",
     storage: str = "115-default",
     timeout: int = 60,
 ) -> Dict[str, object]:
     client = MV3Client(base_url, token, timeout=timeout)
-    resolution = _resolve_mv3_share(client, keyword, selection_index, browse_cid, browse_limit, channels, expected_title_contains, storage)
+    resolution = _resolve_mv3_share(
+        client,
+        keyword,
+        selection_index,
+        browse_cid,
+        browse_limit,
+        channels,
+        expected_title_contains,
+        storage,
+        expected_resource_title=expected_resource_title,
+    )
     report = _public_share_resolution(resolution)
     search = report.get("search") if isinstance(report.get("search"), dict) else {}
     parse_report = report.get("parse") if isinstance(report.get("parse"), dict) else {}
@@ -2292,12 +2303,23 @@ def receive_mv3_share(
     expected_episode_max: int = 0,
     channels: Optional[List[str]] = None,
     expected_title_contains: str = "",
+    expected_resource_title: str = "",
     target_path: str = "/未整理",
     storage: str = "115-default",
     timeout: int = 60,
 ) -> Dict[str, object]:
     client = MV3Client(base_url, token, timeout=timeout)
-    resolution = _resolve_mv3_share(client, keyword, selection_index, browse_cid, browse_limit, channels, expected_title_contains, storage)
+    resolution = _resolve_mv3_share(
+        client,
+        keyword,
+        selection_index,
+        browse_cid,
+        browse_limit,
+        channels,
+        expected_title_contains,
+        storage,
+        expected_resource_title=expected_resource_title,
+    )
     report = _public_share_resolution(resolution)
     warnings = list(report.get("warnings", [])) if isinstance(report.get("warnings"), list) else []
     raw = resolution.get("_raw") if isinstance(resolution.get("_raw"), dict) else {}
@@ -5787,6 +5809,7 @@ def _resolve_mv3_share(
     channels: Optional[List[str]],
     expected_title_contains: str,
     storage: str,
+    expected_resource_title: str = "",
 ) -> Dict[str, object]:
     search_body: Dict[str, object] = {"keyword": keyword}
     if channels:
@@ -5831,19 +5854,33 @@ def _resolve_mv3_share(
 
     selected_summary = _resource_search_summary(selected, selection_index) if selected else {}
     selected_title = str(selected_summary.get("title") or "")
+    selected_for_transfer = selected
+    expected_resource_title = str(expected_resource_title or "").strip()
+    if expected_resource_title and selected_title != expected_resource_title:
+        relocated = _unique_resource_by_title(items, expected_resource_title)
+        if relocated:
+            selection_index, selected = relocated
+            selected_summary = _resource_search_summary(selected, selection_index)
+            selected_title = str(selected_summary.get("title") or "")
+            selected_for_transfer = selected
+            warnings.append("selection_index_relocated_by_expected_resource_title")
+        else:
+            warnings.append("expected_resource_title_mismatch")
+            selected_for_transfer = {}
+            selected_title = ""
     if expected_title_contains and expected_title_contains not in selected_title:
         warnings.append("expected_title_contains_mismatch")
-        selected = {}
+        selected_for_transfer = {}
 
     share_code = ""
     receive_code = ""
     parse_report: Dict[str, object] = {"skipped": True}
     browse_report: Dict[str, object] = {"skipped": True}
     browse_payload: object = {}
-    if selected:
-        share_url = _first_raw_present(selected, ["share_url", "share_link", "url", "link"])
-        share_code = _first_raw_present(selected, ["share_code", "shareId", "share_id"])
-        receive_code = _first_raw_present(selected, ["receive_code", "receiveCode", "password", "pwd"])
+    if selected_for_transfer:
+        share_url = _first_raw_present(selected_for_transfer, ["share_url", "share_link", "url", "link"])
+        share_code = _first_raw_present(selected_for_transfer, ["share_code", "shareId", "share_id"])
+        receive_code = _first_raw_present(selected_for_transfer, ["receive_code", "receiveCode", "password", "pwd"])
         if not share_url:
             warnings.append("selected_resource_has_no_share_url")
         else:
@@ -5915,6 +5952,7 @@ def _resolve_mv3_share(
         "browse_cid": browse_cid,
         "browse_limit": max(1, int(browse_limit or 1)),
         "storage": storage,
+        "expected_resource_title": expected_resource_title,
         "selected": selected_summary,
         "search": {
             "endpoint": {"method": "POST", "path": "/api/v1/resource-search/search"},
@@ -5936,6 +5974,17 @@ def _resolve_mv3_share(
     }
 
 
+def _unique_resource_by_title(items: Sequence[Dict[str, object]], expected_title: str) -> Tuple[int, Dict[str, object]]:
+    matches: List[Tuple[int, Dict[str, object]]] = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        summary = _resource_search_summary(item, index)
+        if str(summary.get("title") or "") == expected_title:
+            matches.append((index, item))
+    return matches[0] if len(matches) == 1 else (0, {})
+
+
 def _public_share_resolution(resolution: Dict[str, object]) -> Dict[str, object]:
     return {key: value for key, value in resolution.items() if key != "_raw"}
 
@@ -5951,6 +6000,8 @@ def _mv3_share_preview_blockers(report: Dict[str, object]) -> List[str]:
         blockers.append("resource_search_failed")
     if not selected:
         blockers.append("share_selection_missing")
+    if "expected_resource_title_mismatch" in warnings:
+        blockers.append("expected_resource_title_mismatch")
     if "expected_title_contains_mismatch" in warnings:
         blockers.append("expected_title_contains_mismatch")
     if selected:
