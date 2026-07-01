@@ -596,6 +596,7 @@ class BatchRunnerTest(unittest.TestCase):
                     "season": 1,
                     "keyword": "折腰",
                     "selection_index": 2,
+                    "channels": ["pansou"],
                     "browse_cid": "parent-cid",
                     "browse_index": 1,
                     "receive_mode": "receive_selected_folder",
@@ -699,6 +700,7 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual([call[0] for call in actions.calls], ["browse", "receive", "browse", "organize", "browse", "browse"])
         self.assertEqual(actions.calls[0][1]["kwargs"]["path"], "/未整理/折腰")
         self.assertEqual(actions.calls[1][1]["kwargs"]["target_path"], "/未整理")
+        self.assertEqual(actions.calls[1][1]["kwargs"]["channels"], ["pansou"])
         self.assertEqual(actions.calls[2][1]["kwargs"]["path"], "/未整理/折腰")
         self.assertEqual(actions.calls[3][1]["kwargs"]["target_dir"], "/已整理")
         self.assertEqual(actions.calls[3][1]["kwargs"]["strm_dir"], "/strm")
@@ -4187,6 +4189,7 @@ class BatchSharePreviewTest(unittest.TestCase):
                     "cloud_title_path": "/已整理/series/折腰 (2025) {tmdbid=296753}",
                     "required_target_prefix": "/已整理/series/折腰 (2025) {tmdbid=296753}",
                     "preview_report_path": "/reports/share-preview-zheyao.json",
+                    "preview_report": {"selected": {"channel": "pansou"}},
                     "nested_previews": [
                         {"depth": 1, "cid": "series-folder", "index": "1", "folder_name": "折腰 (2025)", "ok": False},
                         {"depth": 2, "cid": "season-folder", "index": "1", "folder_name": "Season 1", "ok": True},
@@ -4216,11 +4219,13 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertEqual(ready["cloud_media_path"], "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1")
         self.assertEqual(ready["cloud_title_path"], "/已整理/series/折腰 (2025) {tmdbid=296753}")
         self.assertEqual(ready["required_target_prefix"], "/已整理/series/折腰 (2025) {tmdbid=296753}")
+        self.assertEqual(ready["channels"], ["pansou"])
         self.assertEqual(ready["browse_cid"], "series-folder")
         self.assertEqual(ready["browse_index"], 1)
         self.assertEqual(ready["verified_folder_browse_report"], "/reports/share-preview-zheyao.json")
         self.assertEqual(ready["expected_staging_path"], "/未整理/Season 1")
         self.assertIn("--receive-selected-folder", ready["command"])
+        self.assertIn("--channel pansou", ready["command"])
         self.assertIn("--browse-cid series-folder", ready["command"])
         self.assertIn("--verified-folder-browse-report /reports/share-preview-zheyao.json", ready["command"])
         self.assertNotIn("--approve-receive", ready["command"])

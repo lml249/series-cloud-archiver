@@ -567,6 +567,7 @@ def _receive_plan_row(
         "season": int(item.get("season") or 0),
         "keyword": str(item.get("keyword") or ""),
         "selection_index": int(item.get("selection_index") or 0),
+        "channels": _preview_receive_channels(item),
         "browse_cid": browse_cid,
         "browse_index": browse_index,
         "receive_mode": receive_mode,
@@ -652,12 +653,23 @@ def _receive_command(row: Dict[str, object], *, env_file: str) -> str:
     )
     if row.get("browse_cid"):
         args.extend(["--browse-cid", str(row.get("browse_cid") or "")])
+    for channel in _string_list(row.get("channels")):
+        args.extend(["--channel", channel])
     if row.get("receive_mode") == "receive_selected_folder":
         args.append("--receive-selected-folder")
         args.extend(["--verified-folder-browse-report", str(row.get("verified_folder_browse_report") or "")])
     elif row.get("receive_mode") == "receive_all_files":
         args.append("--receive-all-files")
     return " ".join(_shell_quote(part) for part in args) + "  # approval required before execution"
+
+
+def _preview_receive_channels(item: Dict[str, object]) -> List[str]:
+    preview_report = item.get("preview_report") if isinstance(item.get("preview_report"), dict) else {}
+    selected = preview_report.get("selected") if isinstance(preview_report.get("selected"), dict) else {}
+    channels = _string_list(item.get("channels"))
+    if not channels and str(selected.get("channel") or ""):
+        channels = [str(selected.get("channel") or "")]
+    return channels
 
 
 def _title_contains(title: str) -> str:

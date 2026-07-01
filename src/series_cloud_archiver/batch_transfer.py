@@ -237,7 +237,7 @@ def _run_transfer_item(
         expected_episode_count=expected_count,
         expected_episode_min=expected_min,
         expected_episode_max=expected_max,
-        channels=[],
+        channels=_string_list(item.get("channels")),
         expected_title_contains=str(item.get("expected_title_contains") or title),
         target_path=target_path,
         storage=storage,
