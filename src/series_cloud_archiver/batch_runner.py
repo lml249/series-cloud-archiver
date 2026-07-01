@@ -1084,7 +1084,7 @@ def _run_finalize_item(
             _config_value(config, "emby_base_url"),
             _config_value(config, "emby_key"),
             title=title,
-            updated_paths=[service_root],
+            updated_paths=_emby_media_updated_paths(service_root),
             stale_path_prefixes=[],
             strm_path_prefixes=[service_root],
             update_type="Created",
@@ -1203,7 +1203,7 @@ def _run_finalize_item(
                 _config_value(config, "emby_base_url"),
                 _config_value(config, "emby_key"),
                 title=title,
-                updated_paths=[service_root],
+                updated_paths=_emby_media_updated_paths(service_root),
                 stale_path_prefixes=_emby_stale_path_prefixes(hlink_root, include_season=False),
                 strm_path_prefixes=[_series_service_root(service_root)],
                 update_type="Created",
@@ -1524,6 +1524,15 @@ def _valid_full_hashes(values: Sequence[str]) -> List[str]:
     return hashes
 
 
+def _unique_nonempty(values: Sequence[str]) -> List[str]:
+    result: List[str] = []
+    for value in values:
+        cleaned = str(value or "").rstrip("/")
+        if cleaned and cleaned not in result:
+            result.append(cleaned)
+    return result
+
+
 def _cleanup_source_root_variants(source_paths: Sequence[str], aliases: Dict[str, str]) -> List[str]:
     variants: List[str] = []
     for path in source_paths:
@@ -1588,6 +1597,12 @@ def _series_service_root(service_root: str) -> str:
     if _cloud_path_looks_like_season(path):
         return path.rsplit("/", 1)[0]
     return path
+
+
+def _emby_media_updated_paths(service_root: str) -> List[str]:
+    season_root = str(service_root or "").rstrip("/")
+    series_root = _series_service_root(season_root)
+    return _unique_nonempty([series_root, season_root])
 
 
 def _emby_stale_path_prefixes(hlink_root: str, *, include_season: bool = True) -> List[str]:
@@ -2040,6 +2055,7 @@ def _finalize_commands(
     strm_q = _q(strm_root)
     mp_q = _q(mp_root)
     service_q = _q(service_root)
+    emby_updated_args = " ".join(f"--updated-path {_q(path)}" for path in _emby_media_updated_paths(service_root))
     hlink_q = _q(hlink_root)
     cloud_title_q = _q(cloud_title_path)
     required_q = _q(cloud_required_prefix)
@@ -2081,7 +2097,7 @@ def _finalize_commands(
             "output": f"{report_prefix}-emby-media-updated.json",
             "command": (
                 f"PYTHONPATH=src python3 -m series_cloud_archiver emby-media-updated {env}"
-                f"--title {title_q} --updated-path {service_q} --update-type Created "
+                f"--title {title_q} {emby_updated_args} --update-type Created "
                 f"--strm-path-prefix {service_q} --expected-episode-count {expected_count} "
                 f"--expected-episode-min 1 --expected-episode-max {expected_count} "
                 f"--format json --output {report_prefix}-emby-media-updated.json"

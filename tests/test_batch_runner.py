@@ -871,7 +871,9 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(item["mp_strm_root"], "/example/mp/strm/series/鱿鱼游戏 (2021) {tmdbid=93405}/Season 1")
         self.assertEqual(item["service_strm_root"], "/example/emby/strm/series/鱿鱼游戏 (2021) {tmdbid=93405}/Season 1")
         self.assertIn("--mp-path '/example/mp/strm/series/鱿鱼游戏 (2021) {tmdbid=93405}/Season 1'", commands)
+        self.assertIn("--updated-path '/example/emby/strm/series/鱿鱼游戏 (2021) {tmdbid=93405}'", commands)
         self.assertIn("--updated-path '/example/emby/strm/series/鱿鱼游戏 (2021) {tmdbid=93405}/Season 1'", commands)
+        self.assertIn("--strm-path-prefix '/example/emby/strm/series/鱿鱼游戏 (2021) {tmdbid=93405}/Season 1'", commands)
 
     def test_batch_finalize_plan_prefers_strm_derived_cloud_prefix(self) -> None:
         batch_plan = {
@@ -1196,6 +1198,7 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(item["mp_strm_root"], "/example/mp/strm/series/主角 (2026) {tmdbid=284110}/Season 01")
         self.assertEqual(item["service_strm_root"], "/example/service/strm/series/主角 (2026) {tmdbid=284110}/Season 01")
         self.assertIn("--required-target-prefix '/已整理/series/主角 (2026) {tmdbid=284110}/Season 1'", command_text)
+        self.assertIn("--updated-path '/example/service/strm/series/主角 (2026) {tmdbid=284110}'", command_text)
         self.assertIn("--updated-path '/example/service/strm/series/主角 (2026) {tmdbid=284110}/Season 01'", command_text)
         self.assertNotIn("--updated-path '/example/host/strm", command_text)
 
@@ -1398,7 +1401,14 @@ class BatchRunnerTest(unittest.TestCase):
         scrape_call = next(call for call in actions.calls if call[0] == "mp-scrape-strm-result")
         emby_call = next(call for call in actions.calls if call[0] == "emby-media-updated")
         self.assertEqual(scrape_call[1]["kwargs"]["mp_path"], "/example/mp/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
-        self.assertEqual(emby_call[1]["kwargs"]["updated_paths"], ["/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1"])
+        self.assertEqual(
+            emby_call[1]["kwargs"]["updated_paths"],
+            [
+                "/example/service/strm/series/折腰 (2025) {tmdbid=296753}",
+                "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+            ],
+        )
+        self.assertEqual(emby_call[1]["kwargs"]["strm_path_prefixes"], ["/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1"])
         self.assertEqual(report["items"][0]["mp_strm_root"], "/example/mp/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
         self.assertEqual(report["items"][0]["service_strm_root"], "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1")
 
@@ -1749,7 +1759,14 @@ class BatchRunnerTest(unittest.TestCase):
         nfo_call = next(call for call in actions.calls if call[0] == "strm-nfo-language-audit")
         self.assertEqual(nfo_call[1]["expected"]["expected_nfo_count"], 36)
         emby_call = next(call for call in actions.calls if call[0] == "emby-media-updated")
-        self.assertEqual(emby_call[1]["kwargs"]["updated_paths"], ["/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1"])
+        self.assertEqual(
+            emby_call[1]["kwargs"]["updated_paths"],
+            [
+                "/example/service/strm/series/折腰 (2025) {tmdbid=296753}",
+                "/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+            ],
+        )
+        self.assertEqual(emby_call[1]["kwargs"]["strm_path_prefixes"], ["/example/service/strm/series/折腰 (2025) {tmdbid=296753}/Season 1"])
         cloud_duplicate_call = next(call for call in actions.calls if call[0] == "mv3-cloud-duplicate-video-cleanup-result")
         self.assertEqual(
             cloud_duplicate_call[1]["kwargs"]["season_path"],
