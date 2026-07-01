@@ -757,7 +757,7 @@ def run_batch_source_orphan_recovery(
     return {
         "mode": "batch-source-orphan-recovery-run",
         "source_mode": finalize_run_report.get("mode", ""),
-        "ok": all(row.get("status") in {"source_orphan_cleanup_waiting_for_approval", "cleanup_executed"} for row in rows),
+        "ok": all(row.get("status") in {"source_orphan_cleanup_waiting_for_approval", "cleanup_executed", "already_cleaned_noop"} for row in rows),
         "planned_items": len(candidates),
         "processed_items": len(rows),
         "status_counts": dict(sorted(status_counts.items())),
@@ -932,6 +932,47 @@ def _run_source_orphan_recovery_item(
         preview,
         ok_key="ready_for_execute",
     ):
+        noop_report = _source_orphan_recovery_noop_report(
+            preview,
+            actions=actions,
+            config=config,
+            title=title,
+            tmdbid=tmdbid,
+            season=season,
+            source_roots=_unique_nonempty(
+                [
+                    str(item.get("path") or "")
+                    for item in (preview.get("source_roots") if isinstance(preview.get("source_roots"), list) else [])
+                    if isinstance(item, dict)
+                ]
+            ),
+            hlink_roots=_unique_nonempty(
+                [
+                    str(item.get("path") or "")
+                    for item in (preview.get("hlink_roots") if isinstance(preview.get("hlink_roots"), list) else [])
+                    if isinstance(item, dict)
+                ]
+            ),
+            strm_root=strm_root,
+            expected_count=expected_count,
+            expected_min=expected_min,
+            expected_max=expected_max,
+            required_prefix=required_prefix,
+            forbidden_prefixes=forbidden_prefixes,
+            cloud_title_path=cloud_title_path,
+            cloud_media_storage=cloud_media_storage,
+        )
+        if noop_report and _append_stage(
+            row,
+            _stage_report_path(output_dir, report_prefix, "08-no-hash-local-absent-verify"),
+            "no_hash_local_absent_noop_verify",
+            noop_report,
+        ):
+            _remove_row_blockers(row, _string_list(preview.get("blockers")))
+            _remove_row_blockers(row, _string_list(preview.get("execution_blockers")))
+            row["warnings"] = sorted(set(_string_list(row.get("warnings")) + ["source_orphan_cleanup_already_absent_noop"]))
+            row["status"] = "already_cleaned_noop"
+            return row
         row["status"] = "failed_source_orphan_cleanup_preview"
         return row
     if not approve_delete:
@@ -1704,6 +1745,57 @@ def _source_orphan_recovery_preview(
         qb_user=_config_value(config, "qb_user"),
         qb_pass=_config_value(config, "qb_pass"),
         path_aliases=getattr(config, "path_aliases", {}) or {},
+        required_target_prefix=required_prefix,
+        forbidden_target_prefixes=forbidden_prefixes,
+        mv3_base_url=_config_value(config, "mv3_base_url"),
+        mv3_token=_config_value(config, "mv3_token"),
+        cloud_media_path=cloud_title_path,
+        cloud_media_storage=cloud_media_storage,
+    )
+
+
+def _source_orphan_recovery_noop_report(
+    preview: Dict[str, object],
+    *,
+    actions: BatchFinalizeActions,
+    config: object,
+    title: str,
+    tmdbid: int,
+    season: int,
+    source_roots: Sequence[str],
+    hlink_roots: Sequence[str],
+    strm_root: str,
+    expected_count: int,
+    expected_min: int,
+    expected_max: int,
+    required_prefix: str,
+    forbidden_prefixes: Sequence[str],
+    cloud_title_path: str,
+    cloud_media_storage: str,
+) -> Dict[str, object]:
+    blockers = set(_string_list(preview.get("blockers")) + _string_list(preview.get("execution_blockers")))
+    if blockers != {"source_root_missing", "source_video_count_mismatch"}:
+        return {}
+    if not source_roots or not hlink_roots:
+        return {}
+    return actions.no_hash_local_absent_verify(
+        title=title,
+        source_roots=source_roots,
+        hlink_roots=hlink_roots,
+        strm_roots=[strm_root],
+        expected_tmdbid=tmdbid,
+        expected_season=season,
+        expected_episode_count=expected_count,
+        expected_episode_min=expected_min,
+        expected_episode_max=expected_max,
+        qb_base_url=_config_value(config, "qb_base_url"),
+        qb_user=_config_value(config, "qb_user"),
+        qb_pass=_config_value(config, "qb_pass"),
+        mp_base_url=_config_value(config, "mp_base_url"),
+        mp_token=_config_value(config, "mp_token"),
+        path_aliases=getattr(config, "path_aliases", {}) or {},
+        expected_title_contains=title.split(" (", 1)[0].strip() or title,
+        expected_title_tokens=[],
         required_target_prefix=required_prefix,
         forbidden_target_prefixes=forbidden_prefixes,
         mv3_base_url=_config_value(config, "mv3_base_url"),

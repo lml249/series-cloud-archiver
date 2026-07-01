@@ -63,6 +63,7 @@ class FinalizeFakeActions:
         self.mp_scrape_timeout = False
         self.cleanup_already_absent = False
         self.cleanup_execute_source_left = False
+        self.source_orphan_sources_already_missing = False
 
     def _ok(self, stage: str, **extra: object) -> dict:
         self.calls.append((stage, dict(extra)))
@@ -286,6 +287,35 @@ class FinalizeFakeActions:
 
     def source_orphan_multiroot_preview(self, **kwargs: object) -> dict:
         self.calls.append(("cloud-source-orphan-multiroot-cleanup-preview", {"kwargs": kwargs}))
+        if self.source_orphan_sources_already_missing:
+            return {
+                "mode": "cloud-source-orphan-multiroot-cleanup-preview",
+                "title": kwargs.get("title", ""),
+                "ok": False,
+                "ready_for_execute": False,
+                "expected": {
+                    "tmdbid": kwargs.get("expected_tmdbid"),
+                    "episode_count": kwargs.get("expected_episode_count"),
+                    "episode_min": kwargs.get("expected_episode_min"),
+                    "episode_max": kwargs.get("expected_episode_max"),
+                    "source_roots": kwargs.get("source_roots"),
+                    "hlink_roots": kwargs.get("hlink_roots"),
+                    "required_target_prefix": kwargs.get("required_target_prefix"),
+                },
+                "source_roots": [{"path": path, "exists": False, "video_count": 0} for path in kwargs.get("source_roots", [])],
+                "hlink_roots": [{"path": path, "exists": False, "video_count": 0} for path in kwargs.get("hlink_roots", [])],
+                "strm": {
+                    "ok": True,
+                    "strm": {
+                        "roots": [{"path": kwargs.get("strm_root"), "exists": True}],
+                        "combined": {"episode_count": kwargs.get("expected_episode_count"), "missing_in_range": []},
+                    },
+                },
+                "cloud_media": {"ok": True},
+                "qbittorrent": {"linked_count": 0, "hashes": []},
+                "blockers": ["source_root_missing", "source_video_count_mismatch"],
+                "warnings": [],
+            }
         return {
             "mode": "cloud-source-orphan-multiroot-cleanup-preview",
             "title": kwargs.get("title", ""),
@@ -2223,6 +2253,81 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(
             preview_call[1]["kwargs"]["source_roots"],
             ["/example/local-tv/source-a", "/example/local-tv/source-b/episode36.mkv"],
+        )
+
+    def test_batch_source_orphan_recovery_marks_already_missing_sources_as_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            prior_stage = tmp_path / "old-execute.json"
+            prior_stage.write_text(
+                json.dumps(
+                    {
+                        "mode": "cloud-hlink-cleanup-execute",
+                        "title": "折腰",
+                        "ok": False,
+                        "qb_delete": {"ok": True},
+                        "hlink_delete": {"ok": True, "path": "/example/local-tv/折腰 (2025)/Season 1"},
+                        "verification": {
+                            "ok": False,
+                            "hlink_exists": False,
+                            "qb_remaining": [],
+                            "strm": {
+                                "mode": "strm-verify",
+                                "ok": True,
+                                "expected": {
+                                    "episode_count": 36,
+                                    "episode_min": 1,
+                                    "episode_max": 36,
+                                    "required_target_prefix": "/已整理/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                                },
+                                "strm": {
+                                    "roots": [
+                                        {
+                                            "path": "/example/host/strm/series/折腰 (2025) {tmdbid=296753}/Season 1",
+                                            "exists": True,
+                                        }
+                                    ],
+                                    "combined": {"episode_count": 36, "missing_in_range": []},
+                                },
+                            },
+                            "source_roots": [{"path": "/example/local-tv/source-a", "exists": True, "video_count": 36}],
+                            "blockers": ["source_root_still_contains_video_files"],
+                        },
+                        "blockers": ["source_root_still_contains_video_files"],
+                        "warnings": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            finalize = self._finalize_plan()
+            finalize["items"][0]["status"] = "failed_cleanup_execute"
+            finalize["items"][0]["stages"] = [
+                {
+                    "stage": "cloud_hlink_cleanup_execute",
+                    "ok": False,
+                    "output": str(prior_stage),
+                    "blockers": ["source_root_still_contains_video_files"],
+                },
+            ]
+            actions = FinalizeFakeActions()
+            actions.source_orphan_sources_already_missing = True
+            report = run_batch_source_orphan_recovery(
+                finalize,
+                output_dir=str(tmp_path / "recovery-stages"),
+                config=FinalizeFakeConfig(path_aliases={}),
+                approve_delete=False,
+                actions=_batch_finalize_actions(actions),
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["status_counts"], {"already_cleaned_noop": 1})
+        item = report["items"][0]
+        self.assertEqual(item["stages"][-1]["stage"], "no_hash_local_absent_noop_verify")
+        self.assertIn("source_orphan_cleanup_already_absent_noop", item["warnings"])
+        self.assertEqual(
+            [call[0] for call in actions.calls],
+            ["cloud-source-orphan-multiroot-cleanup-preview", "no-hash-local-absent-verify"],
         )
 
     def test_batch_review_report_combines_source_orphan_recovery_run(self) -> None:
