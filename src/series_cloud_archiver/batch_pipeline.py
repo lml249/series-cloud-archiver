@@ -330,6 +330,7 @@ def run_batch_pipeline(
         required_target_prefix="",
         forbidden_target_prefixes=forbidden_target_prefixes or [],
         manual_exclusions=manual_exclusions or [],
+        review_reports=provided_review_reports,
         offset=finalize_offset,
         limit=finalize_limit,
     )

@@ -1313,6 +1313,7 @@ PYTHONPATH=src python3 -m series_cloud_archiver mv3-organize-transfer-from-brows
 PYTHONPATH=src python3 -m series_cloud_archiver batch-finalize-plan \
   --env-file .env \
   --batch-plan reports/batch-plan.json \
+  --review-report reports/batch-review-latest.json \
   --host-strm-root "/example/host/strm" \
   --mp-strm-root "/example/moviepilot/strm" \
   --service-strm-root "/example/service/strm" \

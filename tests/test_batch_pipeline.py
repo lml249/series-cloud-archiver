@@ -201,6 +201,38 @@ class BatchPipelineTest(unittest.TestCase):
         self.assertEqual(finalize_plan["items"][0]["status"], "skipped_finalize")
         self.assertIn("manual_exclusion:user_skip", finalize_plan["items"][0]["skip_reasons"])
 
+    def test_pipeline_blocks_stale_finalize_rows_by_existing_review(self) -> None:
+        review_report = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "done_cleanup_verified",
+                    "title": "兄弟连 (2001) {tmdbid=4613}",
+                    "tmdbid": 4613,
+                    "season": 1,
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_batch_pipeline(
+                output_dir=tmp,
+                run_id="stale-finalize-blocked",
+                config=ScanConfig(media_roots=[]),
+                env_file="/safe/.env",
+                cloud_report=self._cloud_complete_report(),
+                host_strm_root="/example/host/strm",
+                emby_strm_root="/example/service/strm",
+                review_reports=[review_report],
+            )
+            finalize_plan = json.loads((Path(report["run_dir"]) / "12-finalize-plan.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(finalize_plan["finalize_ready_items"], 0)
+        self.assertEqual(finalize_plan["settings"]["review_report_count"], 1)
+        self.assertEqual(finalize_plan["items"][0]["status"], "skipped_finalize")
+        self.assertIn("review_decision_blocked:done_cleanup_verified", finalize_plan["items"][0]["skip_reasons"])
+        self.assertEqual(report["summary"]["finalize_plan"]["finalize_ready_items"], 0)
+
     def test_pipeline_reuses_ready_share_preview_report_for_transfer_stage(self) -> None:
         transfer_calls = []
 

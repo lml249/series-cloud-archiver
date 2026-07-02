@@ -1125,6 +1125,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch_finalize_parser.add_argument("--required-target-prefix", default="", help="Required STRM target prefix; defaults per item to cloud media path")
     batch_finalize_parser.add_argument("--forbidden-target-prefix", action="append", default=[], help="STRM targets must not start with this prefix; can be repeated")
     batch_finalize_parser.add_argument("--manual-exclusion-file", action="append", default=[], help="Local JSON list of title/TMDB/season rows to skip; can be repeated")
+    batch_finalize_parser.add_argument("--review-report", action="append", default=[], help="Optional batch-review-report JSON used to skip stale finalize rows")
     batch_finalize_parser.add_argument("--offset", type=int, default=0, help="Skip this many ready finalize rows before planning")
     batch_finalize_parser.add_argument("--limit", type=int, default=0, help="Maximum planned finalize rows; 0 means all")
     batch_finalize_parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
@@ -3781,6 +3782,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             required_target_prefix=args.required_target_prefix,
             forbidden_target_prefixes=args.forbidden_target_prefix,
             manual_exclusions=_load_manual_exclusions(args.manual_exclusion_file),
+            review_reports=[
+                report
+                for report in (load_optional_json_report(path) for path in args.review_report)
+                if isinstance(report, dict)
+            ],
             offset=args.offset,
             limit=args.limit,
         )

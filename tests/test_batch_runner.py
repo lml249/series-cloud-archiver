@@ -1185,6 +1185,49 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("Batch Finalize Plan", rendered)
         self.assertIn("折腰", rendered)
 
+    def test_batch_finalize_plan_blocks_stale_ready_rows_from_prior_review(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "settings": {
+                "cloud_root": "/已整理/series",
+                "host_strm_root": "/example/host/strm",
+                "emby_strm_root": "/example/service/strm",
+            },
+            "items": [
+                {
+                    "bucket": AUTO_CLEANUP,
+                    "title": "已清理剧",
+                    "tmdbid": 4613,
+                    "season": 1,
+                    "expected_episode_count": 10,
+                    "source_paths": ["/example/local-tv/已清理剧/Season 1"],
+                    "cloud_media_path": "/已整理/series/已清理剧 (2001) {tmdbid=4613}/Season 1",
+                    "strm_root": "/example/host/strm/series/已清理剧 (2001) {tmdbid=4613}/Season 1",
+                }
+            ],
+        }
+        review_report = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "done_cleanup_verified",
+                    "title": "已清理剧",
+                    "tmdbid": 4613,
+                    "season": 1,
+                }
+            ],
+        }
+
+        report = build_batch_finalize_plan(batch_plan, env_file="/safe/.env", review_reports=[review_report])
+        item = report["items"][0]
+
+        self.assertEqual(report["finalize_ready_items"], 0)
+        self.assertEqual(report["settings"]["review_report_count"], 1)
+        self.assertEqual(item["status"], "skipped_finalize")
+        self.assertEqual(item["review_decision"], "done_cleanup_verified")
+        self.assertIn("review_decision_blocked:done_cleanup_verified", item["skip_reasons"])
+        self.assertEqual(item["commands"], [])
+
     def test_batch_finalize_plan_can_separate_moviepilot_and_emby_paths(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",

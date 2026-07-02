@@ -47,6 +47,19 @@ PRESERVED_PREVIEW_REVIEW_DECISIONS = {
     "ready_for_transfer_approval",
     "skipped_manual_exclusion",
 }
+FINALIZE_BLOCKING_REVIEW_DECISIONS = {
+    "blocked_after_finalize_gates",
+    "blocked_after_transfer_run",
+    "done_already_cleaned_noop",
+    "done_cleanup_executed",
+    "done_cleanup_verified",
+    "manual_review_preview_blocked",
+    "manual_review_transfer_failed",
+    "ready_for_cleanup_approval",
+    "ready_for_receive_plan",
+    "ready_for_transfer_approval",
+    "skipped_manual_exclusion",
+}
 PRIOR_REVIEW_DECISION_RANK = {
     "done_cleanup_verified": 100,
     "done_cleanup_executed": 95,
@@ -421,6 +434,7 @@ def build_batch_finalize_plan(
     required_target_prefix: str = "",
     forbidden_target_prefixes: Optional[Sequence[str]] = None,
     manual_exclusions: Optional[Sequence[Dict[str, object]]] = None,
+    review_reports: Optional[Sequence[Dict[str, object]]] = None,
     offset: int = 0,
     limit: int = 0,
 ) -> Dict[str, object]:
@@ -432,6 +446,7 @@ def build_batch_finalize_plan(
     effective_service_strm_root = service_strm_root or str(settings.get("emby_strm_root") or "")
     forbidden = [str(item) for item in (forbidden_target_prefixes or settings.get("forbidden_target_prefixes") or []) if str(item)]
     exclusions = normalize_manual_exclusions(manual_exclusions or settings.get("manual_exclusions") or [])
+    review_by_key = _review_report_by_identity_reports(review_reports or [])
     rows: List[Dict[str, object]] = []
 
     ready_seen = 0
@@ -453,6 +468,9 @@ def build_batch_finalize_plan(
         exclusion = match_manual_exclusion(row, exclusions)
         if exclusion:
             row = _finalize_plan_row_with_manual_exclusion(row, exclusion)
+        else:
+            review_item = review_by_key.get(_finalize_identity_key(row), {})
+            row = _finalize_plan_row_with_prior_review(row, review_item)
         if row.get("status") == "planned_finalize":
             if ready_seen < max(0, offset):
                 ready_seen += 1
@@ -479,6 +497,7 @@ def build_batch_finalize_plan(
             "required_target_prefix": required_target_prefix,
             "forbidden_target_prefixes": forbidden,
             "manual_exclusion_count": len(exclusions),
+            "review_report_count": len(review_reports or []),
             "offset": offset,
             "limit": limit,
         },
@@ -4375,6 +4394,23 @@ def _finalize_plan_row_with_manual_exclusion(item: Dict[str, object], exclusion:
     }
     row["skip_reasons"] = sorted(set(_string_list(row.get("skip_reasons")) + [reason]))
     row["blockers"] = sorted(set(_string_list(row.get("blockers")) + ["manual_exclusion"]))
+    row["commands"] = []
+    return row
+
+
+def _finalize_plan_row_with_prior_review(item: Dict[str, object], review_item: Dict[str, object]) -> Dict[str, object]:
+    if item.get("status") != "planned_finalize":
+        return item
+    decision = str(review_item.get("decision") or "")
+    if decision not in FINALIZE_BLOCKING_REVIEW_DECISIONS:
+        return item
+    row = dict(item)
+    row["status"] = "skipped_finalize"
+    row["review_decision"] = decision
+    if review_item.get("prior_review_report_index"):
+        row["prior_review_report_index"] = review_item.get("prior_review_report_index")
+    row["skip_reasons"] = sorted(set(_string_list(row.get("skip_reasons")) + [f"review_decision_blocked:{decision}"]))
+    row["blockers"] = sorted(set(_string_list(row.get("blockers")) + ["prior_review_decision"]))
     row["commands"] = []
     return row
 
