@@ -101,12 +101,13 @@ def build_batch_share_preview_plan(
         if execute_preview and row["status"] == "planned_preview":
             if preview_func is None:
                 raise ValueError("preview_func is required when execute_preview=True")
+            preview_channels = list(channels or []) or _string_list(row.get("channels"))
             report = _run_preview(
                 preview_func,
                 base_url,
                 token,
                 row,
-                channels=list(channels or []),
+                channels=preview_channels,
                 storage=storage,
                 timeout=timeout,
             )
@@ -137,7 +138,7 @@ def build_batch_share_preview_plan(
                     base_url,
                     token,
                     row,
-                    channels=list(channels or []),
+                    channels=preview_channels,
                     storage=storage,
                     timeout=timeout,
                     browse_cid=str(nested["cid"]),
@@ -431,6 +432,7 @@ def _preview_row(
     keyword = str(best.get("search_keyword") or title)
     selection_index = int(best.get("search_index") or 0)
     blockers = set(_string_list(best.get("blockers")))
+    candidate_channel = _candidate_channel(item, best)
     skip_reasons: List[str] = []
     review_candidate_changed = False
 
@@ -477,6 +479,7 @@ def _preview_row(
         "candidate_score": int(best.get("score") or 0) if best else 0,
         "candidate_size_delta_ratio": best.get("size_delta_ratio") if best else None,
         "candidate_blockers": sorted(blockers),
+        "channels": [candidate_channel] if candidate_channel else [],
         "review_decision": str(review_item.get("decision") or "") if review_item else "",
         "review_next_action": str(review_item.get("next_action") or "") if review_item else "",
         "review_candidate_changed": review_candidate_changed,
@@ -673,7 +676,28 @@ def _preview_command(row: Dict[str, object], *, env_file: str, storage: str) -> 
                 str(row.get("expected_episode_max") or 0),
             ]
         )
+    for channel in _string_list(row.get("channels")):
+        args.extend(["--channel", channel])
     return " ".join(_shell_quote(part) for part in args)
+
+
+def _candidate_channel(item: Dict[str, object], best: Dict[str, object]) -> str:
+    direct = str(best.get("channel") or "").strip()
+    if direct:
+        return direct
+    best_title = _compact_text(str(best.get("title") or ""))
+    recommended = item.get("recommended_candidate") if isinstance(item.get("recommended_candidate"), dict) else {}
+    if recommended:
+        recommended_title = _compact_text(str(recommended.get("title") or ""))
+        if best_title and recommended_title == best_title:
+            return str(recommended.get("channel") or "").strip()
+    diagnostics = item.get("candidate_diagnostics") if isinstance(item.get("candidate_diagnostics"), dict) else {}
+    for candidate in diagnostics.get("top_candidates", []) if isinstance(diagnostics.get("top_candidates"), list) else []:
+        if not isinstance(candidate, dict):
+            continue
+        if best_title and _compact_text(str(candidate.get("title") or "")) == best_title:
+            return str(candidate.get("channel") or "").strip()
+    return ""
 
 
 def _preview_report_filename(row: Dict[str, object]) -> str:

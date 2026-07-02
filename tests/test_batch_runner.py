@@ -5448,6 +5448,63 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertEqual(calls[0][3]["expected_episode_count"], 4)
         self.assertEqual(len(written), 1)
 
+    def test_execute_preview_uses_candidate_channel_when_cli_channel_absent(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_TRANSFER,
+                    "title": "一饭封神",
+                    "tmdbid": 296217,
+                    "season": 1,
+                    "expected_episode_count": 25,
+                    "recommended_candidate": {
+                        "title": "一饭封神 第1季 更新至第25集 4K",
+                        "channel": "pansou",
+                    },
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 7,
+                            "search_keyword": "一饭封神",
+                            "title": "一饭封神 第1季 更新至第25集 4K",
+                            "score": 95,
+                            "blockers": [],
+                        }
+                    },
+                }
+            ],
+        }
+        planned = build_batch_share_preview_plan(batch_plan, env_file="/safe/.env", buckets=[AUTO_TRANSFER])
+        self.assertEqual(planned["items"][0]["channels"], ["pansou"])
+        self.assertIn("--channel pansou", planned["items"][0]["command"])
+
+        calls = []
+
+        def fake_preview(base_url, token, keyword, **kwargs):
+            calls.append(kwargs)
+            return {
+                "ok": True,
+                "selection_index": 7,
+                "episode_count": 25,
+                "episodes": list(range(1, 26)),
+                "blockers": [],
+                "missing_expected": [],
+                "unexpected_episodes": [],
+            }
+
+        executed = build_batch_share_preview_plan(
+            batch_plan,
+            env_file="/safe/.env",
+            buckets=[AUTO_TRANSFER],
+            execute_preview=True,
+            base_url="http://mv3.example",
+            token="token",
+            preview_func=fake_preview,
+        )
+
+        self.assertEqual(executed["ready_for_receive_items"], 1)
+        self.assertEqual(calls[0]["channels"], ["pansou"])
+
     def test_execute_preview_blocks_complete_share_when_browse_size_is_too_different(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",
