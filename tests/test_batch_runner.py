@@ -3712,6 +3712,56 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertEqual(item["approval_flag_required"], "--approve-receive")
         self.assertIn("approval required", item["command"])
 
+    def test_batch_receive_plan_allows_changed_candidate_after_prior_receive_failure(self) -> None:
+        preview_report = {
+            "mode": "readonly-batch-mv3-share-preview",
+            "items": [
+                {
+                    "status": "preview_ready_for_receive",
+                    "title": "一饭封神",
+                    "tmdbid": 296217,
+                    "season": 1,
+                    "keyword": "一饭封神",
+                    "selection_index": 1,
+                    "expected_episode_count": 25,
+                    "expected_episode_min": 1,
+                    "expected_episode_max": 25,
+                    "expected_title_contains": "一饭封神",
+                    "expected_resource_title": "一饭封神 更新至25集 4K",
+                    "candidate_title": "一饭封神 更新至25集 4K",
+                    "review_candidate_changed": True,
+                    "preview_report_path": "/reports/yifengshen-preview.json",
+                    "preview_report": {"ok": True, "selected": {"channel": "pansou"}, "browse": {"items": []}},
+                }
+            ],
+        }
+        failed_review = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "manual_review_transfer_failed",
+                    "title": "一饭封神",
+                    "tmdbid": 296217,
+                    "season": 1,
+                    "transfer_status": "failed_receive",
+                    "transfer_last_stage": "share_receive",
+                    "transfer_blockers": "receive_failed",
+                    "best_candidate_title": "一饭封神 4K 53.92GB",
+                    "best_candidate_score": 95,
+                    "best_candidate_size_delta_ratio": 0.0287,
+                }
+            ],
+        }
+
+        report = build_batch_share_receive_plan(preview_report, env_file="/safe/.env", review_reports=[failed_review])
+        item = report["items"][0]
+
+        self.assertEqual(report["approval_required_items"], 1)
+        self.assertEqual(item["status"], "approval_required")
+        self.assertEqual(item["review_decision"], "manual_review_transfer_failed")
+        self.assertNotIn("review_decision_blocked:manual_review_transfer_failed", item["skip_reasons"])
+        self.assertIn("--channel pansou", item["command"])
+
     def test_batch_review_report_uses_post_cleanup_summary_as_verified_done(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",
@@ -4916,6 +4966,133 @@ class BatchSharePreviewTest(unittest.TestCase):
         self.assertEqual(item["status"], "planned_preview")
         self.assertTrue(item["review_candidate_changed"])
         self.assertNotIn("review_decision_blocked:manual_review_preview_blocked", item["skip_reasons"])
+
+    def test_preview_plan_retries_next_candidate_after_receive_failed_review(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_TRANSFER,
+                    "title": "一饭封神",
+                    "tmdbid": 296217,
+                    "season": 1,
+                    "expected_episode_count": 25,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 7,
+                            "search_keyword": "一饭封神",
+                            "title": "一饭封神 4K 53.92GB",
+                            "channel": "pansou",
+                            "score": 95,
+                            "size_delta_ratio": 0.0287,
+                            "blockers": [],
+                        },
+                        "top_candidates": [
+                            {
+                                "search_index": 7,
+                                "search_keyword": "一饭封神",
+                                "title": "一饭封神 4K 53.92GB",
+                                "channel": "pansou",
+                                "score": 95,
+                                "size_delta_ratio": 0.0287,
+                                "blockers": [],
+                            },
+                            {
+                                "search_index": 1,
+                                "search_keyword": "一饭封神",
+                                "title": "一饭封神 更新至25集 4K",
+                                "channel": "pansou",
+                                "score": 65,
+                                "size_delta_ratio": None,
+                                "blockers": [],
+                            },
+                        ],
+                    },
+                }
+            ],
+        }
+        failed_review = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "manual_review_transfer_failed",
+                    "title": "一饭封神",
+                    "tmdbid": 296217,
+                    "season": 1,
+                    "reason_summary": "failed_receive; receive_failed",
+                    "transfer_status": "failed_receive",
+                    "transfer_last_stage": "share_receive",
+                    "transfer_blockers": "receive_failed",
+                    "best_candidate_title": "一饭封神 4K 53.92GB",
+                    "best_candidate_score": 95,
+                    "best_candidate_size_delta_ratio": 0.0287,
+                }
+            ],
+        }
+
+        report = build_batch_share_preview_plan(batch_plan, env_file="/safe/.env", review_reports=[failed_review])
+        item = report["items"][0]
+
+        self.assertEqual(item["status"], "planned_preview")
+        self.assertTrue(item["review_candidate_changed"])
+        self.assertEqual(item["selection_index"], 1)
+        self.assertEqual(item["candidate_title"], "一饭封神 更新至25集 4K")
+        self.assertEqual(item["channels"], ["pansou"])
+        self.assertIn("--selection-index 1", item["command"])
+        self.assertIn("--channel pansou", item["command"])
+        self.assertNotIn("review_decision_blocked:manual_review_transfer_failed", item["skip_reasons"])
+
+    def test_preview_plan_does_not_retry_organize_failed_candidate(self) -> None:
+        batch_plan = {
+            "mode": "readonly-batch-state-plan",
+            "items": [
+                {
+                    "bucket": AUTO_TRANSFER,
+                    "title": "法证先锋",
+                    "tmdbid": 286997,
+                    "season": 2,
+                    "expected_episode_count": 30,
+                    "candidate_diagnostics": {
+                        "best_candidate": {
+                            "search_index": 4,
+                            "search_keyword": "法证先锋",
+                            "title": "法证先锋 第二季",
+                            "score": 80,
+                            "size_delta_ratio": 0.02,
+                            "blockers": [],
+                        },
+                        "top_candidates": [
+                            {"search_index": 4, "search_keyword": "法证先锋", "title": "法证先锋 第二季", "score": 80},
+                            {"search_index": 5, "search_keyword": "法证先锋", "title": "法证先锋 S02 备用", "score": 70},
+                        ],
+                    },
+                }
+            ],
+        }
+        failed_review = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "manual_review_transfer_failed",
+                    "title": "法证先锋",
+                    "tmdbid": 286997,
+                    "season": 2,
+                    "reason_summary": "failed_organize_transfer; strm_written_to_unrecognized_root",
+                    "transfer_status": "failed_organize_transfer",
+                    "transfer_blockers": "strm_written_to_unrecognized_root",
+                    "best_candidate_title": "法证先锋 第二季",
+                    "best_candidate_score": 80,
+                    "best_candidate_size_delta_ratio": 0.02,
+                }
+            ],
+        }
+
+        report = build_batch_share_preview_plan(batch_plan, env_file="/safe/.env", review_reports=[failed_review])
+        item = report["items"][0]
+
+        self.assertEqual(item["status"], "skipped_preview")
+        self.assertFalse(item["review_candidate_changed"])
+        self.assertIn("review_decision_blocked:manual_review_transfer_failed", item["skip_reasons"])
 
     def test_preview_plan_keeps_same_candidate_blocked_after_prior_preview_block(self) -> None:
         batch_plan = {

@@ -2858,6 +2858,7 @@ def _candidate_diagnostic_summary(
         "search_index": int(candidate.get("search_index") or 0),
         "search_keyword": str(candidate.get("search_keyword") or ""),
         "title": str(candidate.get("title") or ""),
+        "channel": str(candidate.get("channel") or ""),
         "score": int(candidate.get("score") or 0),
         "size": str(candidate.get("size") or ""),
         "size_bytes": int(candidate.get("size_bytes") or 0),

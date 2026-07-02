@@ -424,6 +424,11 @@ def _preview_row(
 ) -> Dict[str, object]:
     diagnostics = item.get("candidate_diagnostics") if isinstance(item.get("candidate_diagnostics"), dict) else {}
     best = diagnostics.get("best_candidate") if isinstance(diagnostics.get("best_candidate"), dict) else {}
+    review_decision = str(review_item.get("decision") or "") if review_item else ""
+    if review_item and _transfer_failed_candidate_retry_allowed(review_item):
+        alternate = _alternate_candidate_after_failed_transfer(item, review_item)
+        if alternate:
+            best = alternate
     title = str(item.get("title") or "")
     expected_count = int(item.get("expected_episode_count") or 0)
     expected_episodes = _int_list(item.get("expected_episodes"))
@@ -437,7 +442,6 @@ def _preview_row(
     review_candidate_changed = False
 
     if review_item:
-        review_decision = str(review_item.get("decision") or "")
         if review_decision and review_decision not in allowed_review_decisions:
             review_candidate_changed = _review_candidate_changed(review_item, best)
             if review_decision not in RERUNNABLE_REVIEW_PREVIEW_DECISIONS or not review_candidate_changed:
@@ -480,7 +484,7 @@ def _preview_row(
         "candidate_size_delta_ratio": best.get("size_delta_ratio") if best else None,
         "candidate_blockers": sorted(blockers),
         "channels": [candidate_channel] if candidate_channel else [],
-        "review_decision": str(review_item.get("decision") or "") if review_item else "",
+        "review_decision": review_decision,
         "review_next_action": str(review_item.get("next_action") or "") if review_item else "",
         "review_candidate_changed": review_candidate_changed,
         "cloud_media_path": str(item.get("cloud_media_path") or ""),
@@ -569,6 +573,50 @@ def _candidate_fingerprint(candidate: Dict[str, object]) -> Optional[tuple[str, 
     score = str(candidate.get("score") or "")
     size_delta = str(candidate.get("size_delta_ratio") or "")
     return (title, score, size_delta) if title else None
+
+
+def _transfer_failed_candidate_retry_allowed(review_item: Dict[str, object]) -> bool:
+    if str(review_item.get("decision") or "") != "manual_review_transfer_failed":
+        return False
+    text = " ".join(
+        str(review_item.get(field) or "")
+        for field in ("reason_summary", "transfer_status", "transfer_last_stage", "transfer_blockers")
+    )
+    receive_markers = ("failed_receive", "share_receive", "receive_failed")
+    hard_markers = (
+        "failed_organize",
+        "organize",
+        "strm_written_to_unrecognized_root",
+        "post_organize",
+        "staging",
+    )
+    return any(marker in text for marker in receive_markers) and not any(marker in text for marker in hard_markers)
+
+
+def _alternate_candidate_after_failed_transfer(item: Dict[str, object], review_item: Dict[str, object]) -> Dict[str, object]:
+    previous = _review_candidate_fingerprint(review_item)
+    if not previous:
+        return {}
+    diagnostics = item.get("candidate_diagnostics") if isinstance(item.get("candidate_diagnostics"), dict) else {}
+    candidates = diagnostics.get("top_candidates") if isinstance(diagnostics.get("top_candidates"), list) else []
+    ranked = [candidate for candidate in candidates if isinstance(candidate, dict)]
+    ranked.sort(key=_candidate_retry_rank, reverse=True)
+    for candidate in ranked:
+        if _candidate_fingerprint(candidate) != previous:
+            return candidate
+    return {}
+
+
+def _candidate_retry_rank(candidate: Dict[str, object]) -> tuple[int, int, float, int]:
+    blockers = _string_list(candidate.get("blockers"))
+    size_delta = candidate.get("size_delta_ratio")
+    size_fit = 1.0 - float(size_delta) if isinstance(size_delta, (int, float)) else -1.0
+    return (
+        int(candidate.get("score") or 0),
+        -len(blockers),
+        size_fit,
+        -int(candidate.get("search_index") or 0),
+    )
 
 
 def _review_candidate_fingerprint(item: Dict[str, object]) -> Optional[tuple[str, str, str]]:
@@ -799,7 +847,7 @@ def _receive_review_decision_blocks(item: Dict[str, object], review_decision: st
     if review_decision not in RECEIVE_BLOCKING_REVIEW_DECISIONS:
         return False
     if (
-        review_decision == "manual_review_preview_blocked"
+        review_decision in {"manual_review_preview_blocked", "manual_review_transfer_failed"}
         and item.get("status") == "preview_ready_for_receive"
         and bool(item.get("review_candidate_changed"))
     ):
