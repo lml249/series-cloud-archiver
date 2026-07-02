@@ -698,7 +698,7 @@ def _receive_plan_row(
     if not item.get("preview_report_path"):
         skip_reasons.append("preview_report_path_missing")
     review_decision = str(review_item.get("decision") or "")
-    if review_decision in RECEIVE_BLOCKING_REVIEW_DECISIONS:
+    if _receive_review_decision_blocks(item, review_decision):
         skip_reasons.append(f"review_decision_blocked:{review_decision}")
 
     nested_previews = [row for row in item.get("nested_previews", []) if isinstance(row, dict)]
@@ -769,6 +769,18 @@ def _receive_plan_row(
     if status == "approval_required":
         row["command"] = _receive_command(row, env_file=env_file)
     return row
+
+
+def _receive_review_decision_blocks(item: Dict[str, object], review_decision: str) -> bool:
+    if review_decision not in RECEIVE_BLOCKING_REVIEW_DECISIONS:
+        return False
+    if (
+        review_decision == "manual_review_preview_blocked"
+        and item.get("status") == "preview_ready_for_receive"
+        and bool(item.get("review_candidate_changed"))
+    ):
+        return False
+    return True
 
 
 def _expected_staging_path(item: Dict[str, object], target_path: str, receive_mode: str) -> str:

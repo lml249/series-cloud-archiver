@@ -3660,6 +3660,58 @@ class BatchRunnerTest(unittest.TestCase):
         self.assertIn("review_decision_blocked:manual_review_transfer_failed", item["skip_reasons"])
         self.assertEqual(item["command"], "")
 
+    def test_batch_receive_plan_allows_changed_candidate_ready_preview_after_prior_preview_block(self) -> None:
+        preview_report = {
+            "mode": "readonly-batch-mv3-share-preview",
+            "items": [
+                {
+                    "status": "preview_ready_for_receive",
+                    "title": "隐秘的角落",
+                    "tmdbid": 104960,
+                    "season": 1,
+                    "keyword": "隐秘的角落",
+                    "selection_index": 3,
+                    "expected_episode_count": 12,
+                    "expected_episode_min": 1,
+                    "expected_episode_max": 12,
+                    "expected_title_contains": "隐秘的角落",
+                    "expected_resource_title": "隐秘的角落.全12集.2020.2160P",
+                    "candidate_title": "隐秘的角落.全12集.2020.2160P",
+                    "review_candidate_changed": True,
+                    "preview_report_path": "/reports/hidden-corner-preview.json",
+                    "preview_report": {
+                        "ok": True,
+                        "browse": {"path": "/share/隐秘的角落", "items": []},
+                    },
+                }
+            ],
+        }
+        review_report = {
+            "mode": "readonly-batch-human-review-report",
+            "items": [
+                {
+                    "decision": "manual_review_preview_blocked",
+                    "title": "隐秘的角落",
+                    "tmdbid": 104960,
+                    "season": 1,
+                    "best_candidate_title": "隐秘的角落.全12集.2020.1080P",
+                    "best_candidate_score": 65,
+                    "best_candidate_size_delta_ratio": 0.5571,
+                }
+            ],
+        }
+
+        report = build_batch_share_receive_plan(preview_report, env_file="/safe/.env", review_reports=[review_report])
+
+        self.assertEqual(report["approval_required_items"], 1)
+        self.assertEqual(report["skipped_items"], 0)
+        item = report["items"][0]
+        self.assertEqual(item["status"], "approval_required")
+        self.assertEqual(item["review_decision"], "manual_review_preview_blocked")
+        self.assertNotIn("review_decision_blocked:manual_review_preview_blocked", item["skip_reasons"])
+        self.assertEqual(item["approval_flag_required"], "--approve-receive")
+        self.assertIn("approval required", item["command"])
+
     def test_batch_review_report_uses_post_cleanup_summary_as_verified_done(self) -> None:
         batch_plan = {
             "mode": "readonly-batch-state-plan",
